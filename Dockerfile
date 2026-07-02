@@ -16,6 +16,10 @@ COPY alembic.ini ./
 COPY alembic/ ./alembic/
 COPY config/ ./config/
 COPY app/ ./app/
+COPY scripts/init_db.py ./scripts/init_db.py
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 USER appuser
 EXPOSE 8000
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
