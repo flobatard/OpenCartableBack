@@ -1,4 +1,4 @@
-# CartableBack
+# OpenCartableBack
 
 Backend part of a Web project to share courses, exercises and modules between teachers and with students.
 

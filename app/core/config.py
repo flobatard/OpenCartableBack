@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    PROJECT_NAME: str = "CartableBack"
+    PROJECT_NAME: str = "OpenCartableBack"
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = False
 
