@@ -1,0 +1,19 @@
+# Config publique de production (versionnée dans le repo).
+# Les secrets (POSTGRES_PASSWORD, ...) vont dans le .env du serveur, jamais ici.
+
+DEBUG: false
+
+# Derrière le nginx de l'infra, front et API partagent la même origine :
+# laisser vide (middleware CORS désactivé). Ajouter l'origine de la SPA sinon.
+CORS_ORIGINS: []
+
+# Postgres du docker-compose (l'hôte est le service `db` ; docker-compose.yml
+# force de toute façon POSTGRES_HOST=db dans le conteneur api)
+POSTGRES_USER: cartable
+POSTGRES_HOST: db
+POSTGRES_PORT: 5432
+POSTGRES_DB: cartable
+
+# Zitadel de prod — remplacer par votre instance
+OIDC_ISSUER: https://votre-instance.zitadel.cloud
+OIDC_AUDIENCE: cartable-api

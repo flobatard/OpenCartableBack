@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth.router import router as auth_router
 from app.core.config import settings
 from app.core.database import engine
 from app.health.router import router as health_router
-from app.users.router import router as users_router
 
 
 @asynccontextmanager
@@ -23,8 +24,17 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    if settings.CORS_ORIGINS:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.CORS_ORIGINS,
+            allow_credentials=False,  # auth is Bearer-based, no cookies
+            allow_methods=["*"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
+
     app.include_router(health_router, prefix=settings.API_V1_PREFIX)
-    app.include_router(users_router, prefix=settings.API_V1_PREFIX)
+    app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 
     return app
 
