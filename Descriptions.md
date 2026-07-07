@@ -123,7 +123,7 @@ Pour « agencer texte de cours + documents + images », le modèle gagnant est u
 
 ### 5.4 Recherche
 - MVP : **Full-Text Search Postgres** (`tsvector` + index GIN) sur titres de cours, texte des blocs, noms et tags de ressources. Configuration `french` pour le *stemming*.
-- Facettes : matière (taxonomie hiérarchique `subjects`, filtre par sous-arbre), niveau, type de ressource (filtres SQL classiques).
+- Facettes : matière (taxonomie hiérarchique `subjects`, filtre par sous-arbre), niveau (classification hiérarchique `education_levels`, filtre par sous-arbre ; pivot international `cite` pour croiser les systèmes scolaires), type de ressource (filtres SQL classiques).
 - Évolution : recherche **sémantique** via ChromaDB si la vectorisation est actée (cf. 5.7), combinable avec la FTS (recherche hybride).
 
 ### 5.5 Modules interactifs HTML/JS
@@ -158,6 +158,8 @@ Le point le plus sensible niveau sécurité : tu vas servir du **code arbitraire
 erDiagram
     SUBJECT ||--o{ SUBJECT : contient
     SUBJECT ||--o{ COURSE : contient
+    EDUCATION_LEVEL ||--o{ EDUCATION_LEVEL : contient
+    COURSE  }o--o{ EDUCATION_LEVEL : vise
     COURSE  ||--o{ BLOCK : ordonne
     COURSE  ||--o{ RESOURCE : rassemble
     BLOCK   }o--o| RESOURCE : reference
@@ -173,10 +175,22 @@ erDiagram
       int position
       timestamptz updated_at
     }
+    EDUCATION_LEVEL {
+      uuid id
+      uuid parent_id
+      string nom
+      string code
+      string systeme
+      int cite
+      int age_min
+      int age_max
+      int profondeur
+      int position
+      timestamptz updated_at
+    }
     COURSE {
       uuid id
       string titre
-      string niveau
       tsvector search_vector
       timestamptz updated_at
     }
@@ -208,6 +222,8 @@ erDiagram
 ```
 
 `SUBJECT` est auto-référencée : discipline (profondeur 0) → domaine (1) → sous-domaine (2) → sujet (3), profondeur flexible (une branche peut s'arrêter avant le niveau 3). La taxonomie est pré-remplie par une migration de seed (IDs uuid5 déterministes dérivés du `code`, chemin slug complet — source de vérité : `app/subjects/seed_data.py`, contrat append-only).
+
+`EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`systeme`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association, remplace l'ancien champ texte `niveau`) et le futur profil prof (matières + niveaux par défaut) sont un contrat documenté, pas encore implémenté.
 
 ---
 
