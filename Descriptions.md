@@ -20,7 +20,9 @@ Un enseignant produit beaucoup de supports hétérogènes (PDF, images, schémas
 | Rôle | Authentification | Peut |
 |------|------------------|------|
 | **Prof** (toi) | OIDC / Zitadel | Créer / organiser / éditer cours, ressources et modules ; gérer les liens de partage |
-| **Élève** | Aucune (lien public) | Consulter un cours partagé, télécharger les documents, lancer les modules interactifs |
+| **Élève** | Optionnelle : aucune (lien public) ou compte OIDC / Zitadel | Consulter un cours partagé, télécharger les documents, lancer les modules interactifs — sans compte ; un compte (facultatif) porte un profil (système scolaire, niveaux, matières apprises) |
+
+Les rôles applicatifs sont **cumulables** : un même compte peut être prof *et* élève (ex. enseignant en reprise d'études). Tout compte passe par un **onboarding bloquant** à la première connexion (rôles → système scolaire → niveaux → matières, par contexte « enseigne »/« apprend »). L'accès par lien public reste le mode par défaut pour les élèves : le compte élève est une commodité de profil, jamais une condition d'accès aux cours partagés.
 
 ### Cas d'usage clés (user stories)
 - *En tant que prof*, je crée un cours « Suites numériques » et j'y agence un texte d'introduction, deux PDF, trois images et un quiz interactif, dans l'ordre que je veux.
@@ -105,8 +107,9 @@ C'est le cœur du projet. Chaque point ci-dessous est un vrai arbitrage à tranc
 ### 5.1 Authentification & double régime d'accès
 Le point structurant : **deux populations, deux modèles d'accès** sur la même API.
 - **Prof** : flow OIDC *Authorization Code + PKCE* entièrement géré **côté front** (client public Angular, pas de secret). Le back ne reçoit que le token : il ne fait **pas** de session, il valide le JWT Zitadel à chaque requête (signature via JWKS découvert depuis l'issuer, vérif `issuer` / `audience` / expiration) et lit les rôles dans les claims. Seuls deux réglages côté API : `OIDC_ISSUER` et `OIDC_AUDIENCE`.
-- **Élève** : **non authentifié**. L'accès est porté par un *token de partage* opaque (cf. 5.6), pas par une identité.
+- **Élève** : **non authentifié** pour la consultation. L'accès aux cours partagés est porté par un *token de partage* opaque (cf. 5.6), pas par une identité. Un élève *peut* toutefois créer un compte OIDC pour disposer d'un profil — cela ne change rien au régime d'accès aux liens publics.
 - Conséquence : des routes « admin » (JWT requis) et des routes « publiques » (token de partage requis) bien séparées, avec deux dépendances d'autorisation distinctes côté FastAPI.
+- **Comptes & profil** : l'API ne stocke toujours aucun credential — la table `users` ne porte que le `sub` OIDC (auto-provisioning au premier `GET /api/v1/users/me` d'un JWT valide, `ON CONFLICT DO NOTHING`), l'e-mail en snapshot et le profil d'onboarding (rôles cumulables `est_prof`/`est_eleve`, système scolaire, niveaux et matières par contexte). Les rôles applicatifs vivent **en base**, indépendants des rôles Zitadel des claims (`urn:zitadel:iam:...`) : changer d'IdP ne touche ni le modèle ni l'onboarding.
 
 ### 5.2 Stockage & gestion des fichiers (S3)
 - **Bucket privé**, jamais exposé directement. L'API mint des **URL présignées** : `PUT` pour l'upload, `GET` (TTL court) pour la lecture/téléchargement.
@@ -160,12 +163,24 @@ erDiagram
     SUBJECT ||--o{ COURSE : contient
     EDUCATION_LEVEL ||--o{ EDUCATION_LEVEL : contient
     COURSE  }o--o{ EDUCATION_LEVEL : vise
+    USER    }o--o{ SUBJECT : pratique
+    USER    }o--o{ EDUCATION_LEVEL : frequente
     COURSE  ||--o{ BLOCK : ordonne
     COURSE  ||--o{ RESOURCE : rassemble
     BLOCK   }o--o| RESOURCE : reference
     COURSE  ||--o{ SHARE_LINK : expose
     RESOURCE ||--o| MODULE : peut_etre
 
+    USER {
+      uuid id
+      string sub
+      string email
+      bool est_prof
+      bool est_eleve
+      string systeme_scolaire
+      timestamptz onboarded_at
+      timestamptz updated_at
+    }
     SUBJECT {
       uuid id
       uuid parent_id
@@ -223,7 +238,9 @@ erDiagram
 
 `SUBJECT` est auto-référencée : discipline (profondeur 0) → domaine (1) → sous-domaine (2) → sujet (3), profondeur flexible (une branche peut s'arrêter avant le niveau 3). La taxonomie est pré-remplie par une migration de seed (IDs uuid5 déterministes dérivés du `code`, chemin slug complet — source de vérité : `app/subjects/seed_data.py`, contrat append-only).
 
-`EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`systeme`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association, remplace l'ancien champ texte `niveau`) et le futur profil prof (matières + niveaux par défaut) sont un contrat documenté, pas encore implémenté.
+`EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`systeme`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association, remplace l'ancien champ texte `niveau`) est un contrat documenté, pas encore implémenté.
+
+`USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `contexte` (« enseigne » / « apprend ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `systeme_scolaire` du profil (validation en service ; soumission `PUT /api/v1/users/me/onboarding`, sémantique remplacement → sert aussi d'édition de profil).
 
 ---
 
@@ -237,6 +254,8 @@ erDiagram
 | **J3 — Recherche** | FTS Postgres + facettes | Retrouver n'importe quel support |
 | **J4 — Interactif** | Upload + sandbox des modules HTML/JS | Intégrer un quiz dans un cours |
 | **J5 — IA** | extraction texte, vectorisation (ChromaDB, si actée), recherche sémantique / RAG | Première brique IA |
+
+Livré hors jalon, en extension du socle J0 : comptes applicatifs (`users`, auto-provisioning par `sub`) et onboarding bloquant (rôles cumulables prof/élève, système scolaire, niveaux, matières) — cf. §2, §5.1 et §6.
 
 ---
 
