@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Backend FastAPI d'une plateforme pédagogique auto-hébergée (Raspberry Pi) : un prof compose des cours par blocs et les partage à ses élèves via des liens publics. Le cahier des charges complet (architecture cible, enjeux, modèle de données, roadmap J0→J5) est dans **Descriptions.md** — le lire avant tout travail de fond ; il fait foi et doit être mis à jour quand une décision d'architecture change. Le projet en est au jalon J0 (socle). L'utilisateur échange en français.
+Backend FastAPI d'une plateforme pédagogique auto-hébergée (Raspberry Pi) : un prof compose des cours par blocs et les partage à ses élèves via des liens publics. Le cahier des charges complet (architecture cible, enjeux, modèle de données, roadmap J0→J5) est dans **Descriptions.md** — le lire avant tout travail de fond ; il fait foi et doit être mis à jour quand une décision d'architecture change. Le projet en est au jalon J0 (socle) ; la taxonomie des matières (livrable J1) est en place. L'utilisateur échange en français.
 
 ## Commands
 
@@ -38,8 +38,11 @@ Priorité décroissante : variables d'env > `.env` > `config/<APP_ENV>.yaml` (`A
 - Package-by-feature : chaque domaine (courses, subjects, resources…) = un package `app/<feature>/` avec `schemas.py`, `service.py` (logique métier), `router.py` (HTTP), monté dans `create_app()` sous `settings.API_V1_PREFIX`.
 - Les modèles SQLAlchemy vivent dans **`app/models/<nom>.py`** (un module par modèle) et doivent être importés + listés dans `__all__` de `app/models/__init__.py`, sinon Alembic autogenerate ne les voit pas.
 
+### Taxonomie des matières (`subjects`)
+Table unique **auto-référencée** (`app/models/subject.py`) : discipline (profondeur 0) → domaine (1) → sous-domaine (2) → sujet (3), profondeur flexible (une branche peut s'arrêter avant 3, CHECK en base) ; unicité `(parent_id, nom)` en `NULLS NOT DISTINCT` (Postgres 15+), FK `parent_id` en `ondelete=CASCADE`. Chaque nœud porte un `code` = chemin slug complet unique (ex. `mathematiques.algebre.algebre-lineaire`) dont dérive son id **uuid5 déterministe**. La taxonomie pré-remplie (~475 nœuds, lycée → master) vit dans **`app/subjects/seed_data.py` — module de données pur et APPEND-ONLY** : ne jamais changer `SEED_NAMESPACE` ni renommer/supprimer un `code` existant (la migration de seed idempotente `ON CONFLICT DO NOTHING` et les IDs en dépendent) ; tout ajout passe par une nouvelle data migration réutilisant `iter_rows()`. Lecture : `GET /api/v1/subjects/tree` — une seule requête SQL, arbre assemblé en O(n) dans `app/subjects/service.py` (les relations ORM `parent`/`children` ne sont pas chargées : lazy-load async interdit). Le CRUD prof arrivera au J1.
+
 ### Tests sans dépendances externes
-`tests/conftest.py` fournit : clé RSA de session + `make_token(...)` (signe des JWT RS256 avec `kid` de test, iss/aud/exp valides par défaut et surchargables), `mock_jwks` (monkeypatch de `jwks_cache.get_signing_key` — aucun réseau), `client`. Pour tester une route protégée sans crypto : `app.dependency_overrides[get_current_user]`. Aucun test ne requiert Postgres ni Zitadel.
+`tests/conftest.py` fournit : clé RSA de session + `make_token(...)` (signe des JWT RS256 avec `kid` de test, iss/aud/exp valides par défaut et surchargables), `mock_jwks` (monkeypatch de `jwks_cache.get_signing_key` — aucun réseau), `client`. Pour tester une route protégée sans crypto : `app.dependency_overrides[get_current_user]` ; pour une route qui lit la base : `app.dependency_overrides[get_db]` avec une fausse session (motif de référence : `tests/test_subjects_api.py`). Aucun test ne requiert Postgres ni Zitadel.
 
 ## Décisions actées (ne pas "corriger")
 
@@ -48,3 +51,4 @@ Priorité décroissante : variables d'env > `.env` > `config/<APP_ENV>.yaml` (`A
 - **Dépendances IA de `requirements.txt` (langchain*, sentence-transformers, chromadb, redis, psycopg2-binary) volontairement conservées** bien qu'inutilisées au J0 — ne pas les purger.
 - **`scripts/` est écrit et maintenu à la main par l'utilisateur** — ne pas le modifier sans demande explicite.
 - Contrainte transverse (Descriptions.md §5.8) : cible Raspberry Pi ARM64 — déporter le lourd (transferts via URL S3 présignées, jobs asynchrones), images Docker multi-arch.
+- L'utilisateur s'occupe toujours de faire les commande alembic pour créer les migrations et les appliquer

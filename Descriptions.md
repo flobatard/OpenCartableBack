@@ -123,7 +123,7 @@ Pour « agencer texte de cours + documents + images », le modèle gagnant est u
 
 ### 5.4 Recherche
 - MVP : **Full-Text Search Postgres** (`tsvector` + index GIN) sur titres de cours, texte des blocs, noms et tags de ressources. Configuration `french` pour le *stemming*.
-- Facettes : matière, niveau, type de ressource (filtres SQL classiques).
+- Facettes : matière (taxonomie hiérarchique `subjects`, filtre par sous-arbre), niveau, type de ressource (filtres SQL classiques).
 - Évolution : recherche **sémantique** via ChromaDB si la vectorisation est actée (cf. 5.7), combinable avec la FTS (recherche hybride).
 
 ### 5.5 Modules interactifs HTML/JS
@@ -156,6 +156,7 @@ Le point le plus sensible niveau sécurité : tu vas servir du **code arbitraire
 
 ```mermaid
 erDiagram
+    SUBJECT ||--o{ SUBJECT : contient
     SUBJECT ||--o{ COURSE : contient
     COURSE  ||--o{ BLOCK : ordonne
     COURSE  ||--o{ RESOURCE : rassemble
@@ -165,7 +166,12 @@ erDiagram
 
     SUBJECT {
       uuid id
+      uuid parent_id
       string nom
+      string code
+      int profondeur
+      int position
+      timestamptz updated_at
     }
     COURSE {
       uuid id
@@ -200,6 +206,8 @@ erDiagram
       bool revoked
     }
 ```
+
+`SUBJECT` est auto-référencée : discipline (profondeur 0) → domaine (1) → sous-domaine (2) → sujet (3), profondeur flexible (une branche peut s'arrêter avant le niveau 3). La taxonomie est pré-remplie par une migration de seed (IDs uuid5 déterministes dérivés du `code`, chemin slug complet — source de vérité : `app/subjects/seed_data.py`, contrat append-only).
 
 ---
 

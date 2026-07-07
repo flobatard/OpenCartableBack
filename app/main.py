@@ -7,6 +7,7 @@ from app.auth.router import router as auth_router
 from app.core.config import settings
 from app.core.database import engine
 from app.health.router import router as health_router
+from app.subjects.router import router as subjects_router
 
 
 @asynccontextmanager
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router, prefix=settings.API_V1_PREFIX)
     app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
+    app.include_router(subjects_router, prefix=settings.API_V1_PREFIX)
 
     return app
 

@@ -11,9 +11,11 @@ CORS_ORIGINS:
 # Postgres local
 POSTGRES_USER: cartable
 POSTGRES_HOST: localhost
-POSTGRES_PORT: 5432
+POSTGRES_PORT: 5429
 POSTGRES_DB: cartable
 
 # Zitadel de dev — remplacer par votre instance
-OIDC_ISSUER: https://votre-instance-dev.zitadel.cloud
-OIDC_AUDIENCE: cartable-api-dev
+OIDC_ISSUER: https://zitadel.home.fbatard.fr
+# ID de projet Zitadel (2e entrée du claim `aud` du token ; l'autre est le
+# client_id de la SPA). Le resource server exige la présence de cette audience.
+OIDC_AUDIENCE: "380648758204956674"

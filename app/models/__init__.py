@@ -10,5 +10,6 @@ are registered on ``Base.metadata`` and picked up by Alembic autogenerate:
 """
 
 from app.core.database import Base  # noqa: F401
+from app.models.subject import Subject
 
-__all__ = ["Base"]
+__all__ = ["Base", "Subject"]
