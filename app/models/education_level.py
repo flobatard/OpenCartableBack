@@ -70,7 +70,7 @@ class EducationLevel(Base):
     # Slug stable écrit à la main, préfixé par le système (ex. "fr.college.6e") —
     # contrairement aux subjects, JAMAIS dérivé du nom affiché.
     code: Mapped[str] = mapped_column(String(100), unique=True)
-    systeme: Mapped[str] = mapped_column(String(20))
+    systeme: Mapped[str] = mapped_column(String(20), index=True)
     cite: Mapped[int | None] = mapped_column(SmallInteger)
     age_min: Mapped[int | None] = mapped_column(SmallInteger)
     age_max: Mapped[int | None] = mapped_column(SmallInteger)

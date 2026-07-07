@@ -1,7 +1,8 @@
 """seed education levels
 
-Insère la classification pré-remplie des niveaux d'étude (22 nœuds, système
-français, primaire -> doctorat, voie générale). Idempotent : les IDs sont des
+Insère la classification pré-remplie des niveaux d'étude (233 nœuds, 12
+systèmes scolaires : fr, de, uk, es, it, be, ch, nl, pt, us, ca, ca-qc —
+voie générale, hors préélémentaire). Idempotent : les IDs sont des
 uuid5 déterministes dérivés du ``code``, donc ON CONFLICT DO NOTHING permet de
 rejouer la migration sans doublon. La seule dépendance applicative est
 ``app.education_levels.seed_data``, module de données pur et append-only
