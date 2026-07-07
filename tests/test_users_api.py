@@ -1,4 +1,4 @@
-"""Routes /users/me et /users/me/onboarding — aucun Postgres requis.
+"""Routes /users/me et /users/me/profile — aucun Postgres requis.
 
 La fausse session sert les résultats des SELECT dans l'ordre des ``execute``
 du service (FIFO, ordre documenté dans app/users/service.py) ; les
@@ -90,7 +90,7 @@ def test_me_requires_auth(client: TestClient):
 
 
 def test_onboarding_requires_auth(client: TestClient):
-    response = client.put("/api/v1/users/me/onboarding", json={})
+    response = client.put("/api/v1/users/me/profile", json={})
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
@@ -177,7 +177,7 @@ def _bloc(niveaux=None, matieres=None):
 )
 def test_onboarding_payload_invalide_sans_acces_bdd(payload):
     session = _FakeSession()
-    response = _client(session).put("/api/v1/users/me/onboarding", json=payload)
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert session.executed == []
 
@@ -187,7 +187,7 @@ def test_onboarding_systeme_inconnu():
     session = _FakeSession([[user], ["fr", "uk"]])
     payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "xx",
                "enseignement": _bloc()}
-    response = _client(session).put("/api/v1/users/me/onboarding", json=payload)
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "Système scolaire inconnu" in response.json()["detail"]
 
@@ -197,7 +197,7 @@ def test_onboarding_niveau_inconnu():
     session = _FakeSession([[user], ["fr"], []])  # lookup niveaux vide
     payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
                "enseignement": _bloc()}
-    response = _client(session).put("/api/v1/users/me/onboarding", json=payload)
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "Niveaux d'étude inconnus" in response.json()["detail"]
 
@@ -208,7 +208,7 @@ def test_onboarding_niveau_hors_systeme():
     session = _FakeSession([[user], ["fr", "uk"], [(niveau_uk, "uk")]])
     payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
                "enseignement": _bloc(niveaux=[niveau_uk])}
-    response = _client(session).put("/api/v1/users/me/onboarding", json=payload)
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "hors du système scolaire 'fr'" in response.json()["detail"]
 
@@ -219,7 +219,7 @@ def test_onboarding_matiere_inconnue():
     session = _FakeSession([[user], ["fr"], [(niveau, "fr")], []])  # lookup matières vide
     payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
                "enseignement": _bloc(niveaux=[niveau])}
-    response = _client(session).put("/api/v1/users/me/onboarding", json=payload)
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "Matières inconnues" in response.json()["detail"]
 
@@ -243,7 +243,7 @@ def test_onboarding_happy_path_double_role():
         "enseignement": _bloc(niveaux=[niveau_e], matieres=[matiere_e]),
         "apprentissage": _bloc(niveaux=[niveau_a], matieres=[matiere_a]),
     }
-    response = _client(session).put("/api/v1/users/me/onboarding", json=payload)
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
     body = response.json()
@@ -280,7 +280,7 @@ def test_onboarding_dedoublonne_et_conserve_la_date():
         "systeme_scolaire": "fr",
         "enseignement": _bloc(niveaux=[niveau, niveau], matieres=[matiere, matiere]),
     }
-    response = _client(session).put("/api/v1/users/me/onboarding", json=payload)
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
     assert response.json()["enseignement"]["education_level_ids"] == [str(niveau)]

@@ -22,7 +22,7 @@ class UserProfileRead(BaseModel):
     apprentissage: ProfilContexte | None
 
 
-class OnboardingSubmit(BaseModel):
+class ProfileUpdate(BaseModel):
     est_prof: bool
     est_eleve: bool
     systeme_scolaire: str = Field(min_length=1, max_length=20)
@@ -30,7 +30,7 @@ class OnboardingSubmit(BaseModel):
     apprentissage: ProfilContexte | None = None
 
     @model_validator(mode="after")
-    def _roles_et_blocs_coherents(self) -> "OnboardingSubmit":
+    def _roles_et_blocs_coherents(self) -> "ProfileUpdate":
         if not (self.est_prof or self.est_eleve):
             raise ValueError("Au moins un rôle (est_prof ou est_eleve) est requis")
         for role, bloc, nom in (

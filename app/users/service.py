@@ -1,4 +1,4 @@
-"""Profil utilisateur : auto-provisioning par ``sub`` et onboarding.
+"""Profil utilisateur : auto-provisioning par ``sub`` et mise à jour du profil.
 
 L'ordre des ``execute`` de chaque fonction est stable et documenté : les
 tests le rejouent avec une fausse session FIFO (voir tests/test_users_api.py).
@@ -23,7 +23,7 @@ from app.models.user import (
     user_education_levels,
     user_subjects,
 )
-from app.users.schemas import OnboardingSubmit, ProfilContexte, UserProfileRead
+from app.users.schemas import ProfilContexte, ProfileUpdate, UserProfileRead
 
 
 def _dedupe(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
@@ -120,12 +120,12 @@ async def read_profile(db: AsyncSession, user: User) -> UserProfileRead:
     return _profil(user, enseignement, apprentissage)
 
 
-async def complete_onboarding(
-    db: AsyncSession, user: User, payload: OnboardingSubmit
+async def update_profile(
+    db: AsyncSession, user: User, payload: ProfileUpdate
 ) -> UserProfileRead:
     """Valide puis enregistre le profil (PUT = remplacement, rejouable).
 
-    La cohérence rôles/blocs est déjà garantie par ``OnboardingSubmit``.
+    La cohérence rôles/blocs est déjà garantie par ``ProfileUpdate``.
     Ordre des execute : 1) systèmes distincts, 2) lookup niveaux,
     3) lookup matières, 4) delete niveaux, 5) delete matières,
     6) insert niveaux, 7) insert matières.
