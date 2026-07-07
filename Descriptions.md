@@ -115,13 +115,15 @@ Le point structurant : **deux populations, deux modèles d'accès** sur la même
 - **Bucket privé**, jamais exposé directement. L'API mint des **URL présignées** : `PUT` pour l'upload, `GET` (TTL court) pour la lecture/téléchargement.
 - **Upload direct navigateur → S3** via presigned PUT, pour ne **pas** faire transiter les gros fichiers par le backend (essentiel vu l'hébergement sur Pi : on préserve RAM et bande passante du serveur).
 - **Organisation** : arborescence S3 *plate* (clé = `uuid/nom-original`) + toute la hiérarchie logique (matière → cours → ressource) portée par la **base**, pas par les préfixes S3. Plus souple pour réorganiser sans déplacer des octets.
+- **Cohérence DB↔S3** : la ligne `resource` est créée *avant* l'upload avec `statut='en_attente'` ; un endpoint de confirmation vérifie l'objet (HEAD S3) et passe le statut à `'disponible'`. Seules les ressources disponibles sont servies.
 - **Types & previews** : PDF et images au MVP. Génération de miniatures/aperçus à différer (coûteux en CPU sur ARM — à faire en tâche asynchrone, voire à la demande).
 
 ### 5.3 Modélisation du contenu : le cours comme suite de blocs
 Pour « agencer texte de cours + documents + images », le modèle gagnant est un **contenu par blocs ordonnés** (façon éditeur type Notion, en plus simple).
-- Un cours = une liste ordonnée de blocs : `paragraphe`, `titre`, `image`, `fichier`, `module interactif`, `encadré`.
-- Le **texte riche** est stocké en **JSONB** (structure de blocs), pas en HTML brut → plus sûr, plus facile à réindexer et à exploiter plus tard par l'IA.
-- Les blocs « média » ne contiennent qu'une **référence** vers une ligne `resource` (elle-même pointant vers S3). Le binaire et l'éditorial restent découplés.
+- Un cours = une liste ordonnée de blocs de quatre types : `texte`, `exercice`, `ressource`, `lien`.
+- Le **texte de cours** (bloc `texte`) est du **markdown simple stocké dans le JSONB du bloc** (`{"markdown": ...}`) — pas de HTML brut : plus sûr, réindexable, directement exploitable par l'IA. Titres, paragraphes et encadrés sont couverts par le markdown, sans types de blocs dédiés.
+- Les **exercices** (bloc `exercice`) portent des questions à champ libre dans le JSONB, chacune avec un **id uuid stable** généré côté service : les soumissions élèves (J2) et la review IA référenceront `(block_id, question_id)`.
+- Les blocs `ressource` ne contiennent qu'une **référence** vers une ligne `resource` (elle-même pointant vers S3 : document, image, audio, vidéo ou module). Le binaire et l'éditorial restent découplés. Les blocs `lien` (embed externe, ex. YouTube) gardent l'URL dans le JSONB, rien sur S3.
 - Enjeu UX côté Angular : éditeur d'ordre des blocs (drag & drop) et insertion de ressources existantes ou nouvelles.
 
 ### 5.4 Recherche
@@ -160,9 +162,10 @@ Le point le plus sensible niveau sécurité : tu vas servir du **code arbitraire
 ```mermaid
 erDiagram
     SUBJECT ||--o{ SUBJECT : contient
-    SUBJECT ||--o{ COURSE : contient
+    COURSE  }o--o{ SUBJECT : traite
     EDUCATION_LEVEL ||--o{ EDUCATION_LEVEL : contient
     COURSE  }o--o{ EDUCATION_LEVEL : vise
+    USER    ||--o{ COURSE : possede
     USER    }o--o{ SUBJECT : pratique
     USER    }o--o{ EDUCATION_LEVEL : frequente
     COURSE  ||--o{ BLOCK : ordonne
@@ -205,27 +208,36 @@ erDiagram
     }
     COURSE {
       uuid id
+      uuid owner_id
       string titre
+      string description
       tsvector search_vector
       timestamptz updated_at
     }
     BLOCK {
       uuid id
+      uuid course_id
+      uuid resource_id
       int position
       string type
       jsonb content
+      timestamptz updated_at
     }
     RESOURCE {
       uuid id
+      uuid course_id
       string type
       string s3_key
       string nom_original
       bigint taille
       string mime
+      string statut
+      timestamptz updated_at
     }
     MODULE {
       uuid id
-      string version
+      uuid resource_id
+      int version
       string entrypoint
     }
     SHARE_LINK {
@@ -238,9 +250,11 @@ erDiagram
 
 `SUBJECT` est auto-référencée : discipline (profondeur 0) → domaine (1) → sous-domaine (2) → sujet (3), profondeur flexible (une branche peut s'arrêter avant le niveau 3). La taxonomie est pré-remplie par une migration de seed (IDs uuid5 déterministes dérivés du `code`, chemin slug complet — source de vérité : `app/subjects/seed_data.py`, contrat append-only).
 
-`EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`systeme`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association, remplace l'ancien champ texte `niveau`) est un contrat documenté, pas encore implémenté.
+`EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`systeme`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association `course_education_levels`, remplace l'ancien champ texte `niveau`) est implémenté.
 
 `USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `contexte` (« enseigne » / « apprend ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `systeme_scolaire` du profil (validation en service ; soumission `PUT /api/v1/users/me/onboarding`, sémantique remplacement → sert aussi d'édition de profil).
+
+`COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`texte`/`exercice`/`ressource`/`lien`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `ressource` portent une FK `resource_id` (CHECK de cohérence en base). `RESOURCE` rattache un fichier S3 à son cours : `s3_key` plate unique, ligne créée en `statut='en_attente'` avant l'upload presigned puis confirmée `'disponible'` (cf. §5.2). `MODULE` est la spécialisation 0..1 d'une ressource de `type='module'` (bundle HTML/JS versionné par clé S3 `module-id/vN/...`, `entrypoint` relatif au bundle). Restent à venir : `SHARE_LINK` (J2) et le `search_vector` FTS de `COURSE` (J3).
 
 ---
 
