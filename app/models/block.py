@@ -7,7 +7,9 @@ les positions en bloc côté service). Le ``content`` JSONB porte le contenu
 éditorial ; son schéma est un contrat applicatif, par ``type`` :
 
 - ``texte`` : ``{"markdown": "..."}`` — cours magistral en markdown simple
-  (pas de HTML brut), directement consultable par l'IA.
+  (pas de HTML brut), directement consultable par l'IA. Le markdown peut
+  contenir des formules LaTeX — ``$…$`` en ligne, ``$$…$$`` centrée —
+  stockées telles quelles et rendues par KaTeX côté front.
 - ``exercice`` : ``{"enonce": "md", "questions": [{"id": "<uuid4>",
   "enonce": "md", "type": "texte_libre"}]}`` — les ``questions[].id`` sont
   générés côté service et **stables à vie** : les futures soumissions élèves

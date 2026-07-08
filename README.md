@@ -15,16 +15,34 @@ app/
 │   └── auth.py        # Zitadel JWT validation (JWKS) + get_current_user
 ├── models/            # one module per model, all re-exported in __init__.py
 ├── health/            # healthcheck (public)
-└── auth/              # protected demo route GET /me
+├── auth/              # GET /me (token identity)
+├── users/             # application accounts + profile (onboarding)
+├── subjects/          # subjects taxonomy (tree endpoint + seed)
+├── education_levels/  # education levels per school system (tree endpoint + seed)
+└── courses/           # teacher courses: CRUD, block structure, text block content
 config/                # public per-environment settings (development.yaml, production.yaml)
 alembic/               # migrations (async env.py)
 tests/                 # pytest (no network, no real Zitadel needed)
 ```
 
-Each new domain (courses, subjects, resources, ...) is a new package under `app/`
+Each new domain (resources, share links, ...) is a new package under `app/`
 with its `schemas.py`, `service.py` and `router.py`; its models go in
 `app/models/<name>.py` and are imported (and listed in `__all__`) in
 `app/models/__init__.py` so Alembic autogenerate sees them.
+
+## API overview
+
+All endpoints live under `/api/v1` and require a Bearer JWT, except `/health`:
+
+- `GET /me` — identity extracted from the token.
+- `GET /users/me` (auto-provisions the account) · `PUT /users/me/profile` — onboarding & profile edition.
+- `GET /subjects/tree` · `GET /education-levels/tree` — seeded reference taxonomies.
+- `GET|POST /courses` · `GET /courses/{id}` — the teacher's courses (owner-scoped:
+  someone else's course is a 404).
+- `POST /courses/{id}/blocks` · `PUT /courses/{id}/blocks/order` ·
+  `PATCH|DELETE /courses/{id}/blocks/{block_id}` — ordered course blocks. Text
+  block content is markdown and may embed LaTeX math (`$…$`, `$$…$$`), stored
+  as-is and rendered by the front end.
 
 ## Configuration
 

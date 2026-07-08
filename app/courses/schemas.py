@@ -59,7 +59,8 @@ class BlockCreate(BaseModel):
 
 
 class TexteContent(BaseModel):
-    # Contrat de app/models/block.py : markdown simple, jamais de HTML brut.
+    # Contrat de app/models/block.py : markdown simple, jamais de HTML brut ;
+    # formules LaTeX admises dans la chaîne ($…$ en ligne, $$…$$ centrée).
     # Pas de trim ni min_length : le blanc est signifiant en markdown et
     # vider un bloc est légitime.
     model_config = ConfigDict(extra="forbid")
