@@ -54,6 +54,17 @@ async def read_course(
     return await service.get_course_detail(db, user, course_id)
 
 
+@router.delete("/courses/{course_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_course(
+    course_id: uuid.UUID,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Supprime un cours et tout son contenu (blocs, ressources, classement)."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    await service.delete_course(db, user, course_id)
+
+
 @router.post(
     "/courses/{course_id}/blocks",
     response_model=BlockRead,

@@ -137,6 +137,7 @@ _BLOCK_ID = uuid.uuid4()
             {"content": {"markdown": "x"}},
         ),
         ("DELETE", f"/api/v1/courses/{_COURSE_ID}/blocks/{_BLOCK_ID}", None),
+        ("DELETE", f"/api/v1/courses/{_COURSE_ID}", None),
     ],
 )
 def test_routes_requierent_auth(client: TestClient, method, path, body):
@@ -560,6 +561,28 @@ def test_suppression_cours_non_possede():
     response = _client(session).delete(f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}")
 
     assert response.status_code == 404
+    assert _deletes(session) == []
+
+
+def test_suppression_cours():
+    user = _user_row()
+    course = _course_row()
+    session = _FakeSession([[user], [course]])
+    response = _client(session).delete(f"/api/v1/courses/{course.id}")
+
+    assert response.status_code == 204
+    [(stmt, _)] = _deletes(session)
+    assert stmt.table.name == "courses"  # cascade FK : blocs/ressources/classement
+    assert session.commits >= 1
+
+
+def test_suppression_cours_non_possede_404():
+    user = _user_row()
+    session = _FakeSession([[user], []])  # select cours scopé owner → vide
+    response = _client(session).delete(f"/api/v1/courses/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cours introuvable"
     assert _deletes(session) == []
 
 

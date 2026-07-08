@@ -283,6 +283,21 @@ async def get_course_detail(
     return CourseDetailRead(**base.model_dump(), blocks=[_block_read(b) for b in blocks])
 
 
+async def delete_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> None:
+    """Supprime un cours du prof ; 404 s'il n'existe pas ou appartient à autrui.
+
+    Ordre des execute : 1) cours (contrôle de propriété), 2) delete. Les blocs,
+    ressources et lignes de classement (course_subjects/course_education_levels)
+    partent en cascade via les FK ``ondelete=CASCADE``.
+    """
+    course = await _get_owned_course(db, user, course_id)
+    # TODO(J2/S3) : le cascade DB supprime les lignes ``resources``, mais pas les
+    # fichiers dans S3. Avant ce delete, énumérer les resources du cours et
+    # supprimer leurs objets S3 (par s3_key) pour ne pas laisser d'orphelins.
+    await db.execute(delete(Course).where(Course.id == course.id))
+    await db.commit()
+
+
 async def add_block(
     db: AsyncSession, user: User, course_id: uuid.UUID, payload: BlockCreate
 ) -> BlockRead:
