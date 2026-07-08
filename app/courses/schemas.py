@@ -1,9 +1,10 @@
 """Schémas des cours et de la structure de leurs blocs.
 
-L'édition du contenu des blocs (éditeurs dédiés par type) est un scope
-ultérieur : ``BlockCreate`` ne porte que le ``type`` (et les métadonnées
+``BlockCreate`` ne porte que le ``type`` (et les métadonnées
 ``titre``/``description``, communes à tous les types), le service pose un
 ``content`` par défaut conforme au contrat de :mod:`app.models.block`.
+Le contenu s'édite ensuite via ``BlockUpdate.content`` (une forme par type
+de bloc : ``TexteContent``, ``ExerciceContent`` ; ``lien`` à venir).
 """
 
 import uuid
@@ -74,23 +75,59 @@ class TexteContent(BaseModel):
     markdown: str = Field(max_length=100_000)
 
 
+class ExerciceQuestion(BaseModel):
+    """Question à réponse libre d'un bloc exercice.
+
+    ``id`` absent/``None`` = nouvelle question (uuid4 généré par le
+    service) ; un id fourni doit déjà exister dans le bloc édité (ids
+    stables à vie, cf. :mod:`app.models.block`) — 422 côté service sinon.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID | None = None
+    enonce: str = Field(max_length=20_000)
+    type: Literal["texte_libre"] = "texte_libre"
+    # Corrigé du prof, texte simple (pas de markdown) — jamais servi aux
+    # élèves (le J2 filtrera le content des liens publics).
+    reponse_attendue: str = Field(default="", max_length=20_000)
+
+
+class ExerciceContent(BaseModel):
+    # Contrat de app/models/block.py : sujet markdown + questions ordonnées.
+    # Sémantique REMPLACEMENT : une question absente du payload est
+    # supprimée. ``questions`` requis sans défaut, exprès : la forme reste
+    # disjointe de TexteContent (smart union sans discriminant) et un payload
+    # partiel ne peut pas effacer les questions en validant à moitié.
+    model_config = ConfigDict(extra="forbid")
+
+    enonce: str = Field(max_length=100_000)
+    questions: list[ExerciceQuestion] = Field(max_length=50)
+
+    @model_validator(mode="after")
+    def _ids_sans_doublons(self) -> "ExerciceContent":
+        ids = [q.id for q in self.questions if q.id is not None]
+        if len(set(ids)) != len(ids):
+            raise ValueError("questions contient des ids dupliqués")
+        return self
+
+
 class BlockUpdate(BaseModel):
     """Édition partielle d'un bloc.
 
     ``titre``/``description`` s'appliquent à tous les types de bloc ;
-    ``content`` reste réservé aux blocs texte (cf. ``update_block`` du
-    service). Seuls les champs effectivement fournis sont modifiés — un
+    ``content`` est une union de formes disjointes (``extra="forbid"`` des
+    deux côtés) — le service vérifie que la forme reçue correspond au type
+    du bloc. Seuls les champs effectivement fournis sont modifiés — un
     ``titre``/``description`` explicitement à ``null`` l'efface, un champ
-    absent le laisse inchangé (``model_fields_set``). Enveloppe extensible :
-    quand les éditeurs exercice/lien arriveront, `content` deviendra une
-    union de formes disjointes (extra="forbid").
+    absent le laisse inchangé (``model_fields_set``).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     titre: str | None = Field(default=None, max_length=300)
     description: str | None = Field(default=None, max_length=500)
-    content: TexteContent | None = None
+    content: TexteContent | ExerciceContent | None = None
 
     @model_validator(mode="after")
     def _au_moins_un_champ(self) -> "BlockUpdate":

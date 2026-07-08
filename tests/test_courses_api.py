@@ -493,7 +493,7 @@ def test_edition_contenu_bloc_introuvable():
     assert response.json()["detail"] == "Bloc introuvable"
 
 
-def test_edition_contenu_refuse_les_types_non_texte():
+def test_edition_contenu_texte_sur_bloc_lien_rejetee():
     user = _user_row()
     course = _course_row()
     contenu_initial = {"url": "https://ex.org", "titre": "", "fournisseur": None}
@@ -505,21 +505,64 @@ def test_edition_contenu_refuse_les_types_non_texte():
     )
 
     assert response.status_code == 422
-    assert "Seuls les blocs" in response.json()["detail"]
+    assert "correspond à un bloc" in response.json()["detail"]
     assert block.content == contenu_initial
     assert course.updated_at == _NOW
     # Seul commit : celui de get_or_create_by_sub (upsert auth) — pas d'écriture cours.
     assert session.commits == 1
 
 
+def test_edition_contenu_exercice_sur_bloc_texte_rejetee():
+    # Garde-fou symétrique : une forme exercice sur un bloc texte est refusée.
+    user = _user_row()
+    course = _course_row()
+    block = _block_row()
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"content": {"enonce": "", "questions": []}},
+    )
+
+    assert response.status_code == 422
+    assert "correspond à un bloc" in response.json()["detail"]
+    assert block.content == {"markdown": ""}
+    assert course.updated_at == _NOW
+    assert session.commits == 1
+
+
+_QUESTION_ID = str(uuid.uuid4())
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         {},  # content manquant
-        {"content": {}},  # markdown manquant
+        {"content": {}},  # aucune branche de l'union
         {"content": {"markdown": None}},
         {"content": {"markdown": "x" * 100_001}},  # trop long
         {"content": {"markdown": "x", "html": "<b>"}},  # clé en trop (extra=forbid)
+        {"content": {"enonce": "x"}},  # questions manquantes (requis sans défaut)
+        {"content": {"enonce": "x" * 100_001, "questions": []}},  # sujet trop long
+        {"content": {"enonce": "", "questions": [], "extra": 1}},  # clé en trop
+        {"content": {"enonce": "", "questions": [{"reponse_attendue": "r"}]}},  # sans énoncé
+        {"content": {"enonce": "", "questions": [{"enonce": "q", "note": 1}]}},  # clé en trop
+        {"content": {"enonce": "", "questions": [{"enonce": "q", "type": "qcm"}]}},
+        {"content": {"enonce": "", "questions": [{"enonce": "q"}] * 51}},  # > 50 questions
+        {
+            "content": {
+                "enonce": "",
+                "questions": [{"enonce": "q", "reponse_attendue": "r" * 20_001}],
+            }
+        },
+        {
+            "content": {
+                "enonce": "",
+                "questions": [
+                    {"id": _QUESTION_ID, "enonce": "a"},
+                    {"id": _QUESTION_ID, "enonce": "b"},
+                ],
+            }
+        },  # ids dupliqués
     ],
 )
 def test_edition_contenu_payload_invalide_sans_acces_bdd(payload):
@@ -529,6 +572,156 @@ def test_edition_contenu_payload_invalide_sans_acces_bdd(payload):
     )
     assert response.status_code == 422
     assert session.executed == []
+
+
+def _exercice_row(**overrides):
+    overrides.setdefault("type", "exercice")
+    overrides.setdefault("content", {"enonce": "", "questions": []})
+    return _block_row(**overrides)
+
+
+def test_edition_contenu_bloc_exercice_vide():
+    # Prouve la non-ambiguïté de l'union : le payload exercice minimal ne
+    # matche pas TexteContent et atteint bien la branche exercice.
+    user = _user_row()
+    course = _course_row()
+    block = _exercice_row()
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"content": {"enonce": "", "questions": []}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == {"enonce": "", "questions": []}
+    assert block.content == {"enonce": "", "questions": []}
+    assert course.updated_at != _NOW
+    assert session.commits >= 1
+
+
+def test_edition_contenu_bloc_exercice_nouvelles_questions_recoivent_un_id():
+    user = _user_row()
+    course = _course_row()
+    block = _exercice_row()
+    session = _FakeSession([[user], [course], [block]])
+    payload = {
+        "content": {
+            "enonce": "## Sujet\nSoit $u_n$ une suite.",
+            "questions": [
+                {"enonce": "Montrer que $u_n$ converge.", "reponse_attendue": "Par encadrement."},
+                {"enonce": "Donner sa limite."},
+            ],
+        }
+    }
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
+    )
+
+    assert response.status_code == 200
+    questions = block.content["questions"]
+    assert len(questions) == 2
+    for question in questions:
+        # Le fake ne passe pas par asyncpg : cet isinstance est la seule
+        # garde contre un uuid.UUID non JSON-sérialisable dans le JSONB.
+        assert isinstance(question["id"], str)
+        assert uuid.UUID(question["id"]).version == 4
+        assert question["type"] == "texte_libre"
+    assert questions[0]["id"] != questions[1]["id"]
+    assert questions[0]["reponse_attendue"] == "Par encadrement."
+    assert questions[1]["reponse_attendue"] == ""  # défaut si absente du payload
+    assert block.content["enonce"] == "## Sujet\nSoit $u_n$ une suite."
+    assert response.json()["content"] == block.content
+    assert course.updated_at != _NOW
+
+
+def test_edition_contenu_bloc_exercice_preserve_les_ids_fournis():
+    user = _user_row()
+    course = _course_row()
+    id_existant = str(uuid.uuid4())
+    block = _exercice_row(
+        content={
+            "enonce": "Sujet",
+            "questions": [
+                {"id": id_existant, "enonce": "Q1", "type": "texte_libre", "reponse_attendue": "R1"}
+            ],
+        }
+    )
+    session = _FakeSession([[user], [course], [block]])
+    payload = {
+        "content": {
+            "enonce": "Sujet",
+            "questions": [
+                {"id": id_existant, "enonce": "Q1 modifiée", "reponse_attendue": "R1"},
+                {"enonce": "Q2 nouvelle"},
+            ],
+        }
+    }
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
+    )
+
+    assert response.status_code == 200
+    questions = block.content["questions"]
+    assert questions[0]["id"] == id_existant  # jamais régénéré (stable à vie)
+    assert questions[0]["enonce"] == "Q1 modifiée"
+    assert questions[1]["id"] != id_existant
+    assert uuid.UUID(questions[1]["id"]).version == 4
+
+
+def test_edition_contenu_bloc_exercice_supprime_les_questions_absentes():
+    # Sémantique remplacement : une question absente du payload est supprimée.
+    user = _user_row()
+    course = _course_row()
+    id_gardee = str(uuid.uuid4())
+    id_supprimee = str(uuid.uuid4())
+    block = _exercice_row(
+        content={
+            "enonce": "Sujet",
+            "questions": [
+                {"id": id_gardee, "enonce": "Q1", "type": "texte_libre", "reponse_attendue": ""},
+                {"id": id_supprimee, "enonce": "Q2", "type": "texte_libre", "reponse_attendue": ""},
+            ],
+        }
+    )
+    session = _FakeSession([[user], [course], [block]])
+    payload = {
+        "content": {
+            "enonce": "Sujet",
+            "questions": [{"id": id_gardee, "enonce": "Q1"}],
+        }
+    }
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
+    )
+
+    assert response.status_code == 200
+    questions = block.content["questions"]
+    assert [q["id"] for q in questions] == [id_gardee]
+
+
+def test_edition_contenu_bloc_exercice_id_inconnu_rejete():
+    # Un id jamais vu dans ce bloc = client bugué (ou ids d'un autre bloc) :
+    # 422 strict, avant toute écriture.
+    user = _user_row()
+    course = _course_row()
+    contenu_initial = {"enonce": "", "questions": []}
+    block = _exercice_row(content=dict(contenu_initial))
+    session = _FakeSession([[user], [course], [block]])
+    payload = {
+        "content": {
+            "enonce": "x",
+            "questions": [{"id": str(uuid.uuid4()), "enonce": "Q forgée"}],
+        }
+    }
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
+    )
+
+    assert response.status_code == 422
+    assert "Questions inconnues" in response.json()["detail"]
+    assert block.content == contenu_initial
+    assert course.updated_at == _NOW
+    assert session.commits == 1  # upsert auth seulement
 
 
 def test_suppression_bloc():

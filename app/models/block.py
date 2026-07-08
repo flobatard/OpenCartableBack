@@ -13,7 +13,11 @@ schéma est un contrat applicatif, par ``type`` :
   contenir des formules LaTeX — ``$…$`` en ligne, ``$$…$$`` centrée —
   stockées telles quelles et rendues par KaTeX côté front.
 - ``exercice`` : ``{"enonce": "md", "questions": [{"id": "<uuid4>",
-  "enonce": "md", "type": "texte_libre"}]}`` — les ``questions[].id`` sont
+  "enonce": "md", "type": "texte_libre", "reponse_attendue": "texte"}]}`` —
+  ``enonce`` racine = sujet de l'exercice (markdown, mêmes règles que
+  ``texte``) ; ``reponse_attendue`` = corrigé du prof en texte simple,
+  qui ne devra JAMAIS être servi aux élèves (le jalon J2 filtrera ce champ
+  du content exposé par les liens publics). Les ``questions[].id`` sont
   générés côté service et **stables à vie** : les futures soumissions élèves
   (jalon J2) référenceront ``(block_id, question_id)``, et la review IA aussi.
   Ne jamais régénérer ces ids à l'édition.

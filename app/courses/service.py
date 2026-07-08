@@ -23,6 +23,8 @@ from app.courses.schemas import (
     CourseCreate,
     CourseDetailRead,
     CourseRead,
+    ExerciceContent,
+    TexteContent,
 )
 from app.models.block import TYPE_EXERCICE, TYPE_LIEN, TYPE_TEXTE, Block
 from app.models.course import Course, course_education_levels, course_subjects
@@ -47,14 +49,47 @@ def _introuvable(detail: str) -> HTTPException:
 def _contenu_par_defaut(type_: str) -> dict:
     """Contenu JSONB initial d'un bloc, conforme au contrat de block.py.
 
-    Les éditeurs dédiés (scope ultérieur) rempliront ces gabarits ; les
-    ``questions[].id`` des exercices seront générés à l'ajout des questions.
+    Les éditeurs dédiés rempliront ces gabarits ; les ``questions[].id``
+    des exercices sont générés à l'update (voir ``_contenu_exercice``).
     """
     return {
         TYPE_TEXTE: lambda: {"markdown": ""},
         TYPE_EXERCICE: lambda: {"enonce": "", "questions": []},
         TYPE_LIEN: lambda: {"url": "", "titre": "", "fournisseur": None},
     }[type_]()
+
+
+# Forme de content admise par type de bloc (garde-fou d'update_block).
+_TYPE_PAR_CONTENU = {TexteContent: TYPE_TEXTE, ExerciceContent: TYPE_EXERCICE}
+
+
+def _contenu_exercice(block: Block, content: ExerciceContent) -> dict:
+    """Nouveau dict JSONB d'un bloc exercice.
+
+    Les ids fournis sont préservés et doivent exister dans le bloc édité
+    (422 sinon — ids stables à vie, cf. block.py) ; les questions sans id
+    en reçoivent un frais. Ids sérialisés en ``str`` (un ``uuid.UUID``
+    n'est pas JSON-sérialisable par asyncpg). Sémantique remplacement :
+    question absente du payload = supprimée.
+    """
+    existants = {
+        q.get("id") for q in block.content.get("questions", []) if isinstance(q, dict)
+    }
+    inconnus = {str(q.id) for q in content.questions if q.id is not None} - existants
+    if inconnus:
+        raise _invalide(f"Questions inconnues : {sorted(inconnus)}")
+    return {
+        "enonce": content.enonce,
+        "questions": [
+            {
+                "id": str(q.id) if q.id is not None else str(uuid.uuid4()),
+                "enonce": q.enonce,
+                "type": q.type,
+                "reponse_attendue": q.reponse_attendue,
+            }
+            for q in content.questions
+        ],
+    }
 
 
 def _course_read(
@@ -379,14 +414,16 @@ async def update_block(
     block_id: uuid.UUID,
     payload: BlockUpdate,
 ) -> BlockRead:
-    """Édite un bloc : titre/description (tous types) et/ou contenu (texte seulement).
+    """Édite un bloc : titre/description (tous types) et/ou contenu (texte, exercice).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) bloc complet
-    (id + course_id) — 404 s'il n'existe pas dans ce cours, 422 si ``content``
-    est fourni sur un bloc dont le type n'est pas « texte ». Seuls les champs
-    présents dans le payload (``model_fields_set``) sont appliqués ; le
-    contenu est remplacé par un NOUVEAU dict (une mutation in-place du JSONB
-    ne serait pas détectée par l'ORM).
+    (id + course_id) — 404 s'il n'existe pas dans ce cours, 422 si la forme
+    du ``content`` fourni ne correspond pas au type du bloc, ou si une
+    question porte un id inconnu du bloc. Toute 422 est levée AVANT la
+    moindre écriture d'attribut (pas de mutation partielle). Seuls les
+    champs présents dans le payload (``model_fields_set``) sont appliqués ;
+    le contenu est remplacé par un NOUVEAU dict (une mutation in-place du
+    JSONB ne serait pas détectée par l'ORM).
     """
     course = await _get_owned_course(db, user, course_id)
     block = (
@@ -400,15 +437,25 @@ async def update_block(
     )
     if block is None:
         raise _introuvable("Bloc introuvable")
-    if payload.content is not None and block.type != TYPE_TEXTE:
-        raise _invalide(f"Seuls les blocs « {TYPE_TEXTE} » sont éditables pour l'instant")
+    nouveau_contenu: dict | None = None
+    if payload.content is not None:
+        type_attendu = _TYPE_PAR_CONTENU[type(payload.content)]
+        if block.type != type_attendu:
+            raise _invalide(
+                f"Le contenu fourni correspond à un bloc « {type_attendu} », "
+                f"pas « {block.type} »"
+            )
+        if isinstance(payload.content, TexteContent):
+            nouveau_contenu = {"markdown": payload.content.markdown}
+        else:
+            nouveau_contenu = _contenu_exercice(block, payload.content)
     champs = payload.model_fields_set
     if "titre" in champs:
         block.titre = payload.titre
     if "description" in champs:
         block.description = payload.description
-    if payload.content is not None:
-        block.content = {"markdown": payload.content.markdown}
+    if nouveau_contenu is not None:
+        block.content = nouveau_contenu
     course.updated_at = datetime.now(UTC)
     await db.commit()
     return _block_read(block)
