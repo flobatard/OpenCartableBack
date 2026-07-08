@@ -16,6 +16,7 @@ from sqlalchemy import bindparam, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.courses.schemas import (
+    BlockContentUpdate,
     BlockCreate,
     BlockOrderUpdate,
     BlockRead,
@@ -348,6 +349,40 @@ async def delete_block(
     await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
     course.updated_at = datetime.now(UTC)
     await db.commit()
+
+
+async def update_block_content(
+    db: AsyncSession,
+    user: User,
+    course_id: uuid.UUID,
+    block_id: uuid.UUID,
+    payload: BlockContentUpdate,
+) -> BlockRead:
+    """Remplace le contenu d'un bloc texte (seul type éditable pour l'instant).
+
+    Ordre des execute : 1) cours (contrôle de propriété), 2) bloc complet
+    (id + course_id) — 404 s'il n'existe pas dans ce cours, 422 si son type
+    n'est pas « texte ». Le contenu est remplacé par un NOUVEAU dict (une
+    mutation in-place du JSONB ne serait pas détectée par l'ORM).
+    """
+    course = await _get_owned_course(db, user, course_id)
+    block = (
+        (
+            await db.execute(
+                select(Block).where(Block.id == block_id, Block.course_id == course.id)
+            )
+        )
+        .scalars()
+        .one_or_none()
+    )
+    if block is None:
+        raise _introuvable("Bloc introuvable")
+    if block.type != TYPE_TEXTE:
+        raise _invalide(f"Seuls les blocs « {TYPE_TEXTE} » sont éditables pour l'instant")
+    block.content = {"markdown": payload.content.markdown}
+    course.updated_at = datetime.now(UTC)
+    await db.commit()
+    return _block_read(block)
 
 
 async def reorder_blocks(

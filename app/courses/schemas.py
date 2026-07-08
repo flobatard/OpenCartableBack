@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CourseCreate(BaseModel):
@@ -56,6 +56,21 @@ class BlockCreate(BaseModel):
     # « ressource » est volontairement absent : ce type exige un resource_id
     # (CHECK ck_blocks_ressource_coherence) et l'upload S3 n'existe pas encore.
     type: Literal["texte", "exercice", "lien"]
+
+
+class TexteContent(BaseModel):
+    # Contrat de app/models/block.py : markdown simple, jamais de HTML brut.
+    # Pas de trim ni min_length : le blanc est signifiant en markdown et
+    # vider un bloc est légitime.
+    model_config = ConfigDict(extra="forbid")
+
+    markdown: str = Field(max_length=100_000)
+
+
+class BlockContentUpdate(BaseModel):
+    # Enveloppe extensible : quand les éditeurs exercice/lien arriveront,
+    # `content` deviendra une union de formes disjointes (extra="forbid").
+    content: TexteContent
 
 
 class BlockOrderUpdate(BaseModel):

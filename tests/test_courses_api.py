@@ -129,6 +129,11 @@ _BLOCK_ID = uuid.uuid4()
         ("GET", f"/api/v1/courses/{_COURSE_ID}", None),
         ("POST", f"/api/v1/courses/{_COURSE_ID}/blocks", {"type": "texte"}),
         ("PUT", f"/api/v1/courses/{_COURSE_ID}/blocks/order", {"block_ids": []}),
+        (
+            "PATCH",
+            f"/api/v1/courses/{_COURSE_ID}/blocks/{_BLOCK_ID}",
+            {"content": {"markdown": "x"}},
+        ),
         ("DELETE", f"/api/v1/courses/{_COURSE_ID}/blocks/{_BLOCK_ID}", None),
     ],
 )
@@ -358,6 +363,94 @@ def test_ajout_bloc_type_refuse_sans_acces_bdd(type_bloc):
     session = _FakeSession()
     response = _client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/blocks", json={"type": type_bloc}
+    )
+    assert response.status_code == 422
+    assert session.executed == []
+
+
+def test_edition_contenu_bloc_texte():
+    user = _user_row()
+    course = _course_row()
+    block = _block_row()
+    session = _FakeSession([[user], [course], [block]])
+    payload = {"content": {"markdown": "## Suites\nDéfinition d'une suite."}}
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": str(block.id),
+        "position": 0,
+        "type": "texte",
+        "content": {"markdown": "## Suites\nDéfinition d'une suite."},
+        "resource_id": None,
+    }
+    # Écriture via l'unité de travail ORM (mutation d'attribut), pas d'Update Core.
+    assert block.content == {"markdown": "## Suites\nDéfinition d'une suite."}
+    assert _updates(session) == []
+    assert course.updated_at != _NOW
+    assert session.commits >= 1
+
+
+def test_edition_contenu_cours_non_possede():
+    user = _user_row()
+    session = _FakeSession([[user], []])
+    response = _client(session).patch(
+        f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}",
+        json={"content": {"markdown": "x"}},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cours introuvable"
+
+
+def test_edition_contenu_bloc_introuvable():
+    user = _user_row()
+    course = _course_row()
+    session = _FakeSession([[user], [course], []])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{uuid.uuid4()}",
+        json={"content": {"markdown": "x"}},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Bloc introuvable"
+
+
+def test_edition_contenu_refuse_les_types_non_texte():
+    user = _user_row()
+    course = _course_row()
+    contenu_initial = {"url": "https://ex.org", "titre": "", "fournisseur": None}
+    block = _block_row(type="lien", content=contenu_initial)
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"content": {"markdown": "x"}},
+    )
+
+    assert response.status_code == 422
+    assert "Seuls les blocs" in response.json()["detail"]
+    assert block.content == contenu_initial
+    assert course.updated_at == _NOW
+    # Seul commit : celui de get_or_create_by_sub (upsert auth) — pas d'écriture cours.
+    assert session.commits == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},  # content manquant
+        {"content": {}},  # markdown manquant
+        {"content": {"markdown": None}},
+        {"content": {"markdown": "x" * 100_001}},  # trop long
+        {"content": {"markdown": "x", "html": "<b>"}},  # clé en trop (extra=forbid)
+    ],
+)
+def test_edition_contenu_payload_invalide_sans_acces_bdd(payload):
+    session = _FakeSession()
+    response = _client(session).patch(
+        f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}", json=payload
     )
     assert response.status_code == 422
     assert session.executed == []
