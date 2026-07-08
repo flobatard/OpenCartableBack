@@ -16,10 +16,10 @@ from sqlalchemy import bindparam, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.courses.schemas import (
-    BlockContentUpdate,
     BlockCreate,
     BlockOrderUpdate,
     BlockRead,
+    BlockUpdate,
     CourseCreate,
     CourseDetailRead,
     CourseRead,
@@ -80,6 +80,8 @@ def _block_read(block: Block) -> BlockRead:
         id=block.id,
         position=block.position,
         type=block.type,
+        titre=block.titre,
+        description=block.description,
         content=block.content,
         resource_id=block.resource_id,
     )
@@ -310,6 +312,8 @@ async def add_block(
             course_id=course.id,
             position=position,
             type=payload.type,
+            titre=payload.titre,
+            description=payload.description,
             content=content,
             resource_id=None,
         )
@@ -320,6 +324,8 @@ async def add_block(
         id=block_id,
         position=position,
         type=payload.type,
+        titre=payload.titre,
+        description=payload.description,
         content=content,
         resource_id=None,
     )
@@ -351,19 +357,21 @@ async def delete_block(
     await db.commit()
 
 
-async def update_block_content(
+async def update_block(
     db: AsyncSession,
     user: User,
     course_id: uuid.UUID,
     block_id: uuid.UUID,
-    payload: BlockContentUpdate,
+    payload: BlockUpdate,
 ) -> BlockRead:
-    """Remplace le contenu d'un bloc texte (seul type éditable pour l'instant).
+    """Édite un bloc : titre/description (tous types) et/ou contenu (texte seulement).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) bloc complet
-    (id + course_id) — 404 s'il n'existe pas dans ce cours, 422 si son type
-    n'est pas « texte ». Le contenu est remplacé par un NOUVEAU dict (une
-    mutation in-place du JSONB ne serait pas détectée par l'ORM).
+    (id + course_id) — 404 s'il n'existe pas dans ce cours, 422 si ``content``
+    est fourni sur un bloc dont le type n'est pas « texte ». Seuls les champs
+    présents dans le payload (``model_fields_set``) sont appliqués ; le
+    contenu est remplacé par un NOUVEAU dict (une mutation in-place du JSONB
+    ne serait pas détectée par l'ORM).
     """
     course = await _get_owned_course(db, user, course_id)
     block = (
@@ -377,9 +385,15 @@ async def update_block_content(
     )
     if block is None:
         raise _introuvable("Bloc introuvable")
-    if block.type != TYPE_TEXTE:
+    if payload.content is not None and block.type != TYPE_TEXTE:
         raise _invalide(f"Seuls les blocs « {TYPE_TEXTE} » sont éditables pour l'instant")
-    block.content = {"markdown": payload.content.markdown}
+    champs = payload.model_fields_set
+    if "titre" in champs:
+        block.titre = payload.titre
+    if "description" in champs:
+        block.description = payload.description
+    if payload.content is not None:
+        block.content = {"markdown": payload.content.markdown}
     course.updated_at = datetime.now(UTC)
     await db.commit()
     return _block_read(block)

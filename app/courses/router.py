@@ -7,10 +7,10 @@ from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
 from app.courses import service
 from app.courses.schemas import (
-    BlockContentUpdate,
     BlockCreate,
     BlockOrderUpdate,
     BlockRead,
+    BlockUpdate,
     CourseCreate,
     CourseDetailRead,
     CourseRead,
@@ -85,16 +85,16 @@ async def reorder_blocks(
 
 
 @router.patch("/courses/{course_id}/blocks/{block_id}", response_model=BlockRead)
-async def update_block_content(
+async def update_block(
     course_id: uuid.UUID,
     block_id: uuid.UUID,
-    payload: BlockContentUpdate,
+    payload: BlockUpdate,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> BlockRead:
-    """Remplace le contenu d'un bloc texte (markdown)."""
+    """Édite un bloc : titre/description (tous types) et/ou contenu texte (markdown)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    return await service.update_block_content(db, user, course_id, block_id, payload)
+    return await service.update_block(db, user, course_id, block_id, payload)
 
 
 @router.delete(

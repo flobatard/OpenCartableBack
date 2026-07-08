@@ -44,6 +44,8 @@ def _block_row(**overrides):
         id=uuid.uuid4(),
         position=0,
         type="texte",
+        titre=None,
+        description=None,
         content={"markdown": ""},
         resource_id=None,
     )
@@ -313,6 +315,8 @@ def test_detail_avec_blocs_ordonnes():
         "id": str(b1.id),
         "position": 0,
         "type": "texte",
+        "titre": None,
+        "description": None,
         "content": {"markdown": ""},
         "resource_id": None,
     }
@@ -338,12 +342,31 @@ def test_ajout_bloc_contenu_par_defaut(type_bloc, contenu):
     body = response.json()
     assert body["id"]
     assert body["type"] == type_bloc
+    assert body["titre"] is None
+    assert body["description"] is None
     assert body["content"] == contenu
     assert body["position"] == 3
     assert body["resource_id"] is None
     assert len(_inserts(session, "blocks")) == 1
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
+
+
+def test_ajout_bloc_avec_titre_et_description():
+    user = _user_row()
+    course = _course_row()
+    session = _FakeSession([[user], [course], [0]])
+    payload = {"type": "texte", "titre": "Introduction", "description": "Bref rappel"}
+    response = _client(session).post(f"/api/v1/courses/{course.id}/blocks", json=payload)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["titre"] == "Introduction"
+    assert body["description"] == "Bref rappel"
+    [(stmt, _)] = _inserts(session, "blocks")
+    valeurs = stmt.compile().params
+    assert valeurs["titre"] == "Introduction"
+    assert valeurs["description"] == "Bref rappel"
 
 
 def test_ajout_premier_bloc_position_zero():
@@ -383,6 +406,8 @@ def test_edition_contenu_bloc_texte():
         "id": str(block.id),
         "position": 0,
         "type": "texte",
+        "titre": None,
+        "description": None,
         "content": {"markdown": "## Suites\nDéfinition d'une suite."},
         "resource_id": None,
     }
@@ -393,7 +418,56 @@ def test_edition_contenu_bloc_texte():
     assert session.commits >= 1
 
 
-def test_edition_contenu_cours_non_possede():
+def test_edition_titre_et_description_bloc_non_texte():
+    # Métadonnées éditables sur tous les types, indépendamment du contenu.
+    user = _user_row()
+    course = _course_row()
+    block = _block_row(
+        type="lien", content={"url": "https://ex.org", "titre": "", "fournisseur": None}
+    )
+    session = _FakeSession([[user], [course], [block]])
+    payload = {"titre": "Vidéo complémentaire", "description": "Pour aller plus loin"}
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["titre"] == "Vidéo complémentaire"
+    assert body["description"] == "Pour aller plus loin"
+    assert block.titre == "Vidéo complémentaire"
+    assert block.description == "Pour aller plus loin"
+    assert course.updated_at != _NOW
+    assert session.commits >= 1
+
+
+def test_edition_efface_titre_et_description_avec_null():
+    user = _user_row()
+    course = _course_row()
+    block = _block_row(titre="Ancien titre", description="Ancienne description")
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"titre": None, "description": None},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["titre"] is None
+    assert body["description"] is None
+
+
+def test_edition_payload_vide_rejetee():
+    session = _FakeSession()
+    response = _client(session).patch(
+        f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}", json={}
+    )
+
+    assert response.status_code == 422
+    assert session.executed == []
+
+
+def test_edition_cours_non_possede():
     user = _user_row()
     session = _FakeSession([[user], []])
     response = _client(session).patch(

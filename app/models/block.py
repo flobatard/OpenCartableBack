@@ -3,8 +3,10 @@
 Un cours = une liste de blocs triés par ``position`` (tri stable
 ``ORDER BY position, id`` ; pas d'unicité ``(course_id, position)`` en base —
 un swap la violerait en cours de transaction — le réordonnancement réécrit
-les positions en bloc côté service). Le ``content`` JSONB porte le contenu
-éditorial ; son schéma est un contrat applicatif, par ``type`` :
+les positions en bloc côté service). ``titre``/``description`` sont des
+métadonnées facultatives communes à tous les types (affichage en en-tête du
+bloc), distinctes du ``content`` JSONB qui porte le contenu éditorial ; son
+schéma est un contrat applicatif, par ``type`` :
 
 - ``texte`` : ``{"markdown": "..."}`` — cours magistral en markdown simple
   (pas de HTML brut), directement consultable par l'IA. Le markdown peut
@@ -74,6 +76,8 @@ class Block(Base):
     )
     position: Mapped[int] = mapped_column(SmallInteger)
     type: Mapped[str] = mapped_column(String(20))
+    titre: Mapped[str | None] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(String(500))
     content: Mapped[dict] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )

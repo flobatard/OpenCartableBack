@@ -1,7 +1,8 @@
 """Schémas des cours et de la structure de leurs blocs.
 
 L'édition du contenu des blocs (éditeurs dédiés par type) est un scope
-ultérieur : ``BlockCreate`` ne porte que le ``type``, le service pose un
+ultérieur : ``BlockCreate`` ne porte que le ``type`` (et les métadonnées
+``titre``/``description``, communes à tous les types), le service pose un
 ``content`` par défaut conforme au contrat de :mod:`app.models.block`.
 """
 
@@ -43,6 +44,8 @@ class BlockRead(BaseModel):
     id: uuid.UUID
     position: int
     type: str
+    titre: str | None
+    description: str | None
     content: dict[str, Any]
     resource_id: uuid.UUID | None
 
@@ -56,6 +59,9 @@ class BlockCreate(BaseModel):
     # « ressource » est volontairement absent : ce type exige un resource_id
     # (CHECK ck_blocks_ressource_coherence) et l'upload S3 n'existe pas encore.
     type: Literal["texte", "exercice", "lien"]
+    # Métadonnées facultatives, communes à tous les types (cf. app/models/block.py).
+    titre: str | None = Field(default=None, max_length=300)
+    description: str | None = Field(default=None, max_length=500)
 
 
 class TexteContent(BaseModel):
@@ -68,10 +74,29 @@ class TexteContent(BaseModel):
     markdown: str = Field(max_length=100_000)
 
 
-class BlockContentUpdate(BaseModel):
-    # Enveloppe extensible : quand les éditeurs exercice/lien arriveront,
-    # `content` deviendra une union de formes disjointes (extra="forbid").
-    content: TexteContent
+class BlockUpdate(BaseModel):
+    """Édition partielle d'un bloc.
+
+    ``titre``/``description`` s'appliquent à tous les types de bloc ;
+    ``content`` reste réservé aux blocs texte (cf. ``update_block`` du
+    service). Seuls les champs effectivement fournis sont modifiés — un
+    ``titre``/``description`` explicitement à ``null`` l'efface, un champ
+    absent le laisse inchangé (``model_fields_set``). Enveloppe extensible :
+    quand les éditeurs exercice/lien arriveront, `content` deviendra une
+    union de formes disjointes (extra="forbid").
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    titre: str | None = Field(default=None, max_length=300)
+    description: str | None = Field(default=None, max_length=500)
+    content: TexteContent | None = None
+
+    @model_validator(mode="after")
+    def _au_moins_un_champ(self) -> "BlockUpdate":
+        if not self.model_fields_set:
+            raise ValueError("Fournir au moins un champ à modifier")
+        return self
 
 
 class BlockOrderUpdate(BaseModel):
