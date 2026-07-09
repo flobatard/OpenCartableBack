@@ -4,7 +4,9 @@
 ``titre``/``description``, communes à tous les types), le service pose un
 ``content`` par défaut conforme au contrat de :mod:`app.models.block`.
 Le contenu s'édite ensuite via ``BlockUpdate.content`` (une forme par type
-de bloc : ``TexteContent``, ``ExerciceContent`` ; ``lien`` à venir).
+de bloc : ``TexteContent``, ``ExerciceContent``, ``DocumentContent`` ;
+``module`` n'a pas de forme éditable avant le J4) ; le lien d'un bloc
+``document`` vers sa ressource s'édite via ``BlockUpdate.resource_id``.
 """
 
 import uuid
@@ -56,10 +58,10 @@ class CourseDetailRead(CourseRead):
 
 
 class BlockCreate(BaseModel):
-    # Littéraux = TYPE_TEXTE / TYPE_EXERCICE / TYPE_LIEN de app/models/block.py.
-    # « ressource » est volontairement absent : ce type exige un resource_id
-    # (CHECK ck_blocks_ressource_coherence) et l'upload S3 n'existe pas encore.
-    type: Literal["texte", "exercice", "lien"]
+    # Littéraux = constantes TYPE_* de app/models/block.py. Un bloc
+    # « document » naît vide (resource_id NULL) et se remplit dans
+    # l'éditeur via BlockUpdate.resource_id.
+    type: Literal["texte", "exercice", "document", "module"]
     # Métadonnées facultatives, communes à tous les types (cf. app/models/block.py).
     titre: str | None = Field(default=None, max_length=300)
     description: str | None = Field(default=None, max_length=500)
@@ -112,22 +114,40 @@ class ExerciceContent(BaseModel):
         return self
 
 
+class DocumentContent(BaseModel):
+    # Contrat de app/models/block.py : éditorial d'affichage du bloc
+    # document — la ressource pointée reste en colonne (resource_id),
+    # jamais dans le content. Tous les champs ont un défaut, donc ``{}``
+    # valide en DocumentContent : sans conséquence, le garde-fou
+    # forme↔type du service rejette la forme sur un bloc d'un autre type,
+    # et les formes restent disjointes (extra="forbid" partout).
+    model_config = ConfigDict(extra="forbid")
+
+    legende: str | None = Field(default=None, max_length=500)
+    affichage: Literal["inline", "telechargement"] = "inline"
+
+
 class BlockUpdate(BaseModel):
     """Édition partielle d'un bloc.
 
     ``titre``/``description`` s'appliquent à tous les types de bloc ;
     ``content`` est une union de formes disjointes (``extra="forbid"`` des
     deux côtés) — le service vérifie que la forme reçue correspond au type
-    du bloc. Seuls les champs effectivement fournis sont modifiés — un
-    ``titre``/``description`` explicitement à ``null`` l'efface, un champ
-    absent le laisse inchangé (``model_fields_set``).
+    du bloc. ``resource_id`` ne s'applique qu'aux blocs ``document`` :
+    ``null`` explicite détache la ressource, un uuid pointe une ressource
+    du même cours au statut ``disponible`` (validé côté service). Seuls
+    les champs effectivement fournis sont modifiés — un ``titre``/
+    ``description``/``resource_id`` explicitement à ``null`` l'efface, un
+    champ absent le laisse inchangé (``model_fields_set``).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     titre: str | None = Field(default=None, max_length=300)
     description: str | None = Field(default=None, max_length=500)
-    content: TexteContent | ExerciceContent | None = None
+    # DocumentContent en dernier : forme la plus permissive de l'union.
+    content: TexteContent | ExerciceContent | DocumentContent | None = None
+    resource_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _au_moins_un_champ(self) -> "BlockUpdate":

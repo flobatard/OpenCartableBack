@@ -105,7 +105,7 @@ async def update_block(
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> BlockRead:
-    """Édite un bloc : titre/description (tous types) et/ou contenu texte (markdown)."""
+    """Édite un bloc : titre/description, contenu et/ou ressource pointée (document)."""
     user = await users_service.get_or_create_by_sub(db, auth)
     return await service.update_block(db, user, course_id, block_id, payload)
 
@@ -118,8 +118,7 @@ async def delete_block(
     block_id: uuid.UUID,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    storage: Storage = Depends(get_storage),
 ) -> None:
-    """Supprime un bloc du cours (et son objet S3 si c'est une ressource)."""
+    """Supprime un bloc du cours (les ressources de la bibliothèque restent)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    await service.delete_block(db, user, course_id, block_id, storage)
+    await service.delete_block(db, user, course_id, block_id)

@@ -21,12 +21,15 @@ schéma est un contrat applicatif, par ``type`` :
   générés côté service et **stables à vie** : les futures soumissions élèves
   (jalon J2) référenceront ``(block_id, question_id)``, et la review IA aussi.
   Ne jamais régénérer ces ids à l'édition.
-- ``ressource`` : ``{"legende": "...", "affichage": "inline" |
-  "telechargement"}`` (optionnels) — le binaire est dans la ligne
-  ``resources`` référencée par ``resource_id`` (seul type de bloc à en
-  porter une, CHECK de cohérence).
-- ``lien`` : ``{"url": "https://...", "titre": "...", "fournisseur":
-  "youtube" | null}`` — embed externe, rien sur S3.
+- ``document`` : ``{"legende": str | null, "affichage": "inline" |
+  "telechargement"}`` — pont vers une ressource de la bibliothèque du cours,
+  référencée par la **colonne** ``resource_id`` (seul type de bloc autorisé à
+  en porter une, CHECK de cohérence ; jamais dans le ``content``). Nullable :
+  le bloc naît vide et se remplit dans l'éditeur ; supprimer la ressource
+  supprime les blocs qui la pointent (FK ``CASCADE`` — un document sans son
+  fichier n'a pas de sens).
+- ``module`` : ``{}`` — module interactif HTML/JS ; placeholder, le contrat
+  du content sera défini au jalon J4.
 """
 
 import uuid
@@ -49,8 +52,8 @@ from app.core.database import Base
 
 TYPE_TEXTE = "texte"
 TYPE_EXERCICE = "exercice"
-TYPE_RESSOURCE = "ressource"
-TYPE_LIEN = "lien"
+TYPE_DOCUMENT = "document"
+TYPE_MODULE = "module"
 
 
 class Block(Base):
@@ -61,13 +64,14 @@ class Block(Base):
         Index("ix_blocks_course_id_position", "course_id", "position"),
         CheckConstraint(
             f"type IN ('{TYPE_TEXTE}', '{TYPE_EXERCICE}', "
-            f"'{TYPE_RESSOURCE}', '{TYPE_LIEN}')",
+            f"'{TYPE_DOCUMENT}', '{TYPE_MODULE}')",
             name="ck_blocks_type",
         ),
-        # Seuls (et tous) les blocs « ressource » portent une FK resource.
+        # Seuls les blocs « document » peuvent porter une FK resource
+        # (nullable : un document peut être vide).
         CheckConstraint(
-            f"(type = '{TYPE_RESSOURCE}') = (resource_id IS NOT NULL)",
-            name="ck_blocks_ressource_coherence",
+            f"resource_id IS NULL OR type = '{TYPE_DOCUMENT}'",
+            name="ck_blocks_document_coherence",
         ),
         CheckConstraint("position >= 0", name="ck_blocks_position_positive"),
     )

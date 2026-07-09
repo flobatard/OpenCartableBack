@@ -24,13 +24,14 @@ from app.courses.schemas import (
     CourseCreate,
     CourseDetailRead,
     CourseRead,
+    DocumentContent,
     ExerciceContent,
     TexteContent,
 )
-from app.models.block import TYPE_EXERCICE, TYPE_LIEN, TYPE_RESSOURCE, TYPE_TEXTE, Block
+from app.models.block import TYPE_DOCUMENT, TYPE_EXERCICE, TYPE_MODULE, TYPE_TEXTE, Block
 from app.models.course import Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
-from app.models.resource import Resource
+from app.models.resource import STATUT_DISPONIBLE, Resource
 from app.models.subject import Subject
 from app.models.user import User
 
@@ -57,12 +58,18 @@ def _contenu_par_defaut(type_: str) -> dict:
     return {
         TYPE_TEXTE: lambda: {"markdown": ""},
         TYPE_EXERCICE: lambda: {"enonce": "", "questions": []},
-        TYPE_LIEN: lambda: {"url": "", "titre": "", "fournisseur": None},
+        TYPE_DOCUMENT: lambda: {"legende": None, "affichage": "inline"},
+        TYPE_MODULE: dict,
     }[type_]()
 
 
 # Forme de content admise par type de bloc (garde-fou d'update_block).
-_TYPE_PAR_CONTENU = {TexteContent: TYPE_TEXTE, ExerciceContent: TYPE_EXERCICE}
+# « module » n'a pas de forme éditable avant le J4.
+_TYPE_PAR_CONTENU = {
+    TexteContent: TYPE_TEXTE,
+    ExerciceContent: TYPE_EXERCICE,
+    DocumentContent: TYPE_DOCUMENT,
+}
 
 
 def _contenu_exercice(block: Block, content: ExerciceContent) -> dict:
@@ -391,16 +398,15 @@ async def add_block(
 
 
 async def delete_block(
-    db: AsyncSession, user: User, course_id: uuid.UUID, block_id: uuid.UUID, storage: Storage
+    db: AsyncSession, user: User, course_id: uuid.UUID, block_id: uuid.UUID
 ) -> None:
     """Supprime un bloc du cours ; les positions restantes gardent leurs trous.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) bloc dans ce cours
-    (select puis delete : la fausse session des tests ne simule pas rowcount) —
-    on lit son ``type``/``resource_id``. Un bloc « ressource » se supprime en
-    supprimant sa ligne ``resources`` (le CASCADE ``resource_id`` retire le
-    bloc), après avoir relu sa clé S3 (3) : delete ``resources`` (4), puis l'objet
-    S3 après le commit ; les autres types : delete direct du bloc (3).
+    (select puis delete : la fausse session des tests ne simule pas rowcount),
+    3) delete du bloc. Supprimer un bloc ne touche jamais ni ``resources`` ni
+    S3 : la ressource éventuellement pointée par un bloc ``document`` reste
+    dans la bibliothèque du cours (suppression via ``app/resources/``).
     """
     course = await _get_owned_course(db, user, course_id)
     block = (
@@ -414,21 +420,9 @@ async def delete_block(
     )
     if block is None:
         raise _introuvable("Bloc introuvable")
-    s3_keys: list[str] = []
-    if block.type == TYPE_RESSOURCE and block.resource_id is not None:
-        s3_key = (
-            (await db.execute(select(Resource.s3_key).where(Resource.id == block.resource_id)))
-            .scalars()
-            .one_or_none()
-        )
-        if s3_key is not None:
-            s3_keys.append(s3_key)
-        await db.execute(delete(Resource).where(Resource.id == block.resource_id))
-    else:
-        await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
+    await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
     course.updated_at = datetime.now(UTC)
     await db.commit()
-    await storage.delete_many(s3_keys)
 
 
 async def update_block(
@@ -438,16 +432,21 @@ async def update_block(
     block_id: uuid.UUID,
     payload: BlockUpdate,
 ) -> BlockRead:
-    """Édite un bloc : titre/description (tous types) et/ou contenu (texte, exercice).
+    """Édite un bloc : titre/description (tous types), contenu (texte,
+    exercice, document) et/ou ressource pointée (document).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) bloc complet
-    (id + course_id) — 404 s'il n'existe pas dans ce cours, 422 si la forme
-    du ``content`` fourni ne correspond pas au type du bloc, ou si une
-    question porte un id inconnu du bloc. Toute 422 est levée AVANT la
-    moindre écriture d'attribut (pas de mutation partielle). Seuls les
-    champs présents dans le payload (``model_fields_set``) sont appliqués ;
-    le contenu est remplacé par un NOUVEAU dict (une mutation in-place du
-    JSONB ne serait pas détectée par l'ORM).
+    (id + course_id) — 404 s'il n'existe pas dans ce cours —, puis 3)
+    UNIQUEMENT si un ``resource_id`` non nul est fourni : la ressource
+    (id + course_id du cours). 422 si la forme du ``content`` fourni ne
+    correspond pas au type du bloc, si une question porte un id inconnu du
+    bloc, si ``resource_id`` est fourni sur un bloc non-document, ou si la
+    ressource est inconnue du cours / pas encore ``disponible``. Toute 422
+    est levée AVANT la moindre écriture d'attribut (pas de mutation
+    partielle). Seuls les champs présents dans le payload
+    (``model_fields_set``) sont appliqués ; le contenu est remplacé par un
+    NOUVEAU dict (une mutation in-place du JSONB ne serait pas détectée
+    par l'ORM).
     """
     course = await _get_owned_course(db, user, course_id)
     block = (
@@ -461,6 +460,29 @@ async def update_block(
     )
     if block is None:
         raise _introuvable("Bloc introuvable")
+    champs = payload.model_fields_set
+    if "resource_id" in champs:
+        if block.type != TYPE_DOCUMENT:
+            raise _invalide("resource_id ne s'applique qu'aux blocs « document »")
+        if payload.resource_id is not None:
+            # 422 et non 404 : le bloc ciblé, lui, existe (motif « Matières
+            # inconnues ») ; le filtre course_id scelle l'appartenance.
+            resource = (
+                (
+                    await db.execute(
+                        select(Resource).where(
+                            Resource.id == payload.resource_id,
+                            Resource.course_id == course.id,
+                        )
+                    )
+                )
+                .scalars()
+                .one_or_none()
+            )
+            if resource is None:
+                raise _invalide("Ressource inconnue")
+            if resource.statut != STATUT_DISPONIBLE:
+                raise _invalide("Ressource non disponible")
     nouveau_contenu: dict | None = None
     if payload.content is not None:
         type_attendu = _TYPE_PAR_CONTENU[type(payload.content)]
@@ -471,13 +493,19 @@ async def update_block(
             )
         if isinstance(payload.content, TexteContent):
             nouveau_contenu = {"markdown": payload.content.markdown}
-        else:
+        elif isinstance(payload.content, ExerciceContent):
             nouveau_contenu = _contenu_exercice(block, payload.content)
-    champs = payload.model_fields_set
+        else:
+            nouveau_contenu = {
+                "legende": payload.content.legende,
+                "affichage": payload.content.affichage,
+            }
     if "titre" in champs:
         block.titre = payload.titre
     if "description" in champs:
         block.description = payload.description
+    if "resource_id" in champs:
+        block.resource_id = payload.resource_id
     if nouveau_contenu is not None:
         block.content = nouveau_contenu
     course.updated_at = datetime.now(UTC)

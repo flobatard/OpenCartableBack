@@ -1,12 +1,15 @@
-"""Upload de ressources S3 : presign, confirmation, lecture.
+"""Bibliothèque de ressources S3 d'un cours : CRUD + flow presigned.
 
-Flow (Descriptions.md §5.2) : la ligne ``resources`` est créée ``en_attente``
-*avant* l'upload direct navigateur→S3 (presigned PUT) ; une confirmation vérifie
-l'objet (HEAD S3), passe le statut à ``disponible`` et matérialise le bloc
-``ressource`` du cours. Comme :mod:`app.courses.service`, l'ordre des ``execute``
-de chaque fonction est stable et rejoué par une fausse session FIFO
-(tests/test_resources_api.py), et tout est scopé au propriétaire du cours
-(introuvable → 404, jamais 403).
+Flow d'upload (Descriptions.md §5.2) : la ligne ``resources`` est créée
+``en_attente`` *avant* l'upload direct navigateur→S3 (presigned PUT) ; la
+confirmation vérifie l'objet (HEAD S3) et passe le statut à ``disponible``.
+La ressource est **indépendante des blocs** : confirmer un upload ne crée
+rien d'autre, et supprimer une ressource supprime les blocs ``document`` qui
+la pointent (FK ``CASCADE`` — un document sans son fichier n'a pas de sens).
+Comme
+:mod:`app.courses.service`, l'ordre des ``execute`` de chaque fonction est
+stable et rejoué par une fausse session FIFO (tests/test_resources_api.py),
+et tout est scopé au propriétaire du cours (introuvable → 404, jamais 403).
 """
 
 import re
@@ -14,29 +17,24 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, insert, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.storage import Storage
-from app.courses.schemas import BlockRead
-from app.models.block import TYPE_RESSOURCE, Block
 from app.models.course import Course
 from app.models.resource import STATUT_DISPONIBLE, STATUT_EN_ATTENTE, Resource
 from app.models.user import User
 from app.resources.schemas import (
-    ResourceConfirm,
     ResourceCreate,
     ResourceDownload,
     ResourcePresign,
+    ResourceRead,
+    ResourceUpdate,
 )
 
 # Caractères conservés dans un nom de fichier sanitizé (le reste → « _ »).
 _NOM_AUTORISE = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-def _invalide(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
 def _introuvable(detail: str) -> HTTPException:
@@ -58,11 +56,24 @@ def _sanitize_nom(nom: str) -> str:
     return (base or "fichier")[:200]
 
 
+def _resource_read(resource: Resource) -> ResourceRead:
+    return ResourceRead(
+        id=resource.id,
+        type=resource.type,
+        nom_original=resource.nom_original,
+        taille=resource.taille,
+        mime=resource.mime,
+        statut=resource.statut,
+        created_at=resource.created_at,
+        updated_at=resource.updated_at,
+    )
+
+
 async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> Course:
     """Charge le cours du prof ; 404 s'il n'existe pas ou appartient à autrui.
 
-    L'instance ORM sert au bump d'``updated_at`` lorsqu'une ressource matérialise
-    un bloc.
+    L'instance ORM sert au bump d'``updated_at`` des mutations de la
+    bibliothèque (la bibliothèque fait partie du cours).
     """
     course = (
         (
@@ -98,6 +109,31 @@ async def _get_resource(
     return resource
 
 
+async def list_resources(
+    db: AsyncSession, user: User, course_id: uuid.UUID
+) -> list[ResourceRead]:
+    """Bibliothèque du cours, de la plus récente à la plus ancienne.
+
+    Ordre des execute : 1) cours (contrôle de propriété), 2) ressources
+    (tri stable ``created_at desc, id``). Les ``en_attente`` sont incluses
+    (le front les affiche atténuées et permet de purger un upload raté).
+    Lecture seule : pas de commit.
+    """
+    course = await _get_owned_course(db, user, course_id)
+    resources = (
+        (
+            await db.execute(
+                select(Resource)
+                .where(Resource.course_id == course.id)
+                .order_by(Resource.created_at.desc(), Resource.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_resource_read(r) for r in resources]
+
+
 async def presign_upload(
     db: AsyncSession,
     user: User,
@@ -113,7 +149,7 @@ async def presign_upload(
     """
     course = await _get_owned_course(db, user, course_id)
     resource_id = uuid.uuid4()
-    s3_key = f"{resource_id}/{_sanitize_nom(payload.nom_original)}"
+    s3_key = f"courses/{course_id}/resources/{resource_id}/{_sanitize_nom(payload.nom_original)}"
     await db.execute(
         insert(Resource).values(
             id=resource_id,
@@ -142,17 +178,17 @@ async def confirm_upload(
     user: User,
     course_id: uuid.UUID,
     resource_id: uuid.UUID,
-    payload: ResourceConfirm,
     storage: Storage,
-) -> BlockRead:
-    """Vérifie l'objet S3, passe la ressource à ``disponible`` et crée le bloc.
+) -> ResourceRead:
+    """Vérifie l'objet S3 et passe la ressource à ``disponible``.
 
-    Ordre des execute : 1) cours (contrôle de propriété), 2) ressource (scopée
-    cours), 3) position suivante (max+1), 4) insert du bloc ``ressource``.
-    Entre 2) et 3), HEAD S3 : objet absent ou taille incohérente → 409 (upload
-    non abouti), ressource déjà confirmée → 409. La ressource passe à
-    ``disponible`` et le cours est « touché » par mutation ORM (pas d'UPDATE
-    explicite — flush au commit).
+    Ordre des execute : 1) cours (contrôle de propriété), 2) ressource
+    (scopée cours). Après 2), HEAD S3 : objet absent ou taille incohérente
+    → 409 (upload non abouti), ressource déjà confirmée → 409. La ressource
+    passe à ``disponible`` et le cours est « touché » par mutation ORM (pas
+    d'UPDATE explicite — flush au commit). Ne crée AUCUN bloc : la ressource
+    rejoint la bibliothèque, les blocs ``document`` la pointeront via
+    ``BlockUpdate.resource_id``.
     """
     course = await _get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
@@ -168,43 +204,57 @@ async def confirm_upload(
             f"Taille incohérente (déclarée {resource.taille}, réelle {taille_reelle})"
         )
 
-    position = (
-        (
-            await db.execute(
-                select(func.coalesce(func.max(Block.position) + 1, 0)).where(
-                    Block.course_id == course.id
-                )
-            )
-        )
-        .scalars()
-        .one()
-    )
-    block_id = uuid.uuid4()
-    content = {"legende": payload.legende or "", "affichage": payload.affichage}
-    await db.execute(
-        insert(Block).values(
-            id=block_id,
-            course_id=course.id,
-            position=position,
-            type=TYPE_RESSOURCE,
-            titre=payload.titre,
-            description=payload.description,
-            content=content,
-            resource_id=resource.id,
-        )
-    )
     resource.statut = STATUT_DISPONIBLE
     course.updated_at = datetime.now(UTC)
     await db.commit()
-    return BlockRead(
-        id=block_id,
-        position=position,
-        type=TYPE_RESSOURCE,
-        titre=payload.titre,
-        description=payload.description,
-        content=content,
-        resource_id=resource.id,
-    )
+    return _resource_read(resource)
+
+
+async def update_resource(
+    db: AsyncSession,
+    user: User,
+    course_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    payload: ResourceUpdate,
+) -> ResourceRead:
+    """Renomme une ressource (nom affiché seulement, la clé S3 reste figée).
+
+    Ordre des execute : 1) cours (contrôle de propriété), 2) ressource
+    (scopée cours). Le ``Content-Disposition`` des prochains téléchargements
+    suit le nouveau nom (``presign_get(s3_key, nom_original)``).
+    """
+    course = await _get_owned_course(db, user, course_id)
+    resource = await _get_resource(db, course, resource_id)
+    resource.nom_original = payload.nom_original
+    course.updated_at = datetime.now(UTC)
+    await db.commit()
+    return _resource_read(resource)
+
+
+async def delete_resource(
+    db: AsyncSession,
+    user: User,
+    course_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    storage: Storage,
+) -> None:
+    """Supprime une ressource de la bibliothèque et son objet S3.
+
+    Ordre des execute : 1) cours (contrôle de propriété), 2) ressource
+    (scopée cours — on relit sa ``s3_key``), 3) delete. Les blocs
+    ``document`` qui la pointaient partent avec elle par la FK ``CASCADE``
+    (aucun execute supplémentaire). L'objet S3 (hors cascade
+    DB) est supprimé APRÈS le commit — motif ``delete_course`` : un échec S3
+    laisse un orphelin dans le bucket (job de réconciliation à venir),
+    jamais une réf DB pointant un objet absent.
+    """
+    course = await _get_owned_course(db, user, course_id)
+    resource = await _get_resource(db, course, resource_id)
+    s3_key = resource.s3_key
+    await db.execute(delete(Resource).where(Resource.id == resource.id))
+    course.updated_at = datetime.now(UTC)
+    await db.commit()
+    await storage.delete_many([s3_key])
 
 
 async def presign_download(

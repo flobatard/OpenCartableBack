@@ -1,12 +1,15 @@
-"""Schémas de l'upload de ressources (flow presigned S3).
+"""Schémas de la bibliothèque de ressources d'un cours (CRUD + flow presigned).
 
-Deux temps : ``ResourceCreate`` déclare le fichier et obtient une URL présignée
-d'upload (``ResourcePresign``) ; une fois l'objet poussé sur S3, ``ResourceConfirm``
-confirme l'upload et matérialise le bloc ``ressource`` du cours (retour
-``BlockRead`` de :mod:`app.courses.schemas`).
+Upload en deux temps : ``ResourceCreate`` déclare le fichier et obtient une URL
+présignée d'upload (``ResourcePresign``) ; une fois l'objet poussé sur S3, la
+confirmation (sans body) vérifie l'objet et passe la ressource à ``disponible``
+(retour ``ResourceRead``). Les ressources sont indépendantes des blocs : un
+bloc ``document`` peut les pointer (``BlockUpdate.resource_id``,
+:mod:`app.courses.schemas`), jamais l'inverse.
 """
 
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -55,19 +58,41 @@ class ResourcePresign(BaseModel):
     expires_in: int
 
 
-class ResourceConfirm(BaseModel):
-    """Confirmation d'upload : métadonnées d'en-tête du futur bloc ``ressource``.
+class ResourceRead(BaseModel):
+    """Ressource de la bibliothèque du cours.
 
-    Tous les champs sont optionnels — le bloc peut naître sans en-tête.
-    ``affichage`` suit le contrat ``content`` de :mod:`app.models.block`.
+    Pas de ``s3_key`` : détail interne de stockage, le front passe par les
+    URL présignées (upload/download).
+    """
+
+    id: uuid.UUID
+    type: str
+    nom_original: str
+    taille: int
+    mime: str
+    statut: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ResourceUpdate(BaseModel):
+    """Renommage d'une ressource.
+
+    Seul le nom affiché change (et le ``Content-Disposition`` des prochains
+    téléchargements) — la clé S3 reste figée, l'objet n'est pas déplacé.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    titre: str | None = Field(default=None, max_length=300)
-    description: str | None = Field(default=None, max_length=500)
-    legende: str | None = Field(default=None, max_length=500)
-    affichage: Literal["inline", "telechargement"] = "inline"
+    nom_original: str = Field(min_length=1, max_length=255)
+
+    @field_validator("nom_original")
+    @classmethod
+    def _nom_non_blanc(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Le nom de fichier ne peut pas être vide")
+        return v
 
 
 class ResourceDownload(BaseModel):

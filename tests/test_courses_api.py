@@ -312,7 +312,10 @@ def test_detail_avec_blocs_ordonnes():
     s1, l1 = uuid.uuid4(), uuid.uuid4()
     b1 = _block_row()
     b2 = _block_row(
-        position=1, type="lien", content={"url": "https://ex.org", "titre": "", "fournisseur": None}
+        position=1,
+        type="document",
+        content={"legende": "Schéma", "affichage": "inline"},
+        resource_id=uuid.uuid4(),
     )
     session = _FakeSession([[user], [course], [s1], [l1], [b1, b2]])
     response = _client(session).get(f"/api/v1/courses/{course.id}")
@@ -340,7 +343,8 @@ def test_detail_avec_blocs_ordonnes():
     [
         ("texte", {"markdown": ""}),
         ("exercice", {"enonce": "", "questions": []}),
-        ("lien", {"url": "", "titre": "", "fournisseur": None}),
+        ("document", {"legende": None, "affichage": "inline"}),
+        ("module", {}),
     ],
 )
 def test_ajout_bloc_contenu_par_defaut(type_bloc, contenu):
@@ -392,11 +396,11 @@ def test_ajout_premier_bloc_position_zero():
     assert response.json()["position"] == 0
 
 
-@pytest.mark.parametrize("type_bloc", ["ressource", "inconnu"])
+@pytest.mark.parametrize("type_bloc", ["ressource", "lien", "inconnu"])
 def test_ajout_bloc_type_refuse_sans_acces_bdd(type_bloc):
-    # « ressource » exige un resource_id : ce type ne se crée pas par POST
-    # /blocks mais via le flow d'upload S3 (POST /resources + confirm) — le
-    # schéma BlockCreate ne l'accepte donc pas.
+    # « ressource » et « lien » sont des types supprimés (les ressources sont
+    # une bibliothèque indépendante, les liens vivent dans le markdown) : le
+    # schéma BlockCreate ne les accepte pas.
     session = _FakeSession()
     response = _client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/blocks", json={"type": type_bloc}
@@ -436,9 +440,7 @@ def test_edition_titre_et_description_bloc_non_texte():
     # Métadonnées éditables sur tous les types, indépendamment du contenu.
     user = _user_row()
     course = _course_row()
-    block = _block_row(
-        type="lien", content={"url": "https://ex.org", "titre": "", "fournisseur": None}
-    )
+    block = _block_row(type="module", content={})
     session = _FakeSession([[user], [course], [block]])
     payload = {"titre": "Vidéo complémentaire", "description": "Pour aller plus loin"}
     response = _client(session).patch(
@@ -506,11 +508,13 @@ def test_edition_contenu_bloc_introuvable():
     assert response.json()["detail"] == "Bloc introuvable"
 
 
-def test_edition_contenu_texte_sur_bloc_lien_rejetee():
+def test_edition_contenu_texte_sur_bloc_module_rejetee():
+    # « module » n'a aucune forme de content éditable avant le J4 : toute
+    # forme fournie est d'un autre type → 422.
     user = _user_row()
     course = _course_row()
-    contenu_initial = {"url": "https://ex.org", "titre": "", "fournisseur": None}
-    block = _block_row(type="lien", content=contenu_initial)
+    contenu_initial = {}
+    block = _block_row(type="module", content=contenu_initial)
     session = _FakeSession([[user], [course], [block]])
     response = _client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
@@ -549,8 +553,7 @@ _QUESTION_ID = str(uuid.uuid4())
 @pytest.mark.parametrize(
     "payload",
     [
-        {},  # content manquant
-        {"content": {}},  # aucune branche de l'union
+        {},  # aucun champ fourni
         {"content": {"markdown": None}},
         {"content": {"markdown": "x" * 100_001}},  # trop long
         {"content": {"markdown": "x", "html": "<b>"}},  # clé en trop (extra=forbid)
@@ -576,6 +579,10 @@ _QUESTION_ID = str(uuid.uuid4())
                 ],
             }
         },  # ids dupliqués
+        {"content": {"legende": "x" * 501}},  # légende trop longue
+        {"content": {"affichage": "popup"}},  # affichage hors littéraux
+        {"content": {"legende": None, "resource_id": "x"}},  # clé en trop (extra=forbid)
+        {"resource_id": "pas-un-uuid"},
     ],
 )
 def test_edition_contenu_payload_invalide_sans_acces_bdd(payload):
@@ -737,6 +744,155 @@ def test_edition_contenu_bloc_exercice_id_inconnu_rejete():
     assert session.commits == 1  # upsert auth seulement
 
 
+def _document_row(**overrides):
+    overrides.setdefault("type", "document")
+    overrides.setdefault("content", {"legende": None, "affichage": "inline"})
+    return _block_row(**overrides)
+
+
+def _resource_row(**overrides):
+    defaults = dict(
+        id=uuid.uuid4(),
+        course_id=None,
+        type="document",
+        s3_key="uuid/schema.pdf",
+        nom_original="schema.pdf",
+        taille=2048,
+        mime="application/pdf",
+        statut="disponible",
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_edition_bloc_document_attache_une_ressource():
+    user = _user_row()
+    course = _course_row()
+    block = _document_row()
+    resource = _resource_row(course_id=course.id)
+    # FIFO : cours, bloc, puis ressource (select déclenché par resource_id non nul).
+    session = _FakeSession([[user], [course], [block], [resource]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"resource_id": str(resource.id)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["resource_id"] == str(resource.id)
+    assert block.resource_id == resource.id
+    assert block.content == {"legende": None, "affichage": "inline"}  # intact
+    assert course.updated_at != _NOW
+    assert session.commits >= 1
+
+
+def test_edition_bloc_document_detache_avec_null():
+    # resource_id: null explicite = détacher — pas de select ressource (FIFO
+    # plus courte).
+    user = _user_row()
+    course = _course_row()
+    block = _document_row(resource_id=uuid.uuid4())
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json={"resource_id": None}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["resource_id"] is None
+    assert block.resource_id is None
+    assert course.updated_at != _NOW
+
+
+def test_edition_bloc_document_ressource_inconnue_ou_autre_cours():
+    # Le select scopé course_id ne retourne rien : 422 (le bloc, lui, existe).
+    user = _user_row()
+    course = _course_row()
+    block = _document_row()
+    session = _FakeSession([[user], [course], [block], []])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"resource_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Ressource inconnue"
+    assert block.resource_id is None
+    assert course.updated_at == _NOW
+    assert session.commits == 1  # upsert auth seulement
+
+
+def test_edition_bloc_document_ressource_en_attente_rejetee():
+    user = _user_row()
+    course = _course_row()
+    block = _document_row()
+    resource = _resource_row(course_id=course.id, statut="en_attente")
+    session = _FakeSession([[user], [course], [block], [resource]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"resource_id": str(resource.id)},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Ressource non disponible"
+    assert block.resource_id is None
+    assert course.updated_at == _NOW
+
+
+def test_edition_resource_id_sur_bloc_non_document_rejetee():
+    # 422 levée avant tout select ressource (FIFO sans résultat supplémentaire).
+    user = _user_row()
+    course = _course_row()
+    block = _block_row()  # type texte
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"resource_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 422
+    assert "blocs « document »" in response.json()["detail"]
+    assert block.resource_id is None
+    assert course.updated_at == _NOW
+    assert session.commits == 1
+
+
+def test_edition_contenu_bloc_document():
+    user = _user_row()
+    course = _course_row()
+    block = _document_row()
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"content": {"legende": "Figure 1", "affichage": "telechargement"}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == {
+        "legende": "Figure 1",
+        "affichage": "telechargement",
+    }
+    assert block.content == {"legende": "Figure 1", "affichage": "telechargement"}
+    assert course.updated_at != _NOW
+
+
+def test_edition_contenu_document_sur_bloc_texte_rejetee():
+    # Le content vide {} valide en DocumentContent : c'est le garde-fou
+    # forme↔type qui le rejette sur un bloc d'un autre type.
+    user = _user_row()
+    course = _course_row()
+    block = _block_row()  # type texte
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json={"content": {}}
+    )
+
+    assert response.status_code == 422
+    assert "correspond à un bloc « document »" in response.json()["detail"]
+    assert block.content == {"markdown": ""}
+    assert course.updated_at == _NOW
+
+
 def test_suppression_bloc():
     user = _user_row()
     course = _course_row()
@@ -750,14 +906,17 @@ def test_suppression_bloc():
     assert course.updated_at != _NOW
 
 
-def test_suppression_bloc_ressource_purge_s3():
-    # Un bloc ressource se supprime via sa ligne resources (cascade retire le
-    # bloc) et son objet S3 part du bucket.
+def test_suppression_bloc_document_ne_touche_ni_resources_ni_s3():
+    # Supprimer un bloc document laisse la ressource pointée dans la
+    # bibliothèque du cours (et son objet S3 dans le bucket).
     user = _user_row()
     course = _course_row()
-    resource_id = uuid.uuid4()
-    block = _block_row(type="ressource", resource_id=resource_id)
-    session = _FakeSession([[user], [course], [block], ["uuid/schema.pdf"]])
+    block = _block_row(
+        type="document",
+        content={"legende": None, "affichage": "inline"},
+        resource_id=uuid.uuid4(),
+    )
+    session = _FakeSession([[user], [course], [block]])
     storage = _FakeStorage()
     response = _client(session, storage).delete(
         f"/api/v1/courses/{course.id}/blocks/{block.id}"
@@ -765,8 +924,8 @@ def test_suppression_bloc_ressource_purge_s3():
 
     assert response.status_code == 204
     [(stmt, _)] = _deletes(session)
-    assert stmt.table.name == "resources"  # cascade FK retire le bloc
-    assert storage.deleted == ["uuid/schema.pdf"]
+    assert stmt.table.name == "blocks"  # jamais de delete resources ici
+    assert storage.deleted == []
     assert course.updated_at != _NOW
 
 

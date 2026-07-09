@@ -118,13 +118,14 @@ Le point structurant : **deux populations, deux modèles d'accès** sur la même
 - **Cohérence DB↔S3** : la ligne `resource` est créée *avant* l'upload avec `statut='en_attente'` ; un endpoint de confirmation vérifie l'objet (HEAD S3) et passe le statut à `'disponible'`. Seules les ressources disponibles sont servies.
 - **Types & previews** : PDF et images au MVP. Génération de miniatures/aperçus à différer (coûteux en CPU sur ARM — à faire en tâche asynchrone, voire à la demande).
 
-### 5.3 Modélisation du contenu : le cours comme suite de blocs
-Pour « agencer texte de cours + documents + images », le modèle gagnant est un **contenu par blocs ordonnés** (façon éditeur type Notion, en plus simple).
-- Un cours = une liste ordonnée de blocs de quatre types : `texte`, `exercice`, `ressource`, `lien`.
-- Le **texte de cours** (bloc `texte`) est du **markdown simple stocké dans le JSONB du bloc** (`{"markdown": ...}`) — pas de HTML brut : plus sûr, réindexable, directement exploitable par l'IA. Titres, paragraphes et encadrés sont couverts par le markdown, sans types de blocs dédiés.
+### 5.3 Modélisation du contenu : blocs (progression) et ressources (bibliothèque), découplés
+Pour « agencer texte de cours + documents + images », le modèle gagnant est un **contenu par blocs ordonnés** (façon éditeur type Notion, en plus simple), avec une séparation stricte : les **blocs** portent la progression pédagogique, les **ressources** (fichiers S3) forment une **bibliothèque par cours**, indépendante des blocs.
+- Un cours = une liste ordonnée de blocs de quatre types : `texte`, `exercice`, `document`, `module`.
+- Le **texte de cours** (bloc `texte`) est du **markdown simple stocké dans le JSONB du bloc** (`{"markdown": ...}`) — pas de HTML brut : plus sûr, réindexable, directement exploitable par l'IA. Titres, paragraphes, encadrés **et liens externes** sont couverts par le markdown, sans types de blocs dédiés (l'ancien type `lien` a été supprimé).
 - Les **exercices** (bloc `exercice`) portent des questions à champ libre dans le JSONB, chacune avec un **id uuid stable** généré côté service : les soumissions élèves (J2) et la review IA référenceront `(block_id, question_id)`.
-- Les blocs `ressource` ne contiennent qu'une **référence** vers une ligne `resource` (elle-même pointant vers S3 : document, image, audio, vidéo ou module). Le binaire et l'éditorial restent découplés. Les blocs `lien` (embed externe, ex. YouTube) gardent l'URL dans le JSONB, rien sur S3.
-- Enjeu UX côté Angular : éditeur d'ordre des blocs (drag & drop) et insertion de ressources existantes ou nouvelles.
+- Les blocs `document` sont un **pont nullable** vers une ressource de la bibliothèque du cours : la référence vit en **colonne** `resource_id` (jamais dans le JSONB, qui ne porte que l'éditorial `{"legende", "affichage"}`). Un bloc document naît vide et se remplit dans l'éditeur ; supprimer la ressource **supprime** les blocs qui la pointent (FK `CASCADE` — un document sans son fichier n'a pas de sens). Une ressource peut exister sans aucun bloc, et être pointée par plusieurs blocs.
+- Les blocs `module` (modules interactifs HTML/JS, cf. §5.5) sont des blocs à part entière — le type existe, son contrat de `content` sera défini au J4.
+- Enjeu UX côté Angular : page de cours à deux onglets (Blocs / Ressources), éditeur d'ordre des blocs (drag & drop), picker de ressources dans l'éditeur du bloc document.
 
 ### 5.4 Recherche
 - MVP : **Full-Text Search Postgres** (`tsvector` + index GIN) sur titres de cours, texte des blocs, noms et tags de ressources. Configuration `french` pour le *stemming*.
@@ -133,6 +134,7 @@ Pour « agencer texte de cours + documents + images », le modèle gagnant est u
 
 ### 5.5 Modules interactifs HTML/JS
 Le point le plus sensible niveau sécurité : tu vas servir du **code arbitraire** (le tien, mais quand même).
+- Un module est un **bloc** (`type='module'`, cf. §5.3), pas une ressource : le type de bloc existe déjà, toute la logique métier (upload du bundle, stockage, exécution) sera conçue au **J4** — l'ancienne table `modules` (spécialisation d'une ressource) a été supprimée, le bon schéma sera recréé à ce moment-là.
 - Un module = **bundle HTML/JS auto-porté** (un dossier ou un `.zip`), stocké sur S3, métadonnées en base.
 - Rendu **isolé** : intégration via `<iframe sandbox>` servie depuis un **chemin/origine séparé** de l'app principale, avec une **CSP** stricte → empêche un module de toucher au DOM de l'app, aux tokens, etc.
 - **Versionnage** par clé S3 (`module-id/v3/...`) pour pouvoir corriger un module sans casser les liens existants.
@@ -170,9 +172,8 @@ erDiagram
     USER    }o--o{ EDUCATION_LEVEL : frequente
     COURSE  ||--o{ BLOCK : ordonne
     COURSE  ||--o{ RESOURCE : rassemble
-    BLOCK   }o--o| RESOURCE : reference
+    BLOCK   }o--o| RESOURCE : pointe
     COURSE  ||--o{ SHARE_LINK : expose
-    RESOURCE ||--o| MODULE : peut_etre
 
     USER {
       uuid id
@@ -234,12 +235,6 @@ erDiagram
       string statut
       timestamptz updated_at
     }
-    MODULE {
-      uuid id
-      uuid resource_id
-      int version
-      string entrypoint
-    }
     SHARE_LINK {
       uuid id
       string token
@@ -254,7 +249,7 @@ erDiagram
 
 `USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `contexte` (« enseigne » / « apprend ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `systeme_scolaire` du profil (validation en service ; soumission `PUT /api/v1/users/me/onboarding`, sémantique remplacement → sert aussi d'édition de profil).
 
-`COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`texte`/`exercice`/`ressource`/`lien`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `ressource` portent une FK `resource_id` (CHECK de cohérence en base). `RESOURCE` rattache un fichier S3 à son cours : `s3_key` plate unique, ligne créée en `statut='en_attente'` avant l'upload presigned puis confirmée `'disponible'` (cf. §5.2). `MODULE` est la spécialisation 0..1 d'une ressource de `type='module'` (bundle HTML/JS versionné par clé S3 `module-id/vN/...`, `entrypoint` relatif au bundle). Restent à venir : `SHARE_LINK` (J2) et le `search_vector` FTS de `COURSE` (J3).
+`COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`texte`/`exercice`/`document`/`module`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `document` peuvent porter une FK `resource_id` — **nullable** (bloc créé vide) et `ON DELETE CASCADE` (supprimer la ressource supprime les blocs qui la pointent) — CHECK de cohérence en base. `RESOURCE` est la **bibliothèque du cours**, indépendante des blocs : `s3_key` plate unique, ligne créée en `statut='en_attente'` avant l'upload presigned puis confirmée `'disponible'` (cf. §5.2), CRUD complet (liste, renommage, suppression avec purge S3). Le schéma des modules interactifs (blocs `module`) sera conçu au J4. Restent à venir : `SHARE_LINK` (J2) et le `search_vector` FTS de `COURSE` (J3).
 
 ---
 

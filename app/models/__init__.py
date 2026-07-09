@@ -13,7 +13,6 @@ from app.core.database import Base  # noqa: F401
 from app.models.block import Block
 from app.models.course import Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
-from app.models.module import Module
 from app.models.resource import Resource
 from app.models.subject import Subject
 from app.models.user import User, user_education_levels, user_subjects
@@ -23,7 +22,6 @@ __all__ = [
     "Block",
     "Course",
     "EducationLevel",
-    "Module",
     "Resource",
     "Subject",
     "User",
