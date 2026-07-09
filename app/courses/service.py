@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import bindparam, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.storage import Storage
 from app.courses.schemas import (
     BlockCreate,
     BlockOrderUpdate,
@@ -26,9 +27,10 @@ from app.courses.schemas import (
     ExerciceContent,
     TexteContent,
 )
-from app.models.block import TYPE_EXERCICE, TYPE_LIEN, TYPE_TEXTE, Block
+from app.models.block import TYPE_EXERCICE, TYPE_LIEN, TYPE_RESSOURCE, TYPE_TEXTE, Block
 from app.models.course import Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
+from app.models.resource import Resource
 from app.models.subject import Subject
 from app.models.user import User
 
@@ -318,19 +320,26 @@ async def get_course_detail(
     return CourseDetailRead(**base.model_dump(), blocks=[_block_read(b) for b in blocks])
 
 
-async def delete_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> None:
+async def delete_course(
+    db: AsyncSession, user: User, course_id: uuid.UUID, storage: Storage
+) -> None:
     """Supprime un cours du prof ; 404 s'il n'existe pas ou appartient à autrui.
 
-    Ordre des execute : 1) cours (contrôle de propriété), 2) delete. Les blocs,
-    ressources et lignes de classement (course_subjects/course_education_levels)
-    partent en cascade via les FK ``ondelete=CASCADE``.
+    Ordre des execute : 1) cours (contrôle de propriété), 2) clés S3 des
+    ressources du cours, 3) delete. Les blocs, ressources et lignes de classement
+    (course_subjects/course_education_levels) partent en cascade via les FK
+    ``ondelete=CASCADE`` ; les objets S3 (hors cascade DB) sont supprimés après
+    le commit, pour ne pas laisser d'orphelins dans le bucket.
     """
     course = await _get_owned_course(db, user, course_id)
-    # TODO(J2/S3) : le cascade DB supprime les lignes ``resources``, mais pas les
-    # fichiers dans S3. Avant ce delete, énumérer les resources du cours et
-    # supprimer leurs objets S3 (par s3_key) pour ne pas laisser d'orphelins.
+    s3_keys = list(
+        (await db.execute(select(Resource.s3_key).where(Resource.course_id == course.id)))
+        .scalars()
+        .all()
+    )
     await db.execute(delete(Course).where(Course.id == course.id))
     await db.commit()
+    await storage.delete_many(s3_keys)
 
 
 async def add_block(
@@ -382,29 +391,44 @@ async def add_block(
 
 
 async def delete_block(
-    db: AsyncSession, user: User, course_id: uuid.UUID, block_id: uuid.UUID
+    db: AsyncSession, user: User, course_id: uuid.UUID, block_id: uuid.UUID, storage: Storage
 ) -> None:
     """Supprime un bloc du cours ; les positions restantes gardent leurs trous.
 
-    Ordre des execute : 1) cours (contrôle de propriété), 2) existence du
-    bloc dans ce cours (select puis delete : la fausse session des tests ne
-    simule pas rowcount), 3) delete.
+    Ordre des execute : 1) cours (contrôle de propriété), 2) bloc dans ce cours
+    (select puis delete : la fausse session des tests ne simule pas rowcount) —
+    on lit son ``type``/``resource_id``. Un bloc « ressource » se supprime en
+    supprimant sa ligne ``resources`` (le CASCADE ``resource_id`` retire le
+    bloc), après avoir relu sa clé S3 (3) : delete ``resources`` (4), puis l'objet
+    S3 après le commit ; les autres types : delete direct du bloc (3).
     """
     course = await _get_owned_course(db, user, course_id)
-    existe = (
+    block = (
         (
             await db.execute(
-                select(Block.id).where(Block.id == block_id, Block.course_id == course.id)
+                select(Block).where(Block.id == block_id, Block.course_id == course.id)
             )
         )
         .scalars()
         .one_or_none()
     )
-    if existe is None:
+    if block is None:
         raise _introuvable("Bloc introuvable")
-    await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
+    s3_keys: list[str] = []
+    if block.type == TYPE_RESSOURCE and block.resource_id is not None:
+        s3_key = (
+            (await db.execute(select(Resource.s3_key).where(Resource.id == block.resource_id)))
+            .scalars()
+            .one_or_none()
+        )
+        if s3_key is not None:
+            s3_keys.append(s3_key)
+        await db.execute(delete(Resource).where(Resource.id == block.resource_id))
+    else:
+        await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
     course.updated_at = datetime.now(UTC)
     await db.commit()
+    await storage.delete_many(s3_keys)
 
 
 async def update_block(

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.storage import Storage, get_storage
 from app.courses import service
 from app.courses.schemas import (
     BlockCreate,
@@ -59,10 +60,11 @@ async def delete_course(
     course_id: uuid.UUID,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ) -> None:
     """Supprime un cours et tout son contenu (blocs, ressources, classement)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    await service.delete_course(db, user, course_id)
+    await service.delete_course(db, user, course_id, storage)
 
 
 @router.post(
@@ -116,7 +118,8 @@ async def delete_block(
     block_id: uuid.UUID,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ) -> None:
-    """Supprime un bloc du cours."""
+    """Supprime un bloc du cours (et son objet S3 si c'est une ressource)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    await service.delete_block(db, user, course_id, block_id)
+    await service.delete_block(db, user, course_id, block_id, storage)

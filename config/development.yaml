@@ -19,3 +19,11 @@ OIDC_ISSUER: https://zitadel.home.fbatard.fr
 # ID de projet Zitadel (2e entrée du claim `aud` du token ; l'autre est le
 # client_id de la SPA). Le resource server exige la présence de cette audience.
 OIDC_AUDIENCE: "380648758204956674"
+
+# Stockage S3 — MinIO du docker-compose, exposé sur localhost:9000.
+# NB : lancer uvicorn en local (pas dans le conteneur api) pour que les URL
+# présignées pointent localhost:9000, joignable par le navigateur.
+# Les clés (S3_ACCESS_KEY/S3_SECRET_KEY) sont des secrets → .env.
+S3_ENDPOINT_URL: http://localhost:9000
+S3_REGION: us-east-1
+S3_BUCKET: opencartable

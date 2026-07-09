@@ -133,6 +133,21 @@ class Settings(BaseSettings):
     OIDC_ISSUER: str
     OIDC_AUDIENCE: str
 
+    # Stockage objet S3 — bucket PRIVÉ, jamais exposé : l'API mint des URL
+    # présignées (PUT pour l'upload direct navigateur→S3, GET à TTL court pour
+    # la lecture). Toute la logique boto3 est confinée dans app/core/storage.py.
+    # Endpoint/bucket/région = valeurs publiques (YAML) ; clés = secrets (.env).
+    S3_ENDPOINT_URL: str = ""  # vide = AWS ; sinon MinIO/S3-compatible
+    S3_REGION: str = "us-east-1"
+    S3_BUCKET: str = "opencartable"
+    S3_ACCESS_KEY: str = ""  # SECRET (.env)
+    S3_SECRET_KEY: str = ""  # SECRET (.env)
+    # TTL des URL présignées (secondes). GET court (limite la fuite, §7).
+    S3_PRESIGN_PUT_TTL: int = 900
+    S3_PRESIGN_GET_TTL: int = 300
+    # Garde-fou taille d'upload (octets) — ménage la RAM/BP du Pi. 100 Mo.
+    S3_MAX_UPLOAD_BYTES: int = 104_857_600
+
 
 @lru_cache
 def get_settings() -> Settings:

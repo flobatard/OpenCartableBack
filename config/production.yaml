@@ -17,3 +17,10 @@ POSTGRES_DB: cartable
 # Zitadel de prod — remplacer par votre instance
 OIDC_ISSUER: https://votre-instance.zitadel.cloud
 OIDC_AUDIENCE: cartable-api
+
+# Stockage S3 — bucket privé fourni par l'infra (S3 supposé externe).
+# Laisser S3_ENDPOINT_URL vide pour AWS S3, ou renseigner l'endpoint d'un
+# S3-compatible. Les clés (S3_ACCESS_KEY/S3_SECRET_KEY) vont dans le .env serveur.
+# S3_ENDPOINT_URL: https://s3.eu-west-3.amazonaws.com
+S3_REGION: eu-west-3
+S3_BUCKET: opencartable

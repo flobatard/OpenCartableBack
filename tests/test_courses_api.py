@@ -17,6 +17,7 @@ from sqlalchemy.sql.dml import Delete, Insert, Update
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.storage import get_storage
 from app.main import create_app
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
@@ -94,12 +95,23 @@ class _FakeSession:
         self.commits += 1
 
 
-def _client(session) -> TestClient:
+class _FakeStorage:
+    """Faux client S3 : n'enregistre que les clés supprimées (pas de réseau)."""
+
+    def __init__(self):
+        self.deleted: list[str] = []
+
+    async def delete_many(self, s3_keys):
+        self.deleted.extend(s3_keys)
+
+
+def _client(session, storage=None) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
         sub="prof-123", email=None, roles=frozenset(), claims={}
     )
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
     return TestClient(app)
 
 
@@ -382,8 +394,9 @@ def test_ajout_premier_bloc_position_zero():
 
 @pytest.mark.parametrize("type_bloc", ["ressource", "inconnu"])
 def test_ajout_bloc_type_refuse_sans_acces_bdd(type_bloc):
-    # « ressource » exige un resource_id (upload S3, pas encore livré) : le
-    # schéma ne l'accepte pas.
+    # « ressource » exige un resource_id : ce type ne se crée pas par POST
+    # /blocks mais via le flow d'upload S3 (POST /resources + confirm) — le
+    # schéma BlockCreate ne l'accepte donc pas.
     session = _FakeSession()
     response = _client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/blocks", json={"type": type_bloc}
@@ -727,13 +740,33 @@ def test_edition_contenu_bloc_exercice_id_inconnu_rejete():
 def test_suppression_bloc():
     user = _user_row()
     course = _course_row()
-    block_id = uuid.uuid4()
-    session = _FakeSession([[user], [course], [block_id]])
-    response = _client(session).delete(f"/api/v1/courses/{course.id}/blocks/{block_id}")
+    block = _block_row()  # type texte : delete direct du bloc
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).delete(f"/api/v1/courses/{course.id}/blocks/{block.id}")
 
     assert response.status_code == 204
     [(stmt, _)] = _deletes(session)
     assert stmt.table.name == "blocks"
+    assert course.updated_at != _NOW
+
+
+def test_suppression_bloc_ressource_purge_s3():
+    # Un bloc ressource se supprime via sa ligne resources (cascade retire le
+    # bloc) et son objet S3 part du bucket.
+    user = _user_row()
+    course = _course_row()
+    resource_id = uuid.uuid4()
+    block = _block_row(type="ressource", resource_id=resource_id)
+    session = _FakeSession([[user], [course], [block], ["uuid/schema.pdf"]])
+    storage = _FakeStorage()
+    response = _client(session, storage).delete(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}"
+    )
+
+    assert response.status_code == 204
+    [(stmt, _)] = _deletes(session)
+    assert stmt.table.name == "resources"  # cascade FK retire le bloc
+    assert storage.deleted == ["uuid/schema.pdf"]
     assert course.updated_at != _NOW
 
 
@@ -760,13 +793,17 @@ def test_suppression_cours_non_possede():
 def test_suppression_cours():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course]])
-    response = _client(session).delete(f"/api/v1/courses/{course.id}")
+    # 3e résultat FIFO : les clés S3 des ressources du cours (à purger du bucket).
+    session = _FakeSession([[user], [course], ["abc/doc.pdf", "def/img.png"]])
+    storage = _FakeStorage()
+    response = _client(session, storage).delete(f"/api/v1/courses/{course.id}")
 
     assert response.status_code == 204
     [(stmt, _)] = _deletes(session)
     assert stmt.table.name == "courses"  # cascade FK : blocs/ressources/classement
     assert session.commits >= 1
+    # Les objets S3 sont supprimés après le commit (hors cascade DB).
+    assert storage.deleted == ["abc/doc.pdf", "def/img.png"]
 
 
 def test_suppression_cours_non_possede_404():

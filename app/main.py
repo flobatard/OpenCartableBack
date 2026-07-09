@@ -9,6 +9,7 @@ from app.core.database import engine
 from app.courses.router import router as courses_router
 from app.education_levels.router import router as education_levels_router
 from app.health.router import router as health_router
+from app.resources.router import router as resources_router
 from app.subjects.router import router as subjects_router
 from app.users.router import router as users_router
 
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(education_levels_router, prefix=settings.API_V1_PREFIX)
     app.include_router(users_router, prefix=settings.API_V1_PREFIX)
     app.include_router(courses_router, prefix=settings.API_V1_PREFIX)
+    app.include_router(resources_router, prefix=settings.API_V1_PREFIX)
 
     return app
 

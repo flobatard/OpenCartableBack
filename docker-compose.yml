@@ -15,6 +15,37 @@ services:
       timeout: 3s
       retries: 10
 
+  # Stockage objet S3 pour le dev local (bucket privé). MinIO est multi-arch
+  # (fonctionne sur Pi ARM64). Console web sur http://localhost:9001.
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  # Job one-shot : crée le bucket au démarrage (idempotent), puis s'arrête.
+  minio-createbucket:
+    image: minio/mc
+    depends_on:
+      - minio
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-opencartable}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $${S3_ACCESS_KEY} $${S3_SECRET_KEY}; do
+        echo 'attente de minio...'; sleep 1;
+      done;
+      mc mb --ignore-existing local/$${S3_BUCKET};
+      "
+
   api:
     build: .
     # Les migrations s'appliquent au démarrage (no-op tant que versions/ est vide)
@@ -25,9 +56,22 @@ services:
       # En compose, l'hôte Postgres est le service db (prend le pas sur .env/YAML).
       # L'URL complète est assemblée par app/core/config.py (mot de passe encodé).
       POSTGRES_HOST: db
+      POSTGRES_USER: ${POSTGRES_USER:-cartable}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis}
+      POSTGRES_DB: ${POSTGRES_DB:-cartable}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      # En conteneur, S3 est joignable sur le réseau compose (minio:9000).
+      # CAVEAT : les URL présignées mintées ici pointent donc minio:9000,
+      # INJOIGNABLE par le navigateur. Pour tester l'upload de bout en bout,
+      # lancer uvicorn en local (config/development.yaml → localhost:9000).
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-opencartable}
+      S3_REGION: ${S3_REGION:-us-east-1}
     depends_on:
       db:
         condition: service_healthy
+      minio-createbucket:
+        condition: service_completed_successfully
     healthcheck:
       # curl absent de python:slim -> healthcheck en python stdlib
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3).status==200 else 1)"]
@@ -40,3 +84,4 @@ services:
 
 volumes:
   pgdata:
+  miniodata:
