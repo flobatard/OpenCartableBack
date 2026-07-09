@@ -189,6 +189,14 @@ async def confirm_upload(
     d'UPDATE explicite — flush au commit). Ne crée AUCUN bloc : la ressource
     rejoint la bibliothèque, les blocs ``document`` la pointeront via
     ``BlockUpdate.resource_id``.
+
+    ⚠ Le ``ResourceRead`` est construit AVANT le commit : ``updated_at``
+    porte un ``onupdate=func.now()`` côté SQL, donc le flush du commit
+    l'expire (valeur générée par Postgres, inconnue de l'ORM) et le relire
+    ensuite déclencherait un lazy-load synchrone → ``MissingGreenlet`` en
+    asyncio. La valeur renvoyée est donc celle d'avant le flush (léger
+    décalage assumé — pas de ``refresh``, la fausse session des tests ne le
+    simule pas).
     """
     course = await _get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
@@ -206,8 +214,9 @@ async def confirm_upload(
 
     resource.statut = STATUT_DISPONIBLE
     course.updated_at = datetime.now(UTC)
+    read = _resource_read(resource)
     await db.commit()
-    return _resource_read(resource)
+    return read
 
 
 async def update_resource(
@@ -221,14 +230,18 @@ async def update_resource(
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) ressource
     (scopée cours). Le ``Content-Disposition`` des prochains téléchargements
-    suit le nouveau nom (``presign_get(s3_key, nom_original)``).
+    suit le nouveau nom (``presign_get(s3_key, nom_original)``). Le
+    ``ResourceRead`` est construit AVANT le commit (même piège
+    ``MissingGreenlet`` que ``confirm_upload`` : le flush expire
+    ``updated_at``, généré côté Postgres).
     """
     course = await _get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
     resource.nom_original = payload.nom_original
     course.updated_at = datetime.now(UTC)
+    read = _resource_read(resource)
     await db.commit()
-    return _resource_read(resource)
+    return read
 
 
 async def delete_resource(
