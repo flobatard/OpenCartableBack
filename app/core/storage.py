@@ -53,12 +53,17 @@ class Storage:
             ExpiresIn=settings.S3_PRESIGN_PUT_TTL,
         )
 
-    def presign_get(self, s3_key: str, nom_original: str) -> str:
+    def presign_get(
+        self, s3_key: str, nom_original: str, inline: bool = False
+    ) -> str:
         """URL présignée (GET, TTL court) pour lire/télécharger un objet.
 
-        ``ResponseContentDisposition`` restitue le nom de fichier d'origine.
+        ``ResponseContentDisposition`` restitue le nom de fichier d'origine ;
+        ``inline=True`` demande au navigateur d'afficher l'objet au lieu de le
+        télécharger (gateway de lecture), ``False`` force le téléchargement.
         """
-        disposition = f'attachment; filename="{nom_original}"'
+        disposition_type = "inline" if inline else "attachment"
+        disposition = f'{disposition_type}; filename="{nom_original}"'
         return self._client.generate_presigned_url(
             "get_object",
             Params={

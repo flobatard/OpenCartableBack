@@ -290,3 +290,27 @@ async def presign_download(
     return ResourceDownload(
         download_url=download_url, expires_in=settings.S3_PRESIGN_GET_TTL
     )
+
+
+async def presign_content(
+    db: AsyncSession,
+    user: User,
+    course_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    storage: Storage,
+) -> str:
+    """URL présignée de lecture *inline* (gateway) ; renvoie l'URL brute.
+
+    Ordre des execute : 1) cours (contrôle de propriété), 2) ressource (scopée
+    cours). Même contrôle que :func:`presign_download` (409 tant que la
+    ressource n'est pas ``disponible``) mais disposition ``inline`` — le
+    navigateur affiche l'objet au lieu de le télécharger. La route sert cette
+    URL en redirection 307 : une URL API stable côté front donne accès au
+    contenu, sans faire transiter le binaire par l'API (contrainte Pi).
+    Lecture seule : pas de commit.
+    """
+    course = await _get_owned_course(db, user, course_id)
+    resource = await _get_resource(db, course, resource_id)
+    if resource.statut != STATUT_DISPONIBLE:
+        raise _conflit("Ressource non disponible (upload non confirmé)")
+    return storage.presign_get(resource.s3_key, resource.nom_original, inline=True)

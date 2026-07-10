@@ -98,6 +98,7 @@ class _FakeStorage:
         self._head_result = head_result
         self.put_calls: list[tuple[str, str]] = []
         self.get_calls: list[tuple[str, str]] = []
+        self.inline_calls: list[bool] = []
         self.head_calls: list[str] = []
         self.deleted: list[str] = []
 
@@ -105,8 +106,9 @@ class _FakeStorage:
         self.put_calls.append((s3_key, content_type))
         return f"https://s3.test/put/{s3_key}"
 
-    def presign_get(self, s3_key, nom_original):
+    def presign_get(self, s3_key, nom_original, inline=False):
         self.get_calls.append((s3_key, nom_original))
+        self.inline_calls.append(inline)
         return f"https://s3.test/get/{s3_key}"
 
     async def head(self, s3_key):
@@ -156,6 +158,7 @@ _RESOURCE_ID = uuid.uuid4()
         }),
         ("DELETE", f"/api/v1/courses/{_COURSE_ID}/resources/{_RESOURCE_ID}", None),
         ("GET", f"/api/v1/courses/{_COURSE_ID}/resources/{_RESOURCE_ID}/download", None),
+        ("GET", f"/api/v1/courses/{_COURSE_ID}/resources/{_RESOURCE_ID}/content", None),
     ],
 )
 def test_auth_requise(method, path, body):
@@ -549,6 +552,55 @@ def test_download_ressource_introuvable_404():
     session = _FakeSession([[user], [course], []])
     response = _client(session).get(
         f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}/download"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Ressource introuvable"
+
+
+# --- Gateway de lecture (redirection 307 vers l'URL présignée inline) ----------
+
+
+def test_content_redirige_307_inline():
+    user = _user_row()
+    course = _course_row()
+    resource = _resource_row(course_id=course.id, statut="disponible")
+    session = _FakeSession([[user], [course], [resource]])
+    storage = _FakeStorage()
+    response = _client(session, storage).get(
+        f"/api/v1/courses/{course.id}/resources/{resource.id}/content",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"https://s3.test/get/{resource.s3_key}"
+    # Disposition inline demandée à S3 (le navigateur affiche, pas de download).
+    assert storage.get_calls == [(resource.s3_key, resource.nom_original)]
+    assert storage.inline_calls == [True]
+
+
+def test_content_non_disponible_409():
+    user = _user_row()
+    course = _course_row()
+    resource = _resource_row(course_id=course.id, statut="en_attente")
+    session = _FakeSession([[user], [course], [resource]])
+    storage = _FakeStorage()
+    response = _client(session, storage).get(
+        f"/api/v1/courses/{course.id}/resources/{resource.id}/content",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    assert storage.get_calls == []
+
+
+def test_content_ressource_introuvable_404():
+    user = _user_row()
+    course = _course_row()
+    session = _FakeSession([[user], [course], []])
+    response = _client(session).get(
+        f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}/content",
+        follow_redirects=False,
     )
 
     assert response.status_code == 404

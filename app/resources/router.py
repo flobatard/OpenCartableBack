@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser, get_current_user
@@ -112,3 +113,27 @@ async def download_resource(
     """Renvoie une URL présignée (TTL court) pour lire/télécharger la ressource."""
     user = await users_service.get_or_create_by_sub(db, auth)
     return await service.presign_download(db, user, course_id, resource_id, storage)
+
+
+@router.get(
+    "/courses/{course_id}/resources/{resource_id}/content",
+    response_class=RedirectResponse,
+    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+)
+async def resource_content(
+    course_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+) -> RedirectResponse:
+    """Gateway de lecture : redirige (307) vers l'URL présignée inline S3.
+
+    Une URL API stable côté front (``…/resources/{id}/content``) donne accès au
+    contenu : le back mint une URL présignée S3 (TTL court, disposition inline)
+    et redirige — le binaire ne transite jamais par l'API (contrainte Pi).
+    Pour forcer le téléchargement (pièce jointe), voir ``…/download``.
+    """
+    user = await users_service.get_or_create_by_sub(db, auth)
+    url = await service.presign_content(db, user, course_id, resource_id, storage)
+    return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
