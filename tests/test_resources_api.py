@@ -129,6 +129,15 @@ def _client(session, storage=None) -> TestClient:
     return TestClient(app)
 
 
+def _public_client(session, storage=None) -> TestClient:
+    # Pas d'override de get_current_user : la route publique ne dépend pas de
+    # l'auth (on prouve ainsi qu'aucun Bearer n'est requis).
+    app = create_app()
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
+    return TestClient(app)
+
+
 def _inserts(session, table_name):
     return [
         (stmt, params)
@@ -600,6 +609,53 @@ def test_content_ressource_introuvable_404():
     session = _FakeSession([[user], [course], []])
     response = _client(session).get(
         f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}/content",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Ressource introuvable"
+
+
+# --- Gateway publique (sans auth, adressage par capability uuid) ---------------
+
+
+def test_content_public_redirige_307_sans_auth():
+    course_id = uuid.uuid4()
+    resource = _resource_row(course_id=course_id, statut="disponible")
+    # Un seul execute : la ressource (pas d'upsert auth, pas de select cours).
+    session = _FakeSession([[resource]])
+    storage = _FakeStorage()
+    response = _public_client(session, storage).get(
+        f"/api/v1/courses/{course_id}/resources/{resource.id}/public",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"https://s3.test/get/{resource.s3_key}"
+    assert storage.inline_calls == [True]
+    assert len(session.executed) == 1
+    assert session.commits == 0  # aucune écriture, aucune résolution d'utilisateur
+
+
+def test_content_public_non_disponible_409():
+    course_id = uuid.uuid4()
+    resource = _resource_row(course_id=course_id, statut="en_attente")
+    session = _FakeSession([[resource]])
+    storage = _FakeStorage()
+    response = _public_client(session, storage).get(
+        f"/api/v1/courses/{course_id}/resources/{resource.id}/public",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    assert storage.get_calls == []
+
+
+def test_content_public_introuvable_404():
+    course_id = uuid.uuid4()
+    session = _FakeSession([[]])  # ressource absente de ce cours
+    response = _public_client(session).get(
+        f"/api/v1/courses/{course_id}/resources/{uuid.uuid4()}/public",
         follow_redirects=False,
     )
 

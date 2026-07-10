@@ -137,3 +137,27 @@ async def resource_content(
     user = await users_service.get_or_create_by_sub(db, auth)
     url = await service.presign_content(db, user, course_id, resource_id, storage)
     return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+@router.get(
+    "/courses/{course_id}/resources/{resource_id}/public",
+    response_class=RedirectResponse,
+    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+)
+async def resource_content_public(
+    course_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+) -> RedirectResponse:
+    """Gateway de lecture **publique** (aucune auth) : redirige (307) vers l'URL présignée inline.
+
+    Ni Bearer ni contrôle de propriété : la ressource est adressée par
+    ``(course_id, resource_id)`` — deux uuid non devinables = *capability URL* —,
+    d'où son usage possible en ``<img src>``/lien direct. 404 si la ressource
+    n'existe pas dans ce cours, 409 tant qu'elle n'est pas ``disponible``.
+    ⚠ Précurseur des liens publics élèves : le régime par token de partage (J2)
+    remplacera/complétera ce contrôle par capability.
+    """
+    url = await service.presign_content_public(db, course_id, resource_id, storage)
+    return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)

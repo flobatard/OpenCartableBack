@@ -314,3 +314,40 @@ async def presign_content(
     if resource.statut != STATUT_DISPONIBLE:
         raise _conflit("Ressource non disponible (upload non confirmé)")
     return storage.presign_get(resource.s3_key, resource.nom_original, inline=True)
+
+
+async def presign_content_public(
+    db: AsyncSession,
+    course_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    storage: Storage,
+) -> str:
+    """URL présignée de lecture *inline*, **sans authentification** (gateway publique).
+
+    Contrairement à :func:`presign_content`, aucun ``user`` ni contrôle de
+    propriété : la ressource est résolue par ``(course_id, resource_id)`` seuls,
+    les deux uuid faisant office de *capability* (URL non devinable) — d'où
+    l'usage possible en ``<img src>``/lien direct côté front. Un seul execute
+    (select ressource scopée au cours) ; 404 si absente de ce cours, 409 tant
+    qu'elle n'est pas ``disponible``. Lecture seule : pas de commit.
+
+    ⚠ Précurseur des liens publics élèves (J2) : le régime d'autorisation par
+    token de partage viendra remplacer/compléter ce simple contrôle par
+    capability — ici, quiconque connaît les deux uuid accède au contenu.
+    """
+    resource = (
+        (
+            await db.execute(
+                select(Resource).where(
+                    Resource.id == resource_id, Resource.course_id == course_id
+                )
+            )
+        )
+        .scalars()
+        .one_or_none()
+    )
+    if resource is None:
+        raise _introuvable("Ressource introuvable")
+    if resource.statut != STATUT_DISPONIBLE:
+        raise _conflit("Ressource non disponible (upload non confirmé)")
+    return storage.presign_get(resource.s3_key, resource.nom_original, inline=True)
