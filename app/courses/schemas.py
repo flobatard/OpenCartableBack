@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.alias_generators import to_camel
 
 
 class CourseCreate(BaseModel):
@@ -39,6 +40,9 @@ class CourseRead(BaseModel):
     subject_ids: list[uuid.UUID]
     education_level_ids: list[uuid.UUID]
     block_count: int
+    # Écho brut du JSONB stocké (comme BlockRead.content) : {} tant que non
+    # personnalisé — le front y applique alors ses défauts.
+    preview_settings: dict[str, Any]
     created_at: datetime
     updated_at: datetime
 
@@ -55,6 +59,28 @@ class BlockRead(BaseModel):
 
 class CourseDetailRead(CourseRead):
     blocks: list[BlockRead]
+
+
+class PreviewSettings(BaseModel):
+    """Réglages d'affichage de la preview d'un cours (typographie / mise en page).
+
+    Contrat = interface ``CourseStyleSettings`` du front : clés camelCase (via
+    ``alias_generator``), tous les champs requis (le front envoie l'objet
+    complet). Remplacement complet via ``PUT /courses/{id}/preview``. Les bornes
+    sont des garde-fous contre les valeurs absurdes, ajustables sans migration
+    (colonne JSONB).
+    """
+
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, extra="forbid"
+    )
+
+    font_size_px: float = Field(ge=8, le=48)  # -> fontSizePx (facteur px/16)
+    heading_scale: float = Field(ge=0.5, le=3)  # -> headingScale (1 = historique)
+    line_height: float = Field(ge=1, le=3)  # -> lineHeight (facteur valeur/1.7)
+    width_ch: float = Field(ge=20, le=200)  # -> widthCh (colonne de lecture)
+    paragraph_gap_em: float = Field(ge=0, le=10)  # -> paragraphGapEm (valeur/1.5)
+    font: Literal["sans", "serif"]
 
 
 class BlockCreate(BaseModel):

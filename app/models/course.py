@@ -15,8 +15,8 @@ partage publics ``share_links`` (jalon J2).
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Table, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Table, func, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -39,6 +39,14 @@ class Course(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    # Réglages d'affichage de la preview (typographie / mise en page), propriété
+    # du cours. Contrat JSONB = interface CourseStyleSettings du front (clés
+    # camelCase) : fontSizePx, headingScale, lineHeight, widthCh, paragraphGapEm,
+    # font ∈ {"sans","serif"}. Édité via PUT .../preview (remplacement complet,
+    # validé par PreviewSettings) ; {} tant que non personnalisé.
+    preview_settings: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
 
     # Pas de relations ORM vers blocks/resources/subjects/education_levels :

@@ -15,6 +15,7 @@ from app.courses.schemas import (
     CourseCreate,
     CourseDetailRead,
     CourseRead,
+    PreviewSettings,
 )
 from app.users import service as users_service
 
@@ -53,6 +54,18 @@ async def read_course(
     """Détail d'un cours avec ses blocs ordonnés."""
     user = await users_service.get_or_create_by_sub(db, auth)
     return await service.get_course_detail(db, user, course_id)
+
+
+@router.put("/courses/{course_id}/preview", response_model=PreviewSettings)
+async def update_preview_settings(
+    course_id: uuid.UUID,
+    payload: PreviewSettings,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PreviewSettings:
+    """Remplace les réglages d'affichage de la preview du cours (typo/mise en page)."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.update_preview_settings(db, user, course_id, payload)
 
 
 @router.delete("/courses/{course_id}", status_code=status.HTTP_204_NO_CONTENT)

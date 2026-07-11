@@ -33,6 +33,7 @@ def _course_row(**overrides):
         owner_id=None,
         titre="Suites numériques",
         description=None,
+        preview_settings={},
         created_at=_NOW,
         updated_at=_NOW,
     )
@@ -133,6 +134,16 @@ def _deletes(session):
 
 _COURSE_ID = uuid.uuid4()
 _BLOCK_ID = uuid.uuid4()
+# Réglages de preview « historiques » (facteurs neutres), clés camelCase du
+# contrat CourseStyleSettings du front.
+_PREVIEW = {
+    "fontSizePx": 16,
+    "headingScale": 1.0,
+    "lineHeight": 1.7,
+    "widthCh": 70,
+    "paragraphGapEm": 1.5,
+    "font": "sans",
+}
 
 
 @pytest.mark.parametrize(
@@ -141,6 +152,7 @@ _BLOCK_ID = uuid.uuid4()
         ("GET", "/api/v1/courses", None),
         ("POST", "/api/v1/courses", {"titre": "x"}),
         ("GET", f"/api/v1/courses/{_COURSE_ID}", None),
+        ("PUT", f"/api/v1/courses/{_COURSE_ID}/preview", _PREVIEW),
         ("POST", f"/api/v1/courses/{_COURSE_ID}/blocks", {"type": "texte"}),
         ("PUT", f"/api/v1/courses/{_COURSE_ID}/blocks/order", {"block_ids": []}),
         (
@@ -1027,3 +1039,57 @@ def test_reordonnancement_cours_vide():
 
     assert response.status_code == 204
     assert _updates(session) == []
+
+
+def test_maj_preview_settings():
+    user = _user_row()
+    course = _course_row()
+    session = _FakeSession([[user], [course]])  # auth, puis _get_owned_course
+    response = _client(session).put(f"/api/v1/courses/{course.id}/preview", json=_PREVIEW)
+
+    assert response.status_code == 200
+    assert response.json() == _PREVIEW  # écho camelCase des réglages enregistrés
+    assert course.preview_settings == _PREVIEW  # mutation d'attribut ORM
+    assert _updates(session) == []  # pas d'Update Core
+    assert course.updated_at != _NOW  # le cours remonte dans la liste
+    assert session.commits >= 1
+
+
+def test_maj_preview_settings_cours_non_possede():
+    user = _user_row()
+    session = _FakeSession([[user], []])  # select cours scopé owner → vide
+    response = _client(session).put(
+        f"/api/v1/courses/{uuid.uuid4()}/preview", json=_PREVIEW
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cours introuvable"
+
+
+def test_lecture_expose_preview_settings():
+    # Le détail d'un cours remonte ses réglages de preview (le front les recharge).
+    user = _user_row()
+    course = _course_row(preview_settings=_PREVIEW)
+    session = _FakeSession([[user], [course], [], [], []])  # cours, matières, niveaux, blocs
+    response = _client(session).get(f"/api/v1/courses/{course.id}")
+
+    assert response.status_code == 200
+    assert response.json()["preview_settings"] == _PREVIEW
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"font": "sans"},  # champs requis manquants
+        {**_PREVIEW, "fontSizePx": 4},  # hors bornes (ge=8)
+        {**_PREVIEW, "font": "gothique"},  # littéral invalide
+        {**_PREVIEW, "extra": 1},  # clé inconnue (extra=forbid)
+    ],
+)
+def test_maj_preview_settings_payload_invalide_sans_acces_bdd(payload):
+    session = _FakeSession()
+    response = _client(session).put(
+        f"/api/v1/courses/{uuid.uuid4()}/preview", json=payload
+    )
+    assert response.status_code == 422
+    assert session.executed == []

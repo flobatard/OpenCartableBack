@@ -26,6 +26,7 @@ from app.courses.schemas import (
     CourseRead,
     DocumentContent,
     ExerciceContent,
+    PreviewSettings,
     TexteContent,
 )
 from app.models.block import TYPE_DOCUMENT, TYPE_EXERCICE, TYPE_MODULE, TYPE_TEXTE, Block
@@ -114,6 +115,7 @@ def _course_read(
         subject_ids=subject_ids,
         education_level_ids=education_level_ids,
         block_count=block_count,
+        preview_settings=course.preview_settings,
         created_at=course.created_at,
         updated_at=course.updated_at,
     )
@@ -278,6 +280,7 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
         subject_ids=subject_ids,
         education_level_ids=education_level_ids,
         block_count=0,
+        preview_settings={},
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -347,6 +350,23 @@ async def delete_course(
     await db.execute(delete(Course).where(Course.id == course.id))
     await db.commit()
     await storage.delete_many(s3_keys)
+
+
+async def update_preview_settings(
+    db: AsyncSession, user: User, course_id: uuid.UUID, payload: PreviewSettings
+) -> PreviewSettings:
+    """Remplace les réglages de preview d'un cours du prof (404 si autrui).
+
+    Ordre des execute : 1) cours (contrôle de propriété). Le JSONB est remplacé
+    par un NOUVEAU dict (mutation d'attribut ORM ; une mutation in-place ne
+    serait pas détectée). Le cours est « touché » (updated_at) pour remonter
+    dans la liste.
+    """
+    course = await _get_owned_course(db, user, course_id)
+    course.preview_settings = payload.model_dump(by_alias=True)  # clés camelCase
+    course.updated_at = datetime.now(UTC)
+    await db.commit()
+    return payload
 
 
 async def add_block(
