@@ -129,15 +129,6 @@ def _client(session, storage=None) -> TestClient:
     return TestClient(app)
 
 
-def _public_client(session, storage=None) -> TestClient:
-    # Pas d'override de get_current_user : la route publique ne dépend pas de
-    # l'auth (on prouve ainsi qu'aucun Bearer n'est requis).
-    app = create_app()
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
-    return TestClient(app)
-
-
 def _inserts(session, table_name):
     return [
         (stmt, params)
@@ -167,11 +158,17 @@ _RESOURCE_ID = uuid.uuid4()
         }),
         ("DELETE", f"/api/v1/courses/{_COURSE_ID}/resources/{_RESOURCE_ID}", None),
         ("GET", f"/api/v1/courses/{_COURSE_ID}/resources/{_RESOURCE_ID}/download", None),
-        ("GET", f"/api/v1/courses/{_COURSE_ID}/resources/{_RESOURCE_ID}/content", None),
+        (
+            "GET",
+            f"/api/v1/courses/{_COURSE_ID}/resources/{_RESOURCE_ID}/download"
+            "?disposition=inline",
+            None,
+        ),
     ],
 )
 def test_auth_requise(method, path, body):
-    # Pas d'override d'auth : 401 + WWW-Authenticate, aucune route S3 publique.
+    # Pas d'override d'auth : 401 + WWW-Authenticate. Toutes les routes
+    # ressources exigent l'auth — S3 n'est jamais exposé sans Bearer.
     response = TestClient(create_app()).request(method, path, json=body)
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
@@ -539,6 +536,38 @@ def test_download_ok():
     assert body["download_url"] == f"https://s3.test/get/{resource.s3_key}"
     assert body["expires_in"] == settings.S3_PRESIGN_GET_TTL
     assert storage.get_calls == [(resource.s3_key, resource.nom_original)]
+    # Sans query param, la disposition reste attachment (téléchargement).
+    assert storage.inline_calls == [False]
+
+
+def test_download_inline_ok():
+    user = _user_row()
+    course = _course_row()
+    resource = _resource_row(course_id=course.id, statut="disponible")
+    session = _FakeSession([[user], [course], [resource]])
+    storage = _FakeStorage()
+    response = _client(session, storage).get(
+        f"/api/v1/courses/{course.id}/resources/{resource.id}/download"
+        "?disposition=inline"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["download_url"] == f"https://s3.test/get/{resource.s3_key}"
+    # Disposition inline demandée à S3 (le navigateur affiche, pas de download).
+    assert storage.get_calls == [(resource.s3_key, resource.nom_original)]
+    assert storage.inline_calls == [True]
+
+
+def test_download_disposition_invalide_422():
+    session = _FakeSession([])
+    response = _client(session).get(
+        f"/api/v1/courses/{uuid.uuid4()}/resources/{uuid.uuid4()}/download"
+        "?disposition=autre"
+    )
+
+    assert response.status_code == 422
+    assert session.executed == []  # validé avant tout accès BDD
 
 
 def test_download_non_disponible_409():
@@ -561,102 +590,6 @@ def test_download_ressource_introuvable_404():
     session = _FakeSession([[user], [course], []])
     response = _client(session).get(
         f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}/download"
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Ressource introuvable"
-
-
-# --- Gateway de lecture (redirection 307 vers l'URL présignée inline) ----------
-
-
-def test_content_redirige_307_inline():
-    user = _user_row()
-    course = _course_row()
-    resource = _resource_row(course_id=course.id, statut="disponible")
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage()
-    response = _client(session, storage).get(
-        f"/api/v1/courses/{course.id}/resources/{resource.id}/content",
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 307
-    assert response.headers["location"] == f"https://s3.test/get/{resource.s3_key}"
-    # Disposition inline demandée à S3 (le navigateur affiche, pas de download).
-    assert storage.get_calls == [(resource.s3_key, resource.nom_original)]
-    assert storage.inline_calls == [True]
-
-
-def test_content_non_disponible_409():
-    user = _user_row()
-    course = _course_row()
-    resource = _resource_row(course_id=course.id, statut="en_attente")
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage()
-    response = _client(session, storage).get(
-        f"/api/v1/courses/{course.id}/resources/{resource.id}/content",
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 409
-    assert storage.get_calls == []
-
-
-def test_content_ressource_introuvable_404():
-    user = _user_row()
-    course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).get(
-        f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}/content",
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Ressource introuvable"
-
-
-# --- Gateway publique (sans auth, adressage par capability uuid) ---------------
-
-
-def test_content_public_redirige_307_sans_auth():
-    course_id = uuid.uuid4()
-    resource = _resource_row(course_id=course_id, statut="disponible")
-    # Un seul execute : la ressource (pas d'upsert auth, pas de select cours).
-    session = _FakeSession([[resource]])
-    storage = _FakeStorage()
-    response = _public_client(session, storage).get(
-        f"/api/v1/courses/{course_id}/resources/{resource.id}/public",
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 307
-    assert response.headers["location"] == f"https://s3.test/get/{resource.s3_key}"
-    assert storage.inline_calls == [True]
-    assert len(session.executed) == 1
-    assert session.commits == 0  # aucune écriture, aucune résolution d'utilisateur
-
-
-def test_content_public_non_disponible_409():
-    course_id = uuid.uuid4()
-    resource = _resource_row(course_id=course_id, statut="en_attente")
-    session = _FakeSession([[resource]])
-    storage = _FakeStorage()
-    response = _public_client(session, storage).get(
-        f"/api/v1/courses/{course_id}/resources/{resource.id}/public",
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 409
-    assert storage.get_calls == []
-
-
-def test_content_public_introuvable_404():
-    course_id = uuid.uuid4()
-    session = _FakeSession([[]])  # ressource absente de ce cours
-    response = _public_client(session).get(
-        f"/api/v1/courses/{course_id}/resources/{uuid.uuid4()}/public",
-        follow_redirects=False,
     )
 
     assert response.status_code == 404

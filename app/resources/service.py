@@ -276,78 +276,24 @@ async def presign_download(
     course_id: uuid.UUID,
     resource_id: uuid.UUID,
     storage: Storage,
+    *,
+    inline: bool = False,
 ) -> ResourceDownload:
     """URL présignée de lecture ; 409 tant que la ressource n'est pas disponible.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) ressource (scopée
-    cours). Lecture seule : pas de commit.
-    """
-    course = await _get_owned_course(db, user, course_id)
-    resource = await _get_resource(db, course, resource_id)
-    if resource.statut != STATUT_DISPONIBLE:
-        raise _conflit("Ressource non disponible (upload non confirmé)")
-    download_url = storage.presign_get(resource.s3_key, resource.nom_original)
-    return ResourceDownload(
-        download_url=download_url, expires_in=settings.S3_PRESIGN_GET_TTL
-    )
-
-
-async def presign_content(
-    db: AsyncSession,
-    user: User,
-    course_id: uuid.UUID,
-    resource_id: uuid.UUID,
-    storage: Storage,
-) -> str:
-    """URL présignée de lecture *inline* (gateway) ; renvoie l'URL brute.
-
-    Ordre des execute : 1) cours (contrôle de propriété), 2) ressource (scopée
-    cours). Même contrôle que :func:`presign_download` (409 tant que la
-    ressource n'est pas ``disponible``) mais disposition ``inline`` — le
-    navigateur affiche l'objet au lieu de le télécharger. La route sert cette
-    URL en redirection 307 : une URL API stable côté front donne accès au
-    contenu, sans faire transiter le binaire par l'API (contrainte Pi).
+    cours). ``inline=True`` demande la disposition ``inline`` — le navigateur
+    affiche l'objet au lieu de le télécharger ; c'est la variante que résout la
+    route front de redirection matérialisant les liens des PDF exportés.
     Lecture seule : pas de commit.
     """
     course = await _get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
     if resource.statut != STATUT_DISPONIBLE:
         raise _conflit("Ressource non disponible (upload non confirmé)")
-    return storage.presign_get(resource.s3_key, resource.nom_original, inline=True)
-
-
-async def presign_content_public(
-    db: AsyncSession,
-    course_id: uuid.UUID,
-    resource_id: uuid.UUID,
-    storage: Storage,
-) -> str:
-    """URL présignée de lecture *inline*, **sans authentification** (gateway publique).
-
-    Contrairement à :func:`presign_content`, aucun ``user`` ni contrôle de
-    propriété : la ressource est résolue par ``(course_id, resource_id)`` seuls,
-    les deux uuid faisant office de *capability* (URL non devinable) — d'où
-    l'usage possible en ``<img src>``/lien direct côté front. Un seul execute
-    (select ressource scopée au cours) ; 404 si absente de ce cours, 409 tant
-    qu'elle n'est pas ``disponible``. Lecture seule : pas de commit.
-
-    ⚠ Précurseur des liens publics élèves (J2) : le régime d'autorisation par
-    token de partage viendra remplacer/compléter ce simple contrôle par
-    capability — ici, quiconque connaît les deux uuid accède au contenu.
-    """
-    resource = (
-        (
-            await db.execute(
-                select(Resource).where(
-                    Resource.id == resource_id, Resource.course_id == course_id
-                )
-            )
-        )
-        .scalars()
-        .one_or_none()
+    download_url = storage.presign_get(
+        resource.s3_key, resource.nom_original, inline=inline
     )
-    if resource is None:
-        raise _introuvable("Ressource introuvable")
-    if resource.statut != STATUT_DISPONIBLE:
-        raise _conflit("Ressource non disponible (upload non confirmé)")
-    return storage.presign_get(resource.s3_key, resource.nom_original, inline=True)
+    return ResourceDownload(
+        download_url=download_url, expires_in=settings.S3_PRESIGN_GET_TTL
+    )
