@@ -9,10 +9,10 @@ CORS_ORIGINS: []
 
 # Postgres du docker-compose (l'hôte est le service `db` ; docker-compose.yml
 # force de toute façon POSTGRES_HOST=db dans le conteneur api)
-POSTGRES_USER: cartable
-POSTGRES_HOST: db
+POSTGRES_USER: open_cartable
+POSTGRES_HOST: <infra_host>
 POSTGRES_PORT: 5432
-POSTGRES_DB: cartable
+POSTGRES_DB: open_cartable
 
 # Zitadel de prod — remplacer par votre instance
 OIDC_ISSUER: https://votre-instance.zitadel.cloud
