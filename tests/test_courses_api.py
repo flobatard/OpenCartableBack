@@ -50,6 +50,7 @@ def _block_row(**overrides):
         description=None,
         content={"markdown": ""},
         resource_id=None,
+        module_id=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -347,6 +348,7 @@ def test_detail_avec_blocs_ordonnes():
         "description": None,
         "content": {"markdown": ""},
         "resource_id": None,
+        "module_id": None,
     }
 
 
@@ -376,6 +378,7 @@ def test_ajout_bloc_contenu_par_defaut(type_bloc, contenu):
     assert body["content"] == contenu
     assert body["position"] == 3
     assert body["resource_id"] is None
+    assert body["module_id"] is None
     assert len(_inserts(session, "blocks")) == 1
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
@@ -440,6 +443,7 @@ def test_edition_contenu_bloc_texte():
         "description": None,
         "content": {"markdown": "## Suites\nDéfinition d'une suite."},
         "resource_id": None,
+        "module_id": None,
     }
     # Écriture via l'unité de travail ORM (mutation d'attribut), pas d'Update Core.
     assert block.content == {"markdown": "## Suites\nDéfinition d'une suite."}
@@ -865,6 +869,100 @@ def test_edition_resource_id_sur_bloc_non_document_rejetee():
     assert response.status_code == 422
     assert "blocs « document »" in response.json()["detail"]
     assert block.resource_id is None
+    assert course.updated_at == _NOW
+    assert session.commits == 1
+
+
+def _module_block_row(**overrides):
+    overrides.setdefault("type", "module")
+    overrides.setdefault("content", {})
+    return _block_row(**overrides)
+
+
+def _module_row(**overrides):
+    defaults = dict(
+        id=uuid.uuid4(),
+        course_id=None,
+        titre="Quiz interactif",
+        html="<p>Salut</p>",
+        css="p { color: red; }",
+        js="console.log('ok')",
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_edition_bloc_module_attache_un_module():
+    user = _user_row()
+    course = _course_row()
+    block = _module_block_row()
+    module = _module_row(course_id=course.id)
+    # FIFO : cours, bloc, puis module (select déclenché par module_id non nul).
+    session = _FakeSession([[user], [course], [block], [module]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"module_id": str(module.id)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["module_id"] == str(module.id)
+    assert block.module_id == module.id
+    assert block.content == {}  # intact
+    assert course.updated_at != _NOW
+    assert session.commits >= 1
+
+
+def test_edition_bloc_module_detache_avec_null():
+    # module_id: null explicite = détacher — pas de select module (FIFO
+    # plus courte).
+    user = _user_row()
+    course = _course_row()
+    block = _module_block_row(module_id=uuid.uuid4())
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}", json={"module_id": None}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["module_id"] is None
+    assert block.module_id is None
+    assert course.updated_at != _NOW
+
+
+def test_edition_bloc_module_module_inconnu_ou_autre_cours():
+    # Le select scopé course_id ne retourne rien : 422 (le bloc, lui, existe).
+    user = _user_row()
+    course = _course_row()
+    block = _module_block_row()
+    session = _FakeSession([[user], [course], [block], []])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"module_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Module inconnu"
+    assert block.module_id is None
+    assert course.updated_at == _NOW
+    assert session.commits == 1  # upsert auth seulement
+
+
+def test_edition_module_id_sur_bloc_non_module_rejetee():
+    # 422 levée avant tout select module (FIFO sans résultat supplémentaire).
+    user = _user_row()
+    course = _course_row()
+    block = _block_row()  # type texte
+    session = _FakeSession([[user], [course], [block]])
+    response = _client(session).patch(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}",
+        json={"module_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 422
+    assert "blocs « module »" in response.json()["detail"]
+    assert block.module_id is None
     assert course.updated_at == _NOW
     assert session.commits == 1
 

@@ -32,6 +32,7 @@ from app.courses.schemas import (
 from app.models.block import TYPE_DOCUMENT, TYPE_EXERCICE, TYPE_MODULE, TYPE_TEXTE, Block
 from app.models.course import Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
+from app.models.module import Module
 from app.models.resource import STATUT_DISPONIBLE, Resource
 from app.models.subject import Subject
 from app.models.user import User
@@ -130,6 +131,7 @@ def _block_read(block: Block) -> BlockRead:
         description=block.description,
         content=block.content,
         resource_id=block.resource_id,
+        module_id=block.module_id,
     )
 
 
@@ -402,6 +404,7 @@ async def add_block(
             description=payload.description,
             content=content,
             resource_id=None,
+            module_id=None,
         )
     )
     course.updated_at = datetime.now(UTC)
@@ -414,6 +417,7 @@ async def add_block(
         description=payload.description,
         content=content,
         resource_id=None,
+        module_id=None,
     )
 
 
@@ -453,17 +457,22 @@ async def update_block(
     payload: BlockUpdate,
 ) -> BlockRead:
     """Édite un bloc : titre/description (tous types), contenu (texte,
-    exercice, document) et/ou ressource pointée (document).
+    exercice, document), ressource pointée (document) et/ou module pointé
+    (module).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) bloc complet
     (id + course_id) — 404 s'il n'existe pas dans ce cours —, puis 3)
     UNIQUEMENT si un ``resource_id`` non nul est fourni : la ressource
-    (id + course_id du cours). 422 si la forme du ``content`` fourni ne
-    correspond pas au type du bloc, si une question porte un id inconnu du
-    bloc, si ``resource_id`` est fourni sur un bloc non-document, ou si la
-    ressource est inconnue du cours / pas encore ``disponible``. Toute 422
-    est levée AVANT la moindre écriture d'attribut (pas de mutation
-    partielle). Seuls les champs présents dans le payload
+    (id + course_id du cours), puis 4) UNIQUEMENT si un ``module_id`` non
+    nul est fourni : le module (id + course_id du cours) — les deux ne
+    coexistent jamais, chacun étant gardé par le type du bloc. 422 si la
+    forme du ``content`` fourni ne correspond pas au type du bloc, si une
+    question porte un id inconnu du bloc, si ``resource_id`` est fourni sur
+    un bloc non-document, si la ressource est inconnue du cours / pas encore
+    ``disponible``, si ``module_id`` est fourni sur un bloc non-module, ou
+    si le module est inconnu du cours (pas de statut à vérifier : le code
+    vit en base). Toute 422 est levée AVANT la moindre écriture d'attribut
+    (pas de mutation partielle). Seuls les champs présents dans le payload
     (``model_fields_set``) sont appliqués ; le contenu est remplacé par un
     NOUVEAU dict (une mutation in-place du JSONB ne serait pas détectée
     par l'ORM).
@@ -503,6 +512,26 @@ async def update_block(
                 raise _invalide("Ressource inconnue")
             if resource.statut != STATUT_DISPONIBLE:
                 raise _invalide("Ressource non disponible")
+    if "module_id" in champs:
+        if block.type != TYPE_MODULE:
+            raise _invalide("module_id ne s'applique qu'aux blocs « module »")
+        if payload.module_id is not None:
+            # 422 et non 404 : le bloc ciblé, lui, existe (motif « Matières
+            # inconnues ») ; le filtre course_id scelle l'appartenance.
+            module = (
+                (
+                    await db.execute(
+                        select(Module).where(
+                            Module.id == payload.module_id,
+                            Module.course_id == course.id,
+                        )
+                    )
+                )
+                .scalars()
+                .one_or_none()
+            )
+            if module is None:
+                raise _invalide("Module inconnu")
     nouveau_contenu: dict | None = None
     if payload.content is not None:
         type_attendu = _TYPE_PAR_CONTENU[type(payload.content)]
@@ -526,6 +555,8 @@ async def update_block(
         block.description = payload.description
     if "resource_id" in champs:
         block.resource_id = payload.resource_id
+    if "module_id" in champs:
+        block.module_id = payload.module_id
     if nouveau_contenu is not None:
         block.content = nouveau_contenu
     course.updated_at = datetime.now(UTC)

@@ -55,6 +55,7 @@ class BlockRead(BaseModel):
     description: str | None
     content: dict[str, Any]
     resource_id: uuid.UUID | None
+    module_id: uuid.UUID | None
 
 
 class CourseDetailRead(CourseRead):
@@ -161,10 +162,13 @@ class BlockUpdate(BaseModel):
     deux côtés) — le service vérifie que la forme reçue correspond au type
     du bloc. ``resource_id`` ne s'applique qu'aux blocs ``document`` :
     ``null`` explicite détache la ressource, un uuid pointe une ressource
-    du même cours au statut ``disponible`` (validé côté service). Seuls
+    du même cours au statut ``disponible`` (validé côté service).
+    ``module_id`` est son miroir pour les blocs ``module`` : ``null``
+    détache, un uuid pointe un module du même cours (validé côté service —
+    pas de statut à vérifier, le code vit en base). Seuls
     les champs effectivement fournis sont modifiés — un ``titre``/
-    ``description``/``resource_id`` explicitement à ``null`` l'efface, un
-    champ absent le laisse inchangé (``model_fields_set``).
+    ``description``/``resource_id``/``module_id`` explicitement à ``null``
+    l'efface, un champ absent le laisse inchangé (``model_fields_set``).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -174,6 +178,7 @@ class BlockUpdate(BaseModel):
     # DocumentContent en dernier : forme la plus permissive de l'union.
     content: TexteContent | ExerciceContent | DocumentContent | None = None
     resource_id: uuid.UUID | None = None
+    module_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _au_moins_un_champ(self) -> "BlockUpdate":

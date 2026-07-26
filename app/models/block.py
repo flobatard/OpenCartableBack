@@ -28,8 +28,13 @@ schéma est un contrat applicatif, par ``type`` :
   le bloc naît vide et se remplit dans l'éditeur ; supprimer la ressource
   supprime les blocs qui la pointent (FK ``CASCADE`` — un document sans son
   fichier n'a pas de sens).
-- ``module`` : ``{}`` — module interactif HTML/JS ; placeholder, le contrat
-  du content sera défini au jalon J4.
+- ``module`` : ``{}`` — module interactif HTML/CSS/JS de la bibliothèque de
+  modules du cours (table ``modules``), référencé par la **colonne**
+  ``module_id`` (seul type de bloc autorisé à en porter un, CHECK de
+  cohérence ; jamais dans le ``content``, réservé pour de futurs réglages
+  d'affichage). Nullable : le bloc naît vide et se remplit dans l'éditeur ;
+  supprimer le module supprime les blocs qui le pointent (FK ``CASCADE`` —
+  même décision que les documents).
 """
 
 import uuid
@@ -73,6 +78,12 @@ class Block(Base):
             f"resource_id IS NULL OR type = '{TYPE_DOCUMENT}'",
             name="ck_blocks_document_coherence",
         ),
+        # Seuls les blocs « module » peuvent porter une FK module
+        # (nullable : un bloc module peut être vide).
+        CheckConstraint(
+            f"module_id IS NULL OR type = '{TYPE_MODULE}'",
+            name="ck_blocks_module_coherence",
+        ),
         CheckConstraint("position >= 0", name="ck_blocks_position_positive"),
     )
 
@@ -91,6 +102,9 @@ class Block(Base):
     )
     resource_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("resources.id", ondelete="CASCADE"), index=True
+    )
+    module_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("modules.id", ondelete="CASCADE"), index=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
