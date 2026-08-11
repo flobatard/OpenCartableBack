@@ -16,6 +16,7 @@ from app.courses.schemas import (
     CourseDetailRead,
     CourseRead,
     PreviewSettings,
+    VisibiliteUpdate,
 )
 from app.users import service as users_service
 
@@ -66,6 +67,18 @@ async def update_preview_settings(
     """Remplace les réglages d'affichage de la preview du cours (typo/mise en page)."""
     user = await users_service.get_or_create_by_sub(db, auth)
     return await service.update_preview_settings(db, user, course_id, payload)
+
+
+@router.put("/courses/{course_id}/visibility", response_model=VisibiliteUpdate)
+async def update_visibilite(
+    course_id: uuid.UUID,
+    payload: VisibiliteUpdate,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> VisibiliteUpdate:
+    """Change le régime d'accès élève du cours (public | prive | en_cours)."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.update_visibilite(db, user, course_id, payload)
 
 
 @router.delete("/courses/{course_id}", status_code=status.HTTP_204_NO_CONTENT)

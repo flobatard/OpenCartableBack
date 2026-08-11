@@ -43,6 +43,8 @@ class CourseRead(BaseModel):
     # Écho brut du JSONB stocké (comme BlockRead.content) : {} tant que non
     # personnalisé — le front y applique alors ses défauts.
     preview_settings: dict[str, Any]
+    # Régime d'accès élève (J2) : public | prive | en_cours.
+    visibilite: str
     created_at: datetime
     updated_at: datetime
 
@@ -82,6 +84,17 @@ class PreviewSettings(BaseModel):
     width_ch: float = Field(ge=20, le=200)  # -> widthCh (colonne de lecture)
     paragraph_gap_em: float = Field(ge=0, le=10)  # -> paragraphGapEm (valeur/1.5)
     font: Literal["sans", "serif"]
+
+
+class VisibiliteUpdate(BaseModel):
+    """Changement du régime d'accès élève d'un cours (J2).
+
+    Littéraux = constantes VISIBILITE_* de app/models/course.py. Passer un
+    cours en ``en_cours`` suspend ses liens de partage sans les supprimer
+    (la vérification se fait à chaque accès public).
+    """
+
+    visibilite: Literal["public", "prive", "en_cours"]
 
 
 class BlockCreate(BaseModel):

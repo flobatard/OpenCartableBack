@@ -28,9 +28,15 @@ from app.courses.schemas import (
     ExerciceContent,
     PreviewSettings,
     TexteContent,
+    VisibiliteUpdate,
 )
 from app.models.block import TYPE_DOCUMENT, TYPE_EXERCICE, TYPE_MODULE, TYPE_TEXTE, Block
-from app.models.course import Course, course_education_levels, course_subjects
+from app.models.course import (
+    VISIBILITE_EN_COURS,
+    Course,
+    course_education_levels,
+    course_subjects,
+)
 from app.models.education_level import EducationLevel
 from app.models.module import Module
 from app.models.resource import STATUT_DISPONIBLE, Resource
@@ -117,6 +123,7 @@ def _course_read(
         education_level_ids=education_level_ids,
         block_count=block_count,
         preview_settings=course.preview_settings,
+        visibilite=course.visibilite,
         created_at=course.created_at,
         updated_at=course.updated_at,
     )
@@ -283,6 +290,7 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
         education_level_ids=education_level_ids,
         block_count=0,
         preview_settings={},
+        visibilite=VISIBILITE_EN_COURS,
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -366,6 +374,23 @@ async def update_preview_settings(
     """
     course = await _get_owned_course(db, user, course_id)
     course.preview_settings = payload.model_dump(by_alias=True)  # clés camelCase
+    course.updated_at = datetime.now(UTC)
+    await db.commit()
+    return payload
+
+
+async def update_visibilite(
+    db: AsyncSession, user: User, course_id: uuid.UUID, payload: VisibiliteUpdate
+) -> VisibiliteUpdate:
+    """Change le régime d'accès élève d'un cours du prof (404 si autrui).
+
+    Ordre des execute : 1) cours (contrôle de propriété). Le cours est
+    « touché » (updated_at) pour remonter dans la liste. Passer en
+    ``en_cours`` suspend les liens de partage sans les toucher : la règle
+    vit dans app/public/service.py, vérifiée à chaque accès.
+    """
+    course = await _get_owned_course(db, user, course_id)
+    course.visibilite = payload.visibilite
     course.updated_at = datetime.now(UTC)
     await db.commit()
     return payload

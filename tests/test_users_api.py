@@ -27,6 +27,7 @@ def _user_row(**overrides):
         est_prof=False,
         est_eleve=False,
         systeme_scolaire=None,
+        nom_public=None,
         onboarded_at=None,
     )
     defaults.update(overrides)
@@ -267,6 +268,44 @@ def test_onboarding_happy_path_double_role():
         (matiere_e, "enseigne"),
         (matiere_a, "apprend"),
     }
+
+
+def test_profil_nom_public_enregistre_et_expose():
+    # Le nom public (J2) est la seule donnée d'identité montrée sur les
+    # pages publiques ; un blanc devient None (catalogue anonyme).
+    user = _user_row()
+    niveau, matiere = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    payload = {
+        "est_prof": True,
+        "est_eleve": False,
+        "systeme_scolaire": "fr",
+        "nom_public": "  M. Dupont  ",
+        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+    }
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["nom_public"] == "M. Dupont"  # trimé par le schéma
+    assert user.nom_public == "M. Dupont"
+
+
+def test_profil_nom_public_blanc_devient_none():
+    user = _user_row(nom_public="Ancien nom")
+    niveau, matiere = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    payload = {
+        "est_prof": True,
+        "est_eleve": False,
+        "systeme_scolaire": "fr",
+        "nom_public": "   ",
+        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+    }
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["nom_public"] is None
+    assert user.nom_public is None  # remplacement complet : l'ancien nom part
 
 
 def test_onboarding_dedoublonne_et_conserve_la_date():

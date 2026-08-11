@@ -34,6 +34,7 @@ def _course_row(**overrides):
         titre="Suites numériques",
         description=None,
         preview_settings={},
+        visibilite="en_cours",
         created_at=_NOW,
         updated_at=_NOW,
     )
@@ -1151,6 +1152,53 @@ def test_maj_preview_settings():
     assert _updates(session) == []  # pas d'Update Core
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
+
+
+def test_maj_visibilite():
+    user = _user_row()
+    course = _course_row()
+    session = _FakeSession([[user], [course]])  # auth, puis _get_owned_course
+    response = _client(session).put(
+        f"/api/v1/courses/{course.id}/visibility", json={"visibilite": "prive"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"visibilite": "prive"}
+    assert course.visibilite == "prive"  # mutation d'attribut ORM
+    assert _updates(session) == []  # pas d'Update Core
+    assert course.updated_at != _NOW  # le cours remonte dans la liste
+    assert session.commits >= 1
+
+
+@pytest.mark.parametrize("visibilite", ["publique", "draft", "", None])
+def test_maj_visibilite_valeur_inconnue_sans_acces_bdd(visibilite):
+    session = _FakeSession()
+    response = _client(session).put(
+        f"/api/v1/courses/{uuid.uuid4()}/visibility", json={"visibilite": visibilite}
+    )
+    assert response.status_code == 422
+    assert session.executed == []
+
+
+def test_maj_visibilite_cours_non_possede():
+    user = _user_row()
+    session = _FakeSession([[user], []])  # select cours scopé owner → vide
+    response = _client(session).put(
+        f"/api/v1/courses/{uuid.uuid4()}/visibility", json={"visibilite": "public"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cours introuvable"
+
+
+def test_lecture_expose_visibilite():
+    user = _user_row()
+    course = _course_row(visibilite="public")
+    session = _FakeSession([[user], [course], [], [], []])
+    response = _client(session).get(f"/api/v1/courses/{course.id}")
+
+    assert response.status_code == 200
+    assert response.json()["visibilite"] == "public"
 
 
 def test_maj_preview_settings_cours_non_possede():

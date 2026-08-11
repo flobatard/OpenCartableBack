@@ -1,6 +1,6 @@
 import uuid
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProfilContexte(BaseModel):
@@ -17,6 +17,8 @@ class UserProfileRead(BaseModel):
     est_prof: bool
     est_eleve: bool
     systeme_scolaire: str | None
+    # Nom d'affichage des pages publiques (catalogue, J2) ; None = anonyme.
+    nom_public: str | None
     onboarding_complete: bool
     enseignement: ProfilContexte | None
     apprentissage: ProfilContexte | None
@@ -26,8 +28,19 @@ class ProfileUpdate(BaseModel):
     est_prof: bool
     est_eleve: bool
     systeme_scolaire: str = Field(min_length=1, max_length=20)
+    # Optionnel : seule donnée d'identité montrée sur les pages publiques
+    # (jamais l'email). Blanc = None (catalogue anonyme).
+    nom_public: str | None = Field(default=None, max_length=100)
     enseignement: ProfilContexte | None = None
     apprentissage: ProfilContexte | None = None
+
+    @field_validator("nom_public")
+    @classmethod
+    def _nom_public_blanc_devient_none(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
     @model_validator(mode="after")
     def _roles_et_blocs_coherents(self) -> "ProfileUpdate":

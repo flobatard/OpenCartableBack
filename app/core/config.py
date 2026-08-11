@@ -148,6 +148,11 @@ class Settings(BaseSettings):
     # Garde-fou taille d'upload (octets) — ménage la RAM/BP du Pi. 100 Mo.
     S3_MAX_UPLOAD_BYTES: int = 104_857_600
 
+    # Partage public (J2) — durée de vie des liens de partage élèves.
+    # 270 jours ≈ 9 mois : couvre une année scolaire. Les presign GET des
+    # routes publiques réutilisent S3_PRESIGN_GET_TTL (même exposition).
+    SHARE_LINK_TTL_DAYS: int = 270
+
 
 @lru_cache
 def get_settings() -> Settings:

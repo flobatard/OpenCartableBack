@@ -27,3 +27,6 @@ OIDC_AUDIENCE: "380648758204956674"
 S3_ENDPOINT_URL: http://localhost:9000
 S3_REGION: us-east-1
 S3_BUCKET: opencartable
+
+# Partage public (J2) — durée de vie des liens de partage élèves (jours).
+SHARE_LINK_TTL_DAYS: 270

@@ -24,3 +24,6 @@ OIDC_AUDIENCE: cartable-api
 # S3_ENDPOINT_URL: https://s3.eu-west-3.amazonaws.com
 S3_REGION: eu-west-3
 S3_BUCKET: opencartable
+
+# Partage public (J2) — durée de vie des liens de partage élèves (jours).
+SHARE_LINK_TTL_DAYS: 270

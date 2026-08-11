@@ -8,22 +8,50 @@ et viser plusieurs classes. Son contenu vit dans la table ``blocks``
 (cf. :mod:`app.models.block`), ses fichiers S3 dans ``resources``
 (cf. :mod:`app.models.resource`).
 
-À venir : ``search_vector`` tsvector pour la FTS (jalon J3) et les liens de
-partage publics ``share_links`` (jalon J2).
+La ``visibilite`` (jalon J2) pilote le régime d'accès élève (routes publiques
+``app/public/``, sans JWT) : ``public`` = accessible par URL directe et listé
+dans le catalogue public du prof ; ``prive`` = accessible uniquement via un
+lien de partage valide (cf. :mod:`app.models.share_link`) ; ``en_cours``
+(défaut) = inaccessible publiquement, y compris via un lien existant (les
+liens sont suspendus, pas supprimés). Côté prof, la visibilité ne change
+jamais rien : ses routes restent scopées ``owner_id``.
+
+À venir : ``search_vector`` tsvector pour la FTS (jalon J3).
 """
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Table, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Table,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
+VISIBILITE_PUBLIC = "public"
+VISIBILITE_PRIVE = "prive"
+VISIBILITE_EN_COURS = "en_cours"
+VISIBILITES = (VISIBILITE_PUBLIC, VISIBILITE_PRIVE, VISIBILITE_EN_COURS)
+
 
 class Course(Base):
     __tablename__ = "courses"
+    __table_args__ = (
+        CheckConstraint(
+            "visibilite IN ('public', 'prive', 'en_cours')",
+            name="ck_courses_visibilite",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -47,6 +75,12 @@ class Course(Base):
     # validé par PreviewSettings) ; {} tant que non personnalisé.
     preview_settings: Mapped[dict] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    # Régime d'accès élève (voir docstring du module). server_default 'en_cours' :
+    # aucun cours existant ne devient public à la migration — publier est un
+    # opt-in explicite du prof (PUT .../visibility).
+    visibilite: Mapped[str] = mapped_column(
+        String(10), default=VISIBILITE_EN_COURS, server_default=text("'en_cours'")
     )
 
     # Pas de relations ORM vers blocks/resources/subjects/education_levels :

@@ -48,6 +48,10 @@ class User(Base):
     sub: Mapped[str] = mapped_column(String(255))
     # Snapshot du claim, rafraîchi à chaque lecture du profil si différent.
     email: Mapped[str | None] = mapped_column(String(320))
+    # Nom d'affichage public choisi par l'utilisateur (jalon J2) : seule donnée
+    # d'identité exposée sur les pages publiques (catalogue des cours d'un
+    # prof). Jamais dérivé de l'IdP, jamais l'email. NULL = catalogue anonyme.
+    nom_public: Mapped[str | None] = mapped_column(String(100))
     est_prof: Mapped[bool] = mapped_column(default=False, server_default="false")
     est_eleve: Mapped[bool] = mapped_column(default=False, server_default="false")
     # Même dimension que education_levels.systeme ; validé en service
