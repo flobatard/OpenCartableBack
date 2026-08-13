@@ -58,7 +58,9 @@ class ModuleRead(ModuleSummary):
 class ModuleUpdate(BaseModel):
     """Édition partielle : seuls les champs fournis sont modifiés
     (``model_fields_set``) — renommage et sauvegarde de code passent par le
-    même PATCH."""
+    même PATCH. ``null`` est rejeté sur tous les champs (422) : vider un champ
+    de code = envoyer ``""`` — pas de sémantique « null efface » ici,
+    contrairement au méta des blocs."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -77,6 +79,16 @@ class ModuleUpdate(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("Le titre ne peut pas être vide")
+        return v
+
+    @field_validator("html", "css", "js")
+    @classmethod
+    def _code_non_null(cls, v: str | None) -> str | None:
+        if v is None:
+            # Sans ce rejet, ``{"js": null}`` passerait la validation puis
+            # serait ignoré par le service : un 200 fantôme qui bump quand
+            # même ``course.updated_at``.
+            raise ValueError("Un champ de code ne peut pas être null")
         return v
 
     @model_validator(mode="after")

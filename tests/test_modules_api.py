@@ -332,6 +332,10 @@ def test_patch_code_seul():
     assert body["titre"] == "Quiz interactif"  # intact
     assert module.html == "<p>V2</p>"
     assert module.titre == "Quiz interactif"
+    # updated_at posé côté Python : la réponse du PATCH est fraîche (le
+    # onupdate SQL ne tirerait qu'au flush, après construction du read).
+    assert body["updated_at"] != _NOW_JSON
+    assert module.updated_at != _NOW
     assert course.updated_at != _NOW
 
 
@@ -341,6 +345,8 @@ def test_patch_code_seul():
         {},  # au moins un champ requis
         {"titre": None},  # un module a toujours un titre
         {"titre": "   "},  # titre blanc
+        {"html": None},  # null n'efface pas un code (vider = envoyer "")
+        {"js": None},  # idem pour chaque champ de code
         {"entrypoint": "index.html"},  # clé en trop (extra=forbid)
         {"html": "x" * (MAX_CODE_LENGTH + 1)},  # code trop long
     ],

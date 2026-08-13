@@ -169,23 +169,27 @@ async def update_module(
     """Édition partielle (renommage et/ou code) par mutation d'attributs.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) module (scopé
-    cours). Seuls les champs de ``model_fields_set`` sont appliqués (colonnes
-    texte simples — pas de JSONB, la mutation d'attribut suffit). Le
-    ``ModuleRead`` est construit AVANT le commit (piège ``MissingGreenlet`` :
-    ``updated_at`` porte un ``onupdate`` SQL, le flush du commit l'expire et
-    le relire déclencherait un lazy-load synchrone).
+    cours). Seuls les champs de ``model_fields_set`` sont appliqués (les
+    ``null`` explicites sont déjà rejetés en 422 par le schéma ; colonnes
+    texte simples — pas de JSONB, la mutation d'attribut suffit).
+    ``updated_at`` est posé côté Python (comme ``course.updated_at``) : le
+    ``onupdate`` SQL ne tirerait qu'au flush, APRÈS la construction du
+    ``ModuleRead`` — la réponse renverrait le timestamp de la sauvegarde
+    précédente. Le ``ModuleRead`` reste construit AVANT le commit (piège
+    ``MissingGreenlet``).
     """
     course = await _get_owned_course(db, user, course_id)
     module = await _get_module(db, course, module_id)
     champs = payload.model_fields_set
-    if "titre" in champs and payload.titre is not None:
+    if "titre" in champs:
         module.titre = payload.titre
-    if "html" in champs and payload.html is not None:
+    if "html" in champs:
         module.html = payload.html
-    if "css" in champs and payload.css is not None:
+    if "css" in champs:
         module.css = payload.css
-    if "js" in champs and payload.js is not None:
+    if "js" in champs:
         module.js = payload.js
+    module.updated_at = datetime.now(UTC)
     course.updated_at = datetime.now(UTC)
     read = _module_read(module)
     await db.commit()
