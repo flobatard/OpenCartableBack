@@ -1,6 +1,9 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Migrations autogénérées par Alembic : non lintées (env.py, maintenu à la
+# main, reste couvert).
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
