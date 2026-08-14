@@ -113,8 +113,8 @@ Le point structurant : **deux populations, deux modèles d'accès** sur la même
 
 ### 5.2 Stockage & gestion des fichiers (S3)
 - **Bucket privé**, jamais exposé directement. L'API mint des **URL présignées** : `PUT` pour l'upload, `GET` (TTL court) pour la lecture/téléchargement.
-- **Upload direct navigateur → S3** via presigned PUT, pour ne **pas** faire transiter les gros fichiers par le backend (essentiel vu l'hébergement sur Pi : on préserve RAM et bande passante du serveur).
-- **Organisation** : arborescence S3 *plate* (clé = `uuid/nom-original`) + toute la hiérarchie logique (matière → cours → ressource) portée par la **base**, pas par les préfixes S3. Plus souple pour réorganiser sans déplacer des octets.
+- **Upload direct navigateur → S3** via presigned PUT, pour ne **pas** faire transiter les gros fichiers par le backend (essentiel vu l'hébergement sur Pi : on préserve RAM et bande passante du serveur). **Exception actée** : l'export/import de cours (`app/course_transfer/`) assemble et parse l'archive `.zip` côté API — binaires compris —, volumes bornés (`TRANSFER_MAX_ZIP_BYTES` 500 Mo par archive, `S3_MAX_UPLOAD_BYTES` 100 Mo par fichier) ; le plafond dur du corps HTTP relève du nginx d'infra, hors repo (Starlette spoole le multipart sur disque avant le handler).
+- **Organisation** : clé préfixée par cours (`courses/<course_id>/resources/<resource_id>/<nom-sanitizé>`) — purge par préfixe simple à la suppression d'un cours — la hiérarchie logique (matière → cours → ressource) restant portée par la **base**, pas par les préfixes S3.
 - **Cohérence DB↔S3** : la ligne `resource` est créée *avant* l'upload avec `statut='en_attente'` ; un endpoint de confirmation vérifie l'objet (HEAD S3) et passe le statut à `'disponible'`. Seules les ressources disponibles sont servies.
 - **Types & previews** : PDF et images au MVP. Génération de miniatures/aperçus à différer (coûteux en CPU sur ARM — à faire en tâche asynchrone, voire à la demande).
 
@@ -263,7 +263,7 @@ erDiagram
 | **J4 — Interactif** *(livré, anticipé avant J2/J3)* | Bibliothèque de modules HTML/CSS/JS par cours (code en base, éditeur intégré) + sandbox iframe origine opaque | Intégrer un quiz dans un cours |
 | **J5 — IA** | extraction texte, vectorisation (ChromaDB, si actée), recherche sémantique / RAG | Première brique IA |
 
-Livré hors jalon, en extension du socle J0 : comptes applicatifs (`users`, auto-provisioning par `sub`) et onboarding bloquant (rôles cumulables prof/élève, système scolaire, niveaux, matières) — cf. §2, §5.1 et §6.
+Livré hors jalon, en extension du socle J0 : comptes applicatifs (`users`, auto-provisioning par `sub`) et onboarding bloquant (rôles cumulables prof/élève, système scolaire, niveaux, matières) — cf. §2, §5.1 et §6. Également livré hors jalon : l'**export/import de cours** (`app/course_transfer/`) — archive `.zip` (manifest versionné + binaires des ressources) dont le réimport recrée un cours au contenu identique (nouveaux identifiants, références remappées, classement porté par les `code` de taxonomie donc portable entre instances) — cf. §5.2 pour l'exception actée au transit des binaires.
 
 ---
 

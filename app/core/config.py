@@ -147,6 +147,11 @@ class Settings(BaseSettings):
     S3_PRESIGN_GET_TTL: int = 300
     # Garde-fou taille d'upload (octets) — ménage la RAM/BP du Pi. 100 Mo.
     S3_MAX_UPLOAD_BYTES: int = 104_857_600
+    # Export/import de cours (.zip assemblé/parsé par l'API — exception actée
+    # à la règle « pas de binaire par le backend », cf. app/course_transfer/) :
+    # plafond global d'une archive (500 Mo). Par fichier, S3_MAX_UPLOAD_BYTES
+    # s'applique. Le plafond dur du corps HTTP relève du nginx d'infra.
+    TRANSFER_MAX_ZIP_BYTES: int = 524_288_000
 
     # Partage public (J2) — durée de vie des liens de partage élèves.
     # 270 jours ≈ 9 mois : couvre une année scolaire. Les presign GET des

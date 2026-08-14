@@ -6,6 +6,9 @@ l'IdP dans :mod:`app.core.auth` : changer de backend S3 ne doit toucher qu'ici).
 Le bucket n'est jamais public : tout accès passe par une URL présignée mintée
 par l'API — ``PUT`` pour l'upload direct navigateur→S3 (on ne fait pas transiter
 les binaires par le backend, contrainte Pi), ``GET`` à TTL court pour la lecture.
+**Exception actée** : l'export/import de cours (:mod:`app.course_transfer`) lit
+et écrit les binaires via l'API (``read_object_into``/``put_object``), volumes
+bornés par ``TRANSFER_MAX_ZIP_BYTES``.
 
 ``generate_presigned_url`` est du **calcul local** (signature, aucune I/O
 réseau) : l'appeler de façon synchrone dans un handler async ne bloque pas
@@ -14,6 +17,7 @@ ils sont déportés dans un thread (:func:`run_in_threadpool`) pour ne pas bloqu
 """
 
 from functools import lru_cache
+from typing import BinaryIO
 
 import boto3
 from botocore.client import Config
@@ -89,6 +93,36 @@ class Storage:
             if code in ("404", "NoSuchKey", "NotFound"):
                 return None
             raise
+
+    def read_object_into(self, s3_key: str, fileobj: BinaryIO) -> None:
+        """Copie l'objet S3 dans ``fileobj`` par chunks de 1 Mio (RAM bornée).
+
+        ⚠ Réseau SYNCHRONE : à appeler uniquement depuis un thread — l'export
+        de cours déporte l'assemblage complet du zip en un seul
+        ``run_in_threadpool``. Lecture séquentielle via ``get_object`` (pas
+        ``download_fileobj`` : son TransferManager écrit en concurrence avec
+        des ``seek``, incompatible avec un flux d'entrée zip non seekable).
+        """
+        body = self._client.get_object(Bucket=self._bucket, Key=s3_key)["Body"]
+        try:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                fileobj.write(chunk)
+        finally:
+            body.close()
+
+    async def put_object(self, s3_key: str, fileobj: BinaryIO, content_type: str) -> None:
+        """Upload d'un binaire (fileobj seekable) vers le bucket.
+
+        Sert l'import de cours (:mod:`app.course_transfer`) — l'exception
+        actée à la règle « les binaires ne transitent jamais par le backend ».
+        """
+        await run_in_threadpool(
+            self._client.put_object,
+            Bucket=self._bucket,
+            Key=s3_key,
+            Body=fileobj,
+            ContentType=content_type,
+        )
 
     async def delete_many(self, s3_keys: list[str]) -> None:
         """Supprime en lot les objets donnés (no-op si la liste est vide)."""
