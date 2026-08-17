@@ -142,9 +142,13 @@ class Settings(BaseSettings):
     S3_BUCKET: str = "opencartable"
     S3_ACCESS_KEY: str = ""  # SECRET (.env)
     S3_SECRET_KEY: str = ""  # SECRET (.env)
-    # TTL des URL présignées (secondes). GET court (limite la fuite, §7).
+    # TTL des URL présignées (secondes). GET dimensionné pour couvrir la
+    # LECTURE d'un PDF embarqué : le viewer natif du navigateur fait des range
+    # requests au fil du scroll, un TTL de 5 min coupait la lecture en 403.
+    # Réutilisé par les routes publiques (fenêtre de fuite 30 min assumée, §7 —
+    # le contrôle d'accès reste la visibilité/le token, vérifiés à chaque presign).
     S3_PRESIGN_PUT_TTL: int = 900
-    S3_PRESIGN_GET_TTL: int = 300
+    S3_PRESIGN_GET_TTL: int = 1800
     # Garde-fou taille d'upload (octets) — ménage la RAM/BP du Pi. 100 Mo.
     S3_MAX_UPLOAD_BYTES: int = 104_857_600
     # Export/import de cours (.zip assemblé/parsé par l'API — exception actée
