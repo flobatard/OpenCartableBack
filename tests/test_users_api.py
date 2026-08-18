@@ -28,6 +28,7 @@ def _user_row(**overrides):
         est_eleve=False,
         systeme_scolaire=None,
         nom_public=None,
+        cherchable=False,
         onboarded_at=None,
     )
     defaults.update(overrides)
@@ -306,6 +307,66 @@ def test_profil_nom_public_blanc_devient_none():
     assert response.status_code == 200
     assert response.json()["nom_public"] is None
     assert user.nom_public is None  # remplacement complet : l'ancien nom part
+
+
+def test_profil_cherchable_enregistre_et_expose():
+    # Opt-in à la recherche publique de profs (J3) : porté par le même PUT
+    # de remplacement complet que le reste du profil.
+    user = _user_row()
+    niveau, matiere = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    payload = {
+        "est_prof": True,
+        "est_eleve": False,
+        "systeme_scolaire": "fr",
+        "nom_public": "M. Dupont",
+        "cherchable": True,
+        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+    }
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["cherchable"] is True
+    assert user.cherchable is True
+
+
+def test_profil_cherchable_absent_decoche():
+    # PUT = remplacement complet : un payload sans le champ retombe sur False
+    # (comportement sûr — on ne reste jamais cherchable par accident).
+    user = _user_row(cherchable=True)
+    niveau, matiere = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    payload = {
+        "est_prof": True,
+        "est_eleve": False,
+        "systeme_scolaire": "fr",
+        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+    }
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["cherchable"] is False
+    assert user.cherchable is False
+
+
+def test_profil_cherchable_sans_nom_public_accepte():
+    # Toléré par le schéma : la règle de visibilité (cherchable AND
+    # nom_public AND ≥1 cours public) vit dans le service de recherche.
+    user = _user_row()
+    niveau, matiere = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    payload = {
+        "est_prof": True,
+        "est_eleve": False,
+        "systeme_scolaire": "fr",
+        "cherchable": True,
+        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+    }
+    response = _client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["cherchable"] is True
+    assert response.json()["nom_public"] is None
 
 
 def test_onboarding_dedoublonne_et_conserve_la_date():

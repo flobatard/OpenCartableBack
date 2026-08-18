@@ -35,6 +35,15 @@ schéma est un contrat applicatif, par ``type`` :
   d'affichage). Nullable : le bloc naît vide et se remplit dans l'éditeur ;
   supprimer le module supprime les blocs qui le pointent (FK ``CASCADE`` —
   même décision que les documents).
+
+``search_vector`` (jalon J3) : tsvector FTS du bloc, config ``french_unaccent``,
+maintenu exclusivement par trigger PostgreSQL (``trg_blocks_search_vector``,
+fonction ``blocks_tsvector`` partagée avec le backfill de la migration) —
+jamais écrit par l'ORM. Construit **champ par champ** : ``titre`` (poids B),
+``description``, ``content->>'markdown'``, ``content->>'enonce'``,
+``content->>'legende'`` et les ``questions[].enonce`` (poids C). JAMAIS le
+``content`` entier : ``reponse_attendue`` (corrigé du prof) ne doit pas être
+indexé — il deviendrait cherchable depuis le régime public.
 """
 
 import uuid
@@ -50,7 +59,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -112,3 +121,7 @@ class Block(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    # FTS (J3) : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
+    # (voir docstring du module — reponse_attendue exclu). deferred : aucun
+    # service ne le lit.
+    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, deferred=True)

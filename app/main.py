@@ -13,6 +13,7 @@ from app.health.router import router as health_router
 from app.modules.router import router as modules_router
 from app.public.router import router as public_router
 from app.resources.router import router as resources_router
+from app.search.router import router as search_router
 from app.share_links.router import router as share_links_router
 from app.subjects.router import router as subjects_router
 from app.users.router import router as users_router
@@ -57,6 +58,8 @@ def create_app() -> FastAPI:
     # Régime élève (J2) : routes publiques par visibilité/token de partage,
     # sans JWT — l'autorisation vit dans app/public/service.py.
     app.include_router(public_router, prefix=settings.API_V1_PREFIX)
+    # Recherche publique (J3) : même régime sans JWT (préfixe /public/search).
+    app.include_router(search_router, prefix=settings.API_V1_PREFIX)
 
     return app
 

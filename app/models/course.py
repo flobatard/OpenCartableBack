@@ -16,7 +16,13 @@ lien de partage valide (cf. :mod:`app.models.share_link`) ; ``en_cours``
 liens sont suspendus, pas supprimés). Côté prof, la visibilité ne change
 jamais rien : ses routes restent scopées ``owner_id``.
 
-À venir : ``search_vector`` tsvector pour la FTS (jalon J3).
+``search_vector`` (jalon J3) : tsvector de la recherche plein texte,
+titre (poids A) + description (poids B), config ``french_unaccent``.
+Maintenu exclusivement par trigger PostgreSQL (``trg_courses_search_vector``,
+fonction ``courses_tsvector`` partagée avec le backfill de la migration) —
+jamais écrit par l'ORM. Le contenu des blocs a son propre vecteur
+(cf. :mod:`app.models.block`) ; les deux sont combinés à la requête,
+pas consolidés ici.
 """
 
 import uuid
@@ -33,7 +39,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -82,6 +88,10 @@ class Course(Base):
     visibilite: Mapped[str] = mapped_column(
         String(10), default=VISIBILITE_EN_COURS, server_default=text("'en_cours'")
     )
+    # FTS (J3) : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
+    # (voir docstring du module). deferred : aucun service ne le lit, inutile
+    # de charger le vecteur à chaque select d'entité (contrainte Pi).
+    search_vector: Mapped[str | None] = mapped_column(TSVECTOR, deferred=True)
 
     # Pas de relations ORM vers blocks/resources/subjects/education_levels :
     # lazy-load async interdit, les services font des selects explicites.

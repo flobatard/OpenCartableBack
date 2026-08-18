@@ -127,9 +127,12 @@ Pour « agencer texte de cours + documents + images », le modèle gagnant est u
 - Les blocs `module` (modules interactifs HTML/CSS/JS, cf. §5.5) suivent le même motif que les blocs `document` : un **pont nullable** vers un module de la **bibliothèque de modules du cours** (table `modules`), référencé par la **colonne** `module_id` (jamais dans le JSONB, réservé pour de futurs réglages d'affichage), FK `CASCADE` (supprimer le module supprime ses blocs pointeurs), CHECK de cohérence symétrique à celui des documents.
 - Enjeu UX côté Angular : page de cours à onglets (Blocs / Ressources / Modules / Aperçu), éditeur d'ordre des blocs (drag & drop), picker de ressources dans l'éditeur du bloc document, picker de module dans l'éditeur du bloc module.
 
-### 5.4 Recherche
-- MVP : **Full-Text Search Postgres** (`tsvector` + index GIN) sur titres de cours, texte des blocs, noms et tags de ressources. Configuration `french` pour le *stemming*.
-- Facettes : matière (taxonomie hiérarchique `subjects`, filtre par sous-arbre), niveau (classification hiérarchique `education_levels`, filtre par sous-arbre ; pivot international `cite` pour croiser les systèmes scolaires), type de ressource (filtres SQL classiques).
+### 5.4 Recherche (J3 — livré)
+- **FTS Postgres** en config **`french_unaccent`** : extension contrib `unaccent` + copie de la config `french` (stemming français ET insensibilité aux accents, à l'indexation comme à la requête — « theoreme » trouve « Théorème »). Exception **actée** à la règle « pas d'extension Postgres » (arbitrage explicite du J3). Requêtes via `websearch_to_tsquery` (syntaxe libre type moteur de recherche, injection-safe par construction).
+- **Deux vecteurs stockés, combinés à la requête** (jamais consolidés — consolider imposerait de ré-agréger tout le cours à chaque autosave de bloc) : `courses.search_vector` (titre poids A, description B) et `blocks.search_vector` (titre B ; description, markdown, énoncés d'exercice et légendes C — construit **champ par champ, jamais le `content` entier** : `reponse_attendue`, le corrigé du prof, ne doit pas devenir cherchable depuis le régime public). Maintenus par **triggers PostgreSQL** `BEFORE INSERT OR UPDATE OF …` (fonctions SQL `courses_tsvector`/`blocks_tsvector` partagées entre triggers et backfill de migration — une seule définition de « quoi indexer »), index **GIN** sur chaque vecteur.
+- **Régime public sans JWT** (package `app/search/`, routes `GET /api/v1/public/search/courses` et `/teachers`) — règle d'or : seuls les cours `visibilite='public'` remontent ; un prof ne remonte que si `cherchable` (**opt-in explicite** du profil, `users.cherchable`) AND `nom_public` non NULL AND au moins un cours public — son vecteur est calculé **à la volée** (nom public + matières « enseigne », table minuscule). Pas d'oracle : une facette inconnue renvoie une page vide, jamais une erreur (une URL partagée avec un id périmé reste servable).
+- **Facettes** : matière = sous-arbre entier via le `code` (chemin slug complet unique, préfixe `LIKE` — pas de CTE récursive) ; niveau = nœud + enfants directs (2 profondeurs max). Les arbres de taxonomie sont aussi exposés en **lecture publique** (`GET /api/v1/public/subjects/tree` et `/public/education-levels/tree`, délégation pure) pour alimenter les sélecteurs de la page de recherche anonyme. La recherche **sans texte libre est autorisée** (catalogue public trié `updated_at desc`).
+- **Pagination** : première enveloppe paginée de l'API — `{items, total, limit, offset}` (`limit` 1–50, défaut 20 ; `offset` borné) — précédent pour les futures listes.
 - Évolution : recherche **sémantique** via ChromaDB si la vectorisation est actée (cf. 5.7), combinable avec la FTS (recherche hybride).
 
 ### 5.5 Modules interactifs HTML/CSS/JS (J4 — livré, anticipé)
@@ -178,6 +181,8 @@ erDiagram
       uuid id
       string sub
       string email
+      string nom_public
+      bool cherchable
       bool est_prof
       bool est_eleve
       string systeme_scolaire
@@ -221,6 +226,7 @@ erDiagram
       int position
       string type
       jsonb content
+      tsvector search_vector
       timestamptz updated_at
     }
     RESOURCE {
@@ -248,7 +254,7 @@ erDiagram
 
 `USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `contexte` (« enseigne » / « apprend ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `systeme_scolaire` du profil (validation en service ; soumission `PUT /api/v1/users/me/onboarding`, sémantique remplacement → sert aussi d'édition de profil).
 
-`COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`texte`/`exercice`/`document`/`module`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `document` peuvent porter une FK `resource_id` — **nullable** (bloc créé vide) et `ON DELETE CASCADE` (supprimer la ressource supprime les blocs qui la pointent) — CHECK de cohérence en base. `RESOURCE` est la **bibliothèque du cours**, indépendante des blocs : `s3_key` plate unique, ligne créée en `statut='en_attente'` avant l'upload presigned puis confirmée `'disponible'` (cf. §5.2), CRUD complet (liste, renommage, suppression avec purge S3). `MODULE` est la **bibliothèque de modules interactifs du cours** (J4, livré) : `titre` + code `html`/`css`/`js` en colonnes texte (pas de S3, cf. §5.5), CRUD complet ; seuls les blocs `module` peuvent porter une FK `module_id` — **nullable** et `ON DELETE CASCADE`, CHECK de cohérence symétrique à celui des documents. Restent à venir : `SHARE_LINK` (J2) et le `search_vector` FTS de `COURSE` (J3).
+`COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`texte`/`exercice`/`document`/`module`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `document` peuvent porter une FK `resource_id` — **nullable** (bloc créé vide) et `ON DELETE CASCADE` (supprimer la ressource supprime les blocs qui la pointent) — CHECK de cohérence en base. `RESOURCE` est la **bibliothèque du cours**, indépendante des blocs : `s3_key` plate unique, ligne créée en `statut='en_attente'` avant l'upload presigned puis confirmée `'disponible'` (cf. §5.2), CRUD complet (liste, renommage, suppression avec purge S3). `MODULE` est la **bibliothèque de modules interactifs du cours** (J4, livré) : `titre` + code `html`/`css`/`js` en colonnes texte (pas de S3, cf. §5.5), CRUD complet ; seuls les blocs `module` peuvent porter une FK `module_id` — **nullable** et `ON DELETE CASCADE`, CHECK de cohérence symétrique à celui des documents. `SHARE_LINK` (J2) est en place (token opaque, expiration obligatoire, révocation soft — cf. §5.6), tout comme les **`search_vector` FTS** de `COURSE` et `BLOCK` (J3) — maintenus par triggers, jamais écrits par l'ORM (cf. §5.4) — et l'opt-in `USER.cherchable` de la recherche publique de professeurs.
 
 ---
 
@@ -259,7 +265,7 @@ erDiagram
 | **J0 — Socle** | Repo, Docker Compose, FastAPI + Postgres + Alembic, validation JWT Zitadel, squelette Angular + login OIDC | Une route protégée qui répond, un login prof qui marche |
 | **J1 — Contenu** | Matières, cours, upload S3 (presigned), éditeur de blocs basique | Le prof crée et remplit un cours |
 | **J2 — Partage** | Liens publics, vue lecture seule élève, présignature des ressources | Un cours consultable par lien |
-| **J3 — Recherche** | FTS Postgres + facettes | Retrouver n'importe quel support |
+| **J3 — Recherche** *(livré)* | FTS Postgres `french_unaccent` (cours publics + profs opt-in, triggers + GIN), facettes matière/niveau, arbres publics, pagination | Retrouver n'importe quel support |
 | **J4 — Interactif** *(livré, anticipé avant J2/J3)* | Bibliothèque de modules HTML/CSS/JS par cours (code en base, éditeur intégré) + sandbox iframe origine opaque | Intégrer un quiz dans un cours |
 | **J5 — IA** | extraction texte, vectorisation (ChromaDB, si actée), recherche sémantique / RAG | Première brique IA |
 

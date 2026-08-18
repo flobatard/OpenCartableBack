@@ -89,6 +89,7 @@ def _profil(
         est_eleve=user.est_eleve,
         systeme_scolaire=user.systeme_scolaire,
         nom_public=user.nom_public,
+        cherchable=user.cherchable,
         onboarding_complete=user.onboarded_at is not None,
         enseignement=enseignement,
         apprentissage=apprentissage,
@@ -206,6 +207,7 @@ async def update_profile(
     user.est_eleve = payload.est_eleve
     user.systeme_scolaire = payload.systeme_scolaire
     user.nom_public = payload.nom_public
+    user.cherchable = payload.cherchable
     # La date de première complétion est conservée à la re-soumission.
     user.onboarded_at = user.onboarded_at or datetime.now(UTC)
     await db.commit()

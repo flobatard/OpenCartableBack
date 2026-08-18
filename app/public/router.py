@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.storage import Storage, get_storage
+from app.education_levels import service as education_levels_service
+from app.education_levels.schemas import EducationLevelRead
 from app.public import service
 from app.public.schemas import (
     PublicCourseDetailRead,
@@ -27,6 +29,8 @@ from app.public.schemas import (
     PublicModuleRead,
     PublicProfessorRead,
 )
+from app.subjects import service as subjects_service
+from app.subjects.schemas import SubjectRead
 
 router = APIRouter(prefix="/public", tags=["public"])
 
@@ -90,3 +94,21 @@ async def list_professor_public_courses(
 ) -> PublicProfessorRead:
     """Catalogue public d'un prof : ses cours ``public`` uniquement."""
     return await service.list_public_courses_by_professor(db, user_id)
+
+
+@router.get("/subjects/tree", response_model=list[SubjectRead])
+async def read_public_subject_tree(
+    db: AsyncSession = Depends(get_db),
+) -> list[SubjectRead]:
+    """Arbre des matières, lecture publique (facettes de recherche, J3) —
+    délégation pure, réponse strictement identique à ``GET /subjects/tree``."""
+    return await subjects_service.get_subject_tree(db)
+
+
+@router.get("/education-levels/tree", response_model=list[EducationLevelRead])
+async def read_public_education_level_tree(
+    db: AsyncSession = Depends(get_db),
+) -> list[EducationLevelRead]:
+    """Arbre des niveaux d'étude, lecture publique (facettes de recherche,
+    J3) — délégation pure, identique à ``GET /education-levels/tree``."""
+    return await education_levels_service.get_education_level_tree(db)

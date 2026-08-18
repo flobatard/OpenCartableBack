@@ -52,6 +52,11 @@ class User(Base):
     # d'identité exposée sur les pages publiques (catalogue des cours d'un
     # prof). Jamais dérivé de l'IdP, jamais l'email. NULL = catalogue anonyme.
     nom_public: Mapped[str | None] = mapped_column(String(100))
+    # Opt-in explicite à la recherche publique de professeurs (jalon J3).
+    # Le flag seul ne suffit jamais : un prof ne remonte dans
+    # /public/search/teachers que si cherchable AND nom_public non NULL
+    # AND au moins un cours public (règle portée par app/search/service.py).
+    cherchable: Mapped[bool] = mapped_column(default=False, server_default="false")
     est_prof: Mapped[bool] = mapped_column(default=False, server_default="false")
     est_eleve: Mapped[bool] = mapped_column(default=False, server_default="false")
     # Même dimension que education_levels.systeme ; validé en service

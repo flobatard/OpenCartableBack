@@ -479,3 +479,61 @@ def test_catalogue_prof_sans_nom_public_anonyme():
     response = _client(session).get(f"/api/v1/public/professors/{user.id}/courses")
     assert response.status_code == 200
     assert response.json() == {"nom_public": None, "courses": []}
+
+
+# --- Arbres de taxonomie publics (facettes de recherche, J3) -------------------
+
+
+def _subject_tree_row(nom, profondeur=0, parent_id=None, position=0):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        parent_id=parent_id,
+        nom=nom,
+        code=nom.lower().replace(" ", "-"),
+        profondeur=profondeur,
+        position=position,
+    )
+
+
+def _level_tree_row(nom, profondeur=0, parent_id=None, position=0):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        parent_id=parent_id,
+        nom=nom,
+        code=f"fr.{nom.lower().replace(' ', '-')}",
+        systeme="fr",
+        cite=None,
+        age_min=None,
+        age_max=None,
+        profondeur=profondeur,
+        position=position,
+    )
+
+
+def test_arbre_matieres_public_sans_authorization():
+    # Délégation pure vers le service subjects : même forme de réponse que
+    # la route JWT, mais accessible anonymement (facettes de la recherche).
+    racine = _subject_tree_row("Mathématiques")
+    enfant = _subject_tree_row("Algèbre", profondeur=1, parent_id=racine.id)
+    session = _FakeSession([[racine, enfant]])
+    response = _client(session).get("/api/v1/public/subjects/tree")
+
+    assert response.status_code == 200
+    assert "WWW-Authenticate" not in response.headers
+    [noeud] = response.json()
+    assert noeud["nom"] == "Mathématiques"
+    assert [c["nom"] for c in noeud["children"]] == ["Algèbre"]
+
+
+def test_arbre_niveaux_public_sans_authorization():
+    racine = _level_tree_row("Collège")
+    enfant = _level_tree_row("6e", profondeur=1, parent_id=racine.id)
+    session = _FakeSession([[racine, enfant]])
+    response = _client(session).get("/api/v1/public/education-levels/tree")
+
+    assert response.status_code == 200
+    assert "WWW-Authenticate" not in response.headers
+    [noeud] = response.json()
+    assert noeud["nom"] == "Collège"
+    assert noeud["systeme"] == "fr"
+    assert [c["nom"] for c in noeud["children"]] == ["6e"]

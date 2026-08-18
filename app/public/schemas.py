@@ -6,8 +6,10 @@ Règle d'or : ne JAMAIS exposer ici une donnée réservée au prof. Concrètemen
   dans le service), pas un ``exclude`` fragile ;
 - pas d'``owner_id``, pas d'email, pas de ``s3_key`` ; la seule donnée
   d'identité publique est ``users.nom_public`` (choisie par le prof) ;
-- les matières/niveaux sont dénormalisés en **noms** (les arbres
-  ``/subjects/tree`` et ``/education-levels/tree`` sont derrière JWT).
+- les matières/niveaux sont dénormalisés en **noms** — contrat J2 conservé :
+  les cartes front n'ont aucune résolution d'arbre à faire (les arbres sont
+  aussi exposés en lecture publique depuis le J3, ``/public/*/tree``, pour
+  les facettes de recherche — la dénormalisation reste la forme des cartes).
 """
 
 import uuid
