@@ -30,6 +30,9 @@ class PublicTeacherRead(BaseModel):
 
     id: uuid.UUID
     nom_public: str
+    # URL présignée inline de la photo de profil (TTL court), None si le prof
+    # n'en a pas — jamais la clé S3 (règle d'or ci-dessus).
+    avatar_url: str | None
     # Matières que le prof déclare enseigner (profil « enseigne »),
     # noms dénormalisés triés — motif J2.
     subjects: list[str]

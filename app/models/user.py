@@ -40,6 +40,12 @@ class User(Base):
             "onboarded_at IS NULL OR est_prof OR est_eleve",
             name="ck_users_onboarde_implique_role",
         ),
+        CheckConstraint(
+            "(avatar_s3_key IS NULL AND avatar_mime IS NULL AND avatar_statut IS NULL) "
+            "OR (avatar_s3_key IS NOT NULL AND avatar_mime IS NOT NULL "
+            "AND avatar_statut IN ('en_attente', 'disponible'))",
+            name="ck_users_avatar_coherence",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -57,6 +63,14 @@ class User(Base):
     # /public/search/teachers que si cherchable AND nom_public non NULL
     # AND au moins un cours public (règle portée par app/search/service.py).
     cherchable: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # Photo de profil (avatar) : objet S3 privé, servi en URL présignée inline.
+    # NULL sur les trois colonnes = pas d'avatar (CHECK de cohérence). Le statut
+    # suit le flow presigned des ressources (en_attente → disponible) ; jamais
+    # exposé tel quel : seule avatar_url (présignée, statut disponible) sort de
+    # l'API — la clé ne figure dans aucun schéma de réponse.
+    avatar_s3_key: Mapped[str | None] = mapped_column(String(1024))
+    avatar_mime: Mapped[str | None] = mapped_column(String(255))
+    avatar_statut: Mapped[str | None] = mapped_column(String(20))
     est_prof: Mapped[bool] = mapped_column(default=False, server_default="false")
     est_eleve: Mapped[bool] = mapped_column(default=False, server_default="false")
     # Même dimension que education_levels.systeme ; validé en service

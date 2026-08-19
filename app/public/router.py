@@ -91,9 +91,10 @@ async def read_public_module(
 async def list_professor_public_courses(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ) -> PublicProfessorRead:
     """Catalogue public d'un prof : ses cours ``public`` uniquement."""
-    return await service.list_public_courses_by_professor(db, user_id)
+    return await service.list_public_courses_by_professor(db, user_id, storage)
 
 
 @router.get("/subjects/tree", response_model=list[SubjectRead])

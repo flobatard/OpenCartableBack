@@ -33,6 +33,7 @@ import uuid
 from sqlalchemy import Select, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.storage import Storage
 from app.models.block import Block
 from app.models.course import VISIBILITE_PUBLIC, Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
@@ -49,6 +50,7 @@ from app.search.schemas import (
     SearchCoursesPage,
     SearchTeachersPage,
 )
+from app.users.service import avatar_url_for
 
 # Config FTS créée par la migration J3 (schéma public, résolue via search_path).
 FTS_CONFIG = "french_unaccent"
@@ -196,9 +198,11 @@ def _teachers_count_stmt(tsq, subject_ids, level_ids) -> Select:
 
 
 def _teachers_page_stmt(tsq, subject_ids, level_ids, limit: int, offset: int) -> Select:
-    stmt = select(User.id, User.nom_public).where(
-        *_teachers_filters(tsq, subject_ids, level_ids)
-    )
+    # avatar_s3_key/avatar_statut ne sortent jamais de l'API : ils servent à
+    # minter l'avatar_url présignée (le mime est inutile au presign GET).
+    stmt = select(
+        User.id, User.nom_public, User.avatar_s3_key, User.avatar_statut
+    ).where(*_teachers_filters(tsq, subject_ids, level_ids))
     if tsq is not None:
         stmt = stmt.order_by(
             func.ts_rank(_teachers_vector(), tsq).desc(), User.nom_public, User.id
@@ -372,13 +376,15 @@ async def search_teachers(
     education_level_id: uuid.UUID | None,
     limit: int,
     offset: int,
+    storage: Storage,
 ) -> SearchTeachersPage:
     """Page de profs cherchables (voir critères en tête de module).
 
     Ordre des execute : résolution des facettes comme ``search_courses``
-    (inconnue ⇒ page vide immédiate) ; puis count, page (id + nom_public,
-    tri rank/nom) ; et si items : noms des matières enseignées, comptes de
-    cours publics.
+    (inconnue ⇒ page vide immédiate) ; puis count, page (id + nom_public +
+    colonnes avatar, tri rank/nom) ; et si items : noms des matières
+    enseignées, comptes de cours publics. L'``avatar_url`` est présignée
+    localement par item (aucune I/O).
     """
     q = (q or "").strip() or None
     subject_ids: list[uuid.UUID] | None = None
@@ -437,10 +443,11 @@ async def search_teachers(
             PublicTeacherRead(
                 id=user_id,
                 nom_public=nom_public,
+                avatar_url=avatar_url_for(avatar_s3_key, avatar_statut, storage),
                 subjects=matieres[user_id],
                 public_course_count=comptes.get(user_id, 0),
             )
-            for user_id, nom_public in rows
+            for user_id, nom_public, avatar_s3_key, avatar_statut in rows
         ],
         total=total,
         limit=limit,

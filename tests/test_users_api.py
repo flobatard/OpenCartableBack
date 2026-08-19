@@ -16,6 +16,7 @@ from sqlalchemy.sql.dml import Delete, Insert
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.storage import get_storage
 from app.main import create_app
 
 
@@ -29,10 +30,41 @@ def _user_row(**overrides):
         systeme_scolaire=None,
         nom_public=None,
         cherchable=False,
+        avatar_s3_key=None,
+        avatar_mime=None,
+        avatar_statut=None,
         onboarded_at=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+class _FakeStorage:
+    """Faux client S3 : URLs déterministes, HEAD configurable, pas de réseau."""
+
+    def __init__(self, head_result=None):
+        self._head_result = head_result
+        self.put_calls: list[tuple[str, str]] = []
+        self.get_calls: list[tuple[str, str]] = []
+        self.inline_calls: list[bool] = []
+        self.head_calls: list[str] = []
+        self.deleted: list[str] = []
+
+    def presign_put(self, s3_key, content_type):
+        self.put_calls.append((s3_key, content_type))
+        return f"https://s3.test/put/{s3_key}"
+
+    def presign_get(self, s3_key, nom_original, inline=False):
+        self.get_calls.append((s3_key, nom_original))
+        self.inline_calls.append(inline)
+        return f"https://s3.test/get/{s3_key}"
+
+    async def head(self, s3_key):
+        self.head_calls.append(s3_key)
+        return self._head_result
+
+    async def delete_many(self, s3_keys):
+        self.deleted.extend(s3_keys)
 
 
 class _FakeResult:
@@ -68,12 +100,13 @@ class _FakeSession:
         self.commits += 1
 
 
-def _client(session, email=None) -> TestClient:
+def _client(session, email=None, storage=None) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
         sub="prof-123", email=email, roles=frozenset(), claims={}
     )
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
     return TestClient(app)
 
 
@@ -388,3 +421,232 @@ def test_onboarding_dedoublonne_et_conserve_la_date():
     assert len(params_niveaux) == 1
     # La date de première complétion n'est pas écrasée par la re-soumission.
     assert user.onboarded_at == premiere_date
+
+
+# --- Avatar (photo de profil) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", "/api/v1/users/me/avatar", {"mime": "image/jpeg", "taille": 10}),
+        ("POST", "/api/v1/users/me/avatar/confirm", None),
+        ("DELETE", "/api/v1/users/me/avatar", None),
+    ],
+)
+def test_avatar_requires_auth(client: TestClient, method, path, body):
+    response = client.request(method, path, json=body)
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_me_expose_avatar_url_si_disponible():
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="disponible",
+    )
+    session = _FakeSession([[user], [], []])
+    storage = _FakeStorage()
+    response = _client(session, storage=storage).get("/api/v1/users/me")
+
+    assert response.status_code == 200
+    assert response.json()["avatar_url"] == (
+        "https://s3.test/get/users/u/avatar/x/avatar.jpg"
+    )
+    # Présignée en inline, sous le nom constant de la clé (jamais la clé brute).
+    assert storage.inline_calls == [True]
+    assert storage.get_calls == [("users/u/avatar/x/avatar.jpg", "avatar.jpg")]
+
+
+def test_me_avatar_en_attente_url_nulle():
+    # Un upload jamais confirmé ne sert rien : avatar_url reste None.
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="en_attente",
+    )
+    session = _FakeSession([[user], [], []])
+    response = _client(session).get("/api/v1/users/me")
+    assert response.status_code == 200
+    assert response.json()["avatar_url"] is None
+
+
+def test_avatar_presign_happy_path():
+    user = _user_row()
+    session = _FakeSession([[user]])
+    storage = _FakeStorage()
+    response = _client(session, storage=storage).post(
+        "/api/v1/users/me/avatar", json={"mime": "image/jpeg", "taille": 1024}
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["upload_url"].startswith("https://s3.test/put/users/")
+    assert body["expires_in"] > 0
+    # La clé suit le gabarit users/<id>/avatar/<uuid>/avatar.<ext> et la ligne
+    # attend la confirmation.
+    [(s3_key, content_type)] = storage.put_calls
+    prefix, suffix = f"users/{user.id}/avatar/", "/avatar.jpg"
+    assert s3_key.startswith(prefix) and s3_key.endswith(suffix)
+    uuid.UUID(s3_key[len(prefix) : -len(suffix)])  # segment central = uuid valide
+    assert content_type == "image/jpeg"
+    assert user.avatar_s3_key == s3_key
+    assert user.avatar_mime == "image/jpeg"
+    assert user.avatar_statut == "en_attente"
+    assert storage.deleted == []  # pas d'ancien avatar à purger
+    assert session.commits >= 2  # get_or_create + presign
+
+
+def test_avatar_presign_ecrase_et_purge_l_ancien():
+    ancienne = "users/u/avatar/vieux/avatar.png"
+    user = _user_row(
+        avatar_s3_key=ancienne, avatar_mime="image/png", avatar_statut="disponible"
+    )
+    session = _FakeSession([[user]])
+    storage = _FakeStorage()
+    response = _client(session, storage=storage).post(
+        "/api/v1/users/me/avatar", json={"mime": "image/webp", "taille": 2048}
+    )
+
+    assert response.status_code == 201
+    # L'ancien objet est purgé (après commit) ; la nouvelle clé porte la
+    # nouvelle extension et repart en_attente.
+    assert storage.deleted == [ancienne]
+    assert user.avatar_s3_key.endswith("/avatar.webp")
+    assert user.avatar_statut == "en_attente"
+
+
+def test_avatar_presign_mime_hors_whitelist_422():
+    session = _FakeSession()
+    response = _client(session).post(
+        "/api/v1/users/me/avatar", json={"mime": "image/gif", "taille": 1024}
+    )
+    assert response.status_code == 422
+    assert session.executed == []
+
+
+def test_avatar_presign_taille_au_dessus_du_plafond_422():
+    session = _FakeSession()
+    response = _client(session).post(
+        "/api/v1/users/me/avatar",
+        json={"mime": "image/jpeg", "taille": 5_242_881},
+    )
+    assert response.status_code == 422
+    assert session.executed == []
+
+
+def test_avatar_confirm_happy_path():
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="en_attente",
+    )
+    # SELECTs : user, puis read_profile (niveaux, matières).
+    session = _FakeSession([[user], [], []])
+    storage = _FakeStorage(
+        head_result={"ContentLength": 1024, "ContentType": "image/jpeg"}
+    )
+    response = _client(session, storage=storage).post("/api/v1/users/me/avatar/confirm")
+
+    assert response.status_code == 200
+    assert user.avatar_statut == "disponible"
+    assert response.json()["avatar_url"] == (
+        "https://s3.test/get/users/u/avatar/x/avatar.jpg"
+    )
+    assert storage.head_calls == ["users/u/avatar/x/avatar.jpg"]
+    assert storage.deleted == []
+
+
+def test_avatar_confirm_sans_upload_409():
+    user = _user_row()  # aucun avatar déclaré
+    session = _FakeSession([[user]])
+    response = _client(session).post("/api/v1/users/me/avatar/confirm")
+    assert response.status_code == 409
+    assert "Aucun upload" in response.json()["detail"]
+
+
+def test_avatar_confirm_deja_confirme_409():
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="disponible",
+    )
+    session = _FakeSession([[user]])
+    response = _client(session).post("/api/v1/users/me/avatar/confirm")
+    assert response.status_code == 409
+
+
+def test_avatar_confirm_objet_absent_409():
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="en_attente",
+    )
+    session = _FakeSession([[user]])
+    storage = _FakeStorage(head_result=None)
+    response = _client(session, storage=storage).post("/api/v1/users/me/avatar/confirm")
+    assert response.status_code == 409
+    assert "upload non abouti" in response.json()["detail"]
+    assert user.avatar_statut == "en_attente"
+
+
+def test_avatar_confirm_hors_gabarit_409_et_purge():
+    # Une URL présignée PUT ne borne pas la taille : l'objet hors plafond est
+    # refusé ET purgé (best-effort) ; la ligne reste en_attente.
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="en_attente",
+    )
+    session = _FakeSession([[user]])
+    storage = _FakeStorage(
+        head_result={"ContentLength": 6_000_000, "ContentType": "image/jpeg"}
+    )
+    response = _client(session, storage=storage).post("/api/v1/users/me/avatar/confirm")
+    assert response.status_code == 409
+    assert storage.deleted == ["users/u/avatar/x/avatar.jpg"]
+    assert user.avatar_statut == "en_attente"
+
+
+def test_avatar_confirm_mauvais_content_type_409():
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="en_attente",
+    )
+    session = _FakeSession([[user]])
+    storage = _FakeStorage(
+        head_result={"ContentLength": 1024, "ContentType": "text/html"}
+    )
+    response = _client(session, storage=storage).post("/api/v1/users/me/avatar/confirm")
+    assert response.status_code == 409
+    assert storage.deleted == ["users/u/avatar/x/avatar.jpg"]
+
+
+def test_avatar_delete():
+    s3_key = "users/u/avatar/x/avatar.jpg"
+    user = _user_row(
+        avatar_s3_key=s3_key, avatar_mime="image/jpeg", avatar_statut="disponible"
+    )
+    # SELECTs : user, puis read_profile (niveaux, matières).
+    session = _FakeSession([[user], [], []])
+    storage = _FakeStorage()
+    response = _client(session, storage=storage).delete("/api/v1/users/me/avatar")
+
+    assert response.status_code == 200
+    assert response.json()["avatar_url"] is None
+    assert user.avatar_s3_key is None
+    assert user.avatar_mime is None
+    assert user.avatar_statut is None
+    assert storage.deleted == [s3_key]
+
+
+def test_avatar_delete_sans_avatar_idempotent():
+    user = _user_row()
+    session = _FakeSession([[user], [], []])
+    storage = _FakeStorage()
+    response = _client(session, storage=storage).delete("/api/v1/users/me/avatar")
+    assert response.status_code == 200
+    assert response.json()["avatar_url"] is None
+    assert storage.deleted == []  # rien à purger

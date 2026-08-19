@@ -56,6 +56,7 @@ from app.public.schemas import (
     PublicProfessorRead,
     PublicResourceRead,
 )
+from app.users.service import avatar_url_for
 
 
 def _introuvable() -> HTTPException:
@@ -332,7 +333,7 @@ async def get_module_public(
 
 
 async def list_public_courses_by_professor(
-    db: AsyncSession, user_id: uuid.UUID
+    db: AsyncSession, user_id: uuid.UUID, storage: Storage
 ) -> PublicProfessorRead:
     """Catalogue public d'un prof : ses cours ``public``, du plus récent au
     plus ancien.
@@ -340,7 +341,8 @@ async def list_public_courses_by_professor(
     Ordre des execute : 1) utilisateur, 2) cours publics ; puis, s'il y en
     a : 3) noms de matières, 4) noms de niveaux, 5) comptes de blocs.
     Utilisateur inconnu ou sans cours public → même réponse (liste vide,
-    ``nom_public`` éventuel) : pas d'oracle d'existence d'un compte.
+    ``nom_public``/``avatar_url`` éventuels) : pas d'oracle d'existence
+    d'un compte. L'``avatar_url`` est présignée localement (aucune I/O).
     """
     user = (
         (await db.execute(select(User).where(User.id == user_id)))
@@ -362,8 +364,15 @@ async def list_public_courses_by_professor(
         .all()
     )
     nom_public = user.nom_public if user is not None else None
+    avatar_url = (
+        avatar_url_for(user.avatar_s3_key, user.avatar_statut, storage)
+        if user is not None
+        else None
+    )
     if not courses:
-        return PublicProfessorRead(nom_public=nom_public, courses=[])
+        return PublicProfessorRead(
+            nom_public=nom_public, avatar_url=avatar_url, courses=[]
+        )
     course_ids = [c.id for c in courses]
 
     matieres: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
@@ -408,6 +417,7 @@ async def list_public_courses_by_professor(
     )
     return PublicProfessorRead(
         nom_public=nom_public,
+        avatar_url=avatar_url,
         courses=[
             _course_read(c, matieres[c.id], niveaux[c.id], comptes.get(c.id, 0))
             for c in courses

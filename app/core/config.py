@@ -151,6 +151,9 @@ class Settings(BaseSettings):
     S3_PRESIGN_GET_TTL: int = 1800
     # Garde-fou taille d'upload (octets) — ménage la RAM/BP du Pi. 100 Mo.
     S3_MAX_UPLOAD_BYTES: int = 104_857_600
+    # Plafond d'un avatar utilisateur (5 Mo) — vérifié à la déclaration ET à la
+    # confirmation (HEAD) : une URL présignée PUT ne borne pas la taille.
+    AVATAR_MAX_BYTES: int = 5_242_880
     # Export/import de cours (.zip assemblé/parsé par l'API — exception actée
     # à la règle « pas de binaire par le backend », cf. app/course_transfer/) :
     # plafond global d'une archive (500 Mo). Par fichier, S3_MAX_UPLOAD_BYTES

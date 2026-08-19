@@ -14,7 +14,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser
+from app.core.config import settings
+from app.core.storage import Storage
 from app.models.education_level import EducationLevel
+from app.models.resource import STATUT_DISPONIBLE, STATUT_EN_ATTENTE
 from app.models.subject import Subject
 from app.models.user import (
     CONTEXTE_APPREND,
@@ -23,7 +26,14 @@ from app.models.user import (
     user_education_levels,
     user_subjects,
 )
-from app.users.schemas import ProfilContexte, ProfileUpdate, UserProfileRead
+from app.users.schemas import (
+    AVATAR_EXTENSIONS,
+    AvatarCreate,
+    AvatarPresign,
+    ProfilContexte,
+    ProfileUpdate,
+    UserProfileRead,
+)
 
 
 def _dedupe(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
@@ -33,6 +43,21 @@ def _dedupe(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
 
 def _invalide(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
+
+
+def _conflit(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+def avatar_url_for(s3_key: str | None, statut: str | None, storage: Storage) -> str | None:
+    """URL présignée inline de l'avatar, ``None`` si absent ou non disponible.
+
+    Calcul local (aucune I/O) : appelable depuis les routes anonymes
+    (:mod:`app.public`, :mod:`app.search`) sans coût réseau par item.
+    """
+    if s3_key is None or statut != STATUT_DISPONIBLE:
+        return None
+    return storage.presign_get(s3_key, s3_key.rsplit("/", 1)[-1], inline=True)
 
 
 async def get_or_create_by_sub(db: AsyncSession, auth: AuthenticatedUser) -> User:
@@ -80,6 +105,7 @@ def _profil(
     user: User,
     enseignement: ProfilContexte | None,
     apprentissage: ProfilContexte | None,
+    storage: Storage,
 ) -> UserProfileRead:
     return UserProfileRead(
         id=user.id,
@@ -90,13 +116,14 @@ def _profil(
         systeme_scolaire=user.systeme_scolaire,
         nom_public=user.nom_public,
         cherchable=user.cherchable,
+        avatar_url=avatar_url_for(user.avatar_s3_key, user.avatar_statut, storage),
         onboarding_complete=user.onboarded_at is not None,
         enseignement=enseignement,
         apprentissage=apprentissage,
     )
 
 
-async def read_profile(db: AsyncSession, user: User) -> UserProfileRead:
+async def read_profile(db: AsyncSession, user: User, storage: Storage) -> UserProfileRead:
     """Profil complet. Ordre des execute : 1) niveaux, 2) matières."""
     lignes_niveaux = (
         await db.execute(
@@ -119,11 +146,11 @@ async def read_profile(db: AsyncSession, user: User) -> UserProfileRead:
         )
     ).all()
     enseignement, apprentissage = _blocs_depuis_lignes(user, lignes_niveaux, lignes_matieres)
-    return _profil(user, enseignement, apprentissage)
+    return _profil(user, enseignement, apprentissage, storage)
 
 
 async def update_profile(
-    db: AsyncSession, user: User, payload: ProfileUpdate
+    db: AsyncSession, user: User, payload: ProfileUpdate, storage: Storage
 ) -> UserProfileRead:
     """Valide puis enregistre le profil (PUT = remplacement, rejouable).
 
@@ -220,4 +247,82 @@ async def update_profile(
             subject_ids=matieres_par_bloc[contexte],
         )
 
-    return _profil(user, bloc(CONTEXTE_ENSEIGNE), bloc(CONTEXTE_APPREND))
+    return _profil(user, bloc(CONTEXTE_ENSEIGNE), bloc(CONTEXTE_APPREND), storage)
+
+
+async def presign_avatar(
+    db: AsyncSession, user: User, payload: AvatarCreate, storage: Storage
+) -> AvatarPresign:
+    """Déclare l'upload d'avatar et renvoie l'URL présignée PUT.
+
+    Ordre des execute : aucun (mutation d'attributs de l'instance déjà
+    chargée par ``get_or_create_by_sub``). Écrase l'éventuel avatar
+    existant (nouvelle clé — l'uuid4 par upload invalide les caches
+    navigateur —, statut ``en_attente``) ; l'ancienne clé S3 est purgée
+    APRÈS le commit (motif ``delete_resource`` : un échec S3 laisse un
+    orphelin bucket, jamais une réf DB pointant un objet absent). Fenêtre
+    assumée : entre presign et confirm, ``avatar_url`` est ``None``.
+    """
+    ancienne = user.avatar_s3_key
+    ext = AVATAR_EXTENSIONS[payload.mime]
+    user.avatar_s3_key = f"users/{user.id}/avatar/{uuid.uuid4()}/avatar.{ext}"
+    user.avatar_mime = payload.mime
+    user.avatar_statut = STATUT_EN_ATTENTE
+    await db.commit()
+    if ancienne is not None:
+        await storage.delete_many([ancienne])
+    return AvatarPresign(
+        upload_url=storage.presign_put(user.avatar_s3_key, payload.mime),
+        expires_in=settings.S3_PRESIGN_PUT_TTL,
+    )
+
+
+async def confirm_avatar(
+    db: AsyncSession, user: User, storage: Storage
+) -> UserProfileRead:
+    """Vérifie l'objet S3 et passe l'avatar à ``disponible``.
+
+    Ordre des execute : ceux de ``read_profile`` (1 niveaux, 2 matières),
+    après le commit. Avant eux, HEAD S3 : pas d'upload en attente ou déjà
+    confirmé → 409 ; objet absent → 409 ; ``ContentLength`` au-dessus du
+    plafond (une URL présignée PUT ne borne pas la taille) ou
+    ``ContentType`` différent du mime déclaré → 409 avec purge best-effort
+    de l'objet hors gabarit (la ligne reste ``en_attente``).
+    """
+    if user.avatar_s3_key is None or user.avatar_statut != STATUT_EN_ATTENTE:
+        raise _conflit("Aucun upload d'avatar en attente")
+
+    metadata = await storage.head(user.avatar_s3_key)
+    if metadata is None:
+        raise _conflit("Objet introuvable sur S3 : upload non abouti")
+    taille = metadata.get("ContentLength")
+    content_type = metadata.get("ContentType")
+    if (taille is not None and taille > settings.AVATAR_MAX_BYTES) or (
+        content_type is not None and content_type != user.avatar_mime
+    ):
+        await storage.delete_many([user.avatar_s3_key])
+        raise _conflit("Objet hors gabarit (taille ou type inattendu)")
+
+    user.avatar_statut = STATUT_DISPONIBLE
+    await db.commit()
+    return await read_profile(db, user, storage)
+
+
+async def delete_avatar(
+    db: AsyncSession, user: User, storage: Storage
+) -> UserProfileRead:
+    """Supprime l'avatar (colonnes à NULL) et purge l'objet S3.
+
+    Ordre des execute : ceux de ``read_profile`` (1 niveaux, 2 matières),
+    après le commit. La purge S3 a lieu APRÈS le commit (motif
+    ``delete_resource``). Sans avatar, l'appel est un no-op idempotent
+    (200, aucun appel S3).
+    """
+    s3_key = user.avatar_s3_key
+    user.avatar_s3_key = None
+    user.avatar_mime = None
+    user.avatar_statut = None
+    await db.commit()
+    if s3_key is not None:
+        await storage.delete_many([s3_key])
+    return await read_profile(db, user, storage)

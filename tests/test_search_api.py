@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.dialects import postgresql
 
 from app.core.database import get_db
+from app.core.storage import get_storage
 from app.main import create_app
 from app.search.service import (
     _courses_count_stmt,
@@ -81,10 +82,18 @@ class _FakeSession:
         self.commits += 1
 
 
+class _FakeStorage:
+    """Faux client S3 : seul presign_get sert ici (avatar_url des profs)."""
+
+    def presign_get(self, s3_key, nom_original, inline=False):
+        return f"https://s3.test/get/{s3_key}"
+
+
 def _client(session) -> TestClient:
     # PAS d'override de get_current_user : ces routes vivent sans lui.
     app = create_app()
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_storage] = lambda: _FakeStorage()
     return TestClient(app)
 
 
@@ -216,12 +225,15 @@ def test_pagination_bornes_validees():
 
 def test_recherche_teachers_page_assemblee():
     uid1, uid2 = uuid.uuid4(), uuid.uuid4()
-    # FIFO : count, page (id, nom_public), matières enseignées, comptes de
-    # cours publics.
+    # FIFO : count, page (id, nom_public, avatar_s3_key, avatar_statut),
+    # matières enseignées, comptes de cours publics.
     session = _FakeSession(
         [
             [2],
-            [(uid1, "Mme Ada"), (uid2, "M. Turing")],
+            [
+                (uid1, "Mme Ada", "users/u1/avatar/x/avatar.jpg", "disponible"),
+                (uid2, "M. Turing", None, None),
+            ],
             [(uid1, "Informatique"), (uid1, "Mathématiques")],
             [(uid1, 3)],
         ]
@@ -236,8 +248,14 @@ def test_recherche_teachers_page_assemblee():
     assert [t["nom_public"] for t in body["items"]] == ["Mme Ada", "M. Turing"]
     assert body["items"][0]["subjects"] == ["Informatique", "Mathématiques"]
     assert body["items"][0]["public_course_count"] == 3
+    assert body["items"][0]["avatar_url"] == (
+        "https://s3.test/get/users/u1/avatar/x/avatar.jpg"
+    )
     assert body["items"][1]["subjects"] == []
     assert body["items"][1]["public_course_count"] == 0
+    assert body["items"][1]["avatar_url"] is None
+    # La clé S3 ne sort jamais telle quelle dans le corps de la réponse.
+    assert "avatar_s3_key" not in response.text
 
 
 def test_recherche_teachers_sans_resultat():
@@ -295,12 +313,16 @@ def test_sql_teachers_criteres_de_visibilite():
     assert "contexte" in sql  # matières « enseigne » uniquement
     assert "email" not in sql  # jamais de donnée privée
     assert "users.sub" not in sql  # ni l'identifiant OIDC
+    # Colonnes avatar sélectionnées pour minter avatar_url (jamais le mime).
+    assert "avatar_s3_key" in sql and "avatar_statut" in sql
+    assert "avatar_mime" not in sql
 
 
 def test_sql_teachers_count_sans_q():
     sql = _sql(_teachers_count_stmt(None, None, None))
     assert "websearch_to_tsquery" not in sql
     assert "cherchable" in sql
+    assert "avatar_s3_key" not in sql  # le count ne sélectionne pas les colonnes
 
 
 # --- Garde-fou migration : le corrigé n'entre jamais dans l'index --------------

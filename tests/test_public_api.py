@@ -101,7 +101,13 @@ def _module_row(course_id, **overrides):
 
 
 def _user_row(**overrides):
-    defaults = dict(id=uuid.uuid4(), nom_public="M. Dupont")
+    defaults = dict(
+        id=uuid.uuid4(),
+        nom_public="M. Dupont",
+        avatar_s3_key=None,
+        avatar_mime=None,
+        avatar_statut=None,
+    )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
@@ -455,12 +461,33 @@ def test_catalogue_cours_publics_du_prof():
     assert response.status_code == 200
     body = response.json()
     assert body["nom_public"] == "M. Dupont"
+    assert body["avatar_url"] is None  # prof sans photo
     assert [c["titre"] for c in body["courses"]] == ["Fractions", "Géométrie"]
     assert body["courses"][0]["subjects"] == ["Mathématiques"]
     assert body["courses"][0]["block_count"] == 3
     assert body["courses"][1]["subjects"] == []
     assert body["courses"][1]["education_levels"] == ["5e"]
     assert body["courses"][1]["block_count"] == 0
+
+
+def test_catalogue_prof_avec_avatar():
+    user = _user_row(
+        avatar_s3_key="users/u/avatar/x/avatar.jpg",
+        avatar_mime="image/jpeg",
+        avatar_statut="disponible",
+    )
+    session = _FakeSession([[user], []])
+    storage = _FakeStorage()
+    response = _client(session, storage=storage).get(
+        f"/api/v1/public/professors/{user.id}/courses"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["avatar_url"] == "https://s3.test/users/u/avatar/x/avatar.jpg?signed=1"
+    # Présignée inline : la photo s'affiche, elle ne se télécharge pas.
+    assert storage.inline_calls == [
+        ("users/u/avatar/x/avatar.jpg", "avatar.jpg", True)
+    ]
 
 
 def test_catalogue_user_inconnu_liste_vide_sans_oracle():
@@ -470,7 +497,7 @@ def test_catalogue_user_inconnu_liste_vide_sans_oracle():
         f"/api/v1/public/professors/{uuid.uuid4()}/courses"
     )
     assert response.status_code == 200
-    assert response.json() == {"nom_public": None, "courses": []}
+    assert response.json() == {"nom_public": None, "avatar_url": None, "courses": []}
 
 
 def test_catalogue_prof_sans_nom_public_anonyme():
@@ -478,7 +505,7 @@ def test_catalogue_prof_sans_nom_public_anonyme():
     session = _FakeSession([[user], []])
     response = _client(session).get(f"/api/v1/public/professors/{user.id}/courses")
     assert response.status_code == 200
-    assert response.json() == {"nom_public": None, "courses": []}
+    assert response.json() == {"nom_public": None, "avatar_url": None, "courses": []}
 
 
 # --- Arbres de taxonomie publics (facettes de recherche, J3) -------------------

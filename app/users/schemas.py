@@ -1,6 +1,18 @@
 import uuid
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.config import settings
+
+# Whitelist fermée des formats d'avatar : elle donne aussi l'extension de la
+# clé S3 (le nom de fichier de l'utilisateur n'est jamais persisté — rien à
+# sanitizer, l'avatar est servi en inline sous un nom constant).
+AVATAR_EXTENSIONS: dict[str, str] = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 
 
 class ProfilContexte(BaseModel):
@@ -22,6 +34,9 @@ class UserProfileRead(BaseModel):
     # Opt-in à la recherche publique de profs (J3). Le flag seul ne suffit
     # pas à remonter (voir app/search/service.py).
     cherchable: bool
+    # URL présignée inline de l'avatar (TTL court, re-mintée à chaque lecture) ;
+    # None si pas d'avatar ou upload non confirmé. Jamais la clé S3.
+    avatar_url: str | None
     onboarding_complete: bool
     enseignement: ProfilContexte | None
     apprentissage: ProfilContexte | None
@@ -69,3 +84,32 @@ class ProfileUpdate(BaseModel):
                     f"Le bloc '{nom}' doit contenir au moins un niveau et une matière"
                 )
         return self
+
+
+class AvatarCreate(BaseModel):
+    """Déclaration d'upload d'avatar (motif ResourceCreate, réduit).
+
+    Le front envoie toujours un carré recadré côté navigateur (JPEG) ; la
+    whitelist reste à trois formats pour les clients hors navigateur.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mime: Literal["image/jpeg", "image/png", "image/webp"]
+    taille: int = Field(ge=1)
+
+    @field_validator("taille")
+    @classmethod
+    def _taille_sous_plafond(cls, v: int) -> int:
+        if v > settings.AVATAR_MAX_BYTES:
+            raise ValueError(
+                f"Image trop volumineuse (max {settings.AVATAR_MAX_BYTES} octets)"
+            )
+        return v
+
+
+class AvatarPresign(BaseModel):
+    """URL présignée d'upload de l'avatar (motif ResourcePresign, sans s3_key)."""
+
+    upload_url: str
+    expires_in: int

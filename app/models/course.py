@@ -57,6 +57,11 @@ class Course(Base):
             "visibilite IN ('public', 'prive', 'en_cours')",
             name="ck_courses_visibilite",
         ),
+        # Index GIN de la FTS (J3). Créé par la migration J3 ; déclaré ici
+        # pour que la metadata reflète la base — sans cette ligne, chaque
+        # autogenerate propose un drop_index destructeur (il ne voit que
+        # modèles vs base, jamais les migrations).
+        Index("ix_courses_search_vector", "search_vector", postgresql_using="gin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

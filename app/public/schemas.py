@@ -95,7 +95,10 @@ class PublicProfessorRead(BaseModel):
     ``nom_public`` est ``None`` si le prof n'en a pas choisi (catalogue
     anonyme) — et aussi si l'utilisateur n'existe pas : la réponse est
     identique (liste vide), pas d'oracle d'existence d'un compte.
+    ``avatar_url`` suit la même règle (URL présignée inline, jamais la clé
+    S3 — règle d'or ci-dessus ; ``None`` aussi pour un utilisateur inconnu).
     """
 
     nom_public: str | None
+    avatar_url: str | None
     courses: list[PublicCourseRead]

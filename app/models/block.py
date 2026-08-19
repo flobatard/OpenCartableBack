@@ -76,6 +76,10 @@ class Block(Base):
         # Couvre aussi la lecture des blocs d'un cours (pas d'index séparé
         # sur course_id).
         Index("ix_blocks_course_id_position", "course_id", "position"),
+        # Index GIN de la FTS (J3). Créé par la migration J3 ; déclaré ici
+        # pour que la metadata reflète la base (motif course.py : sinon
+        # autogenerate propose un drop_index destructeur).
+        Index("ix_blocks_search_vector", "search_vector", postgresql_using="gin"),
         CheckConstraint(
             f"type IN ('{TYPE_TEXTE}', '{TYPE_EXERCICE}', "
             f"'{TYPE_DOCUMENT}', '{TYPE_MODULE}')",

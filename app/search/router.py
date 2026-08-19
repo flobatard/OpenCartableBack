@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.storage import Storage, get_storage
 from app.search import service
 from app.search.schemas import SearchCoursesPage, SearchTeachersPage
 
@@ -49,6 +50,7 @@ async def search_teachers(
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0, le=10_000),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ) -> SearchTeachersPage:
     """Recherche de professeurs cherchables (opt-in + nom public + au moins
     un cours public)."""
@@ -59,4 +61,5 @@ async def search_teachers(
         education_level_id=education_level_id,
         limit=limit,
         offset=offset,
+        storage=storage,
     )
