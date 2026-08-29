@@ -149,9 +149,10 @@ Le point le plus sensible niveau sécurité : on sert du **code arbitraire** (ce
 - À surveiller : un lien public reste *diffusable* — pas de données sensibles dans les cours partagés (rien de personnel sur des élèves de toute façon, cf. périmètre).
 
 ### 5.7 Préparation de la couche IA
+- **Brique livrée (hors jalon) : client IA générique multi-provider en « Bring Your Own Token »** (`app/core/ai/`, sur LangChain 1.x). La config (provider, clé API, modèle, base_url) voyage à chaque appel — l'API ne stocke aucune clé (la gestion des clés par utilisateur reste à concevoir) — avec un fallback serveur optionnel (`AI_*`). Providers : Anthropic, OpenAI, Google Gemini, Mistral, Ollama (local ou distant), HuggingFace (endpoints distants uniquement — jamais de modèle chargé en local sur le Pi) et tout endpoint `openai_compatible` (Groq, vLLM, LM Studio…). Deux modes : appel classique et streaming (contrat SSE de référence, route de smoke-test `/api/v1/ai/chat[.../stream]`). Observabilité **Langfuse opt-in** (settings `LANGFUSE_*`, no-op sinon). Le **multi-provider concrétise la contrainte RGPD** ci-dessous : Mistral (hébergé UE) et Ollama (local) sont des providers de première classe.
 - La **vectorisation des cours n'est pas actée**. Si elle se fait, elle passera probablement par **ChromaDB** (dépendances déjà présentes dans le backend) — aucune préparation en base Postgres n'est requise d'ici là.
 - Prévoir, sans l'implémenter au MVP : un pipeline *extraction de texte (PDF/images) → découpage → embeddings → stockage vectoriel*, déclenché en tâche de fond à l'upload.
-- Le choix Python/FastAPI rend naturelle l'intégration ultérieure (RAG, génération de quiz/résumés). Pour le fournisseur de modèle, garder en tête la contrainte RGPD (option hébergée UE type Mistral, ou modèle local selon ressources).
+- Le choix Python/FastAPI rend naturelle l'intégration ultérieure (RAG, génération de quiz/résumés) : elle consommera le client `app/core/ai/`. Pour le fournisseur de modèle, garder en tête la contrainte RGPD (option hébergée UE type Mistral, ou modèle local selon ressources).
 
 ### 5.8 Déploiement & contraintes Raspberry Pi
 - **ARM64 + RAM limitée** : tout ce qui est lourd (transfert de fichiers, génération de miniatures, embeddings) doit être **déporté** (presigned URLs) ou **asynchrone**.

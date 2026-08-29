@@ -165,6 +165,25 @@ class Settings(BaseSettings):
     # routes publiques réutilisent S3_PRESIGN_GET_TTL (même exposition).
     SHARE_LINK_TTL_DAYS: int = 270
 
+    # Client IA générique multi-provider (app/core/ai/) — approche BYO token :
+    # la config (provider, clé, modèle) voyage À CHAQUE APPEL ; les AI_* ne sont
+    # qu'un FALLBACK SERVEUR OPTIONNEL quand l'appelant n'en fournit pas (vide =
+    # pas de fallback, la config devient obligatoire dans la requête).
+    AI_PROVIDER: str = ""  # ∈ AIProvider ("anthropic", "openai", "ollama", …)
+    AI_MODEL: str = ""
+    AI_API_KEY: str = ""  # SECRET (.env) — jamais loggé
+    AI_BASE_URL: str = ""  # ollama distant / provider openai_compatible
+    # Garde-fous d'occupation d'un worker uvicorn sur Pi : timeout provider et
+    # retries bas (ne pas empiler les latences).
+    AI_TIMEOUT_SECONDS: float = 60.0
+    AI_MAX_RETRIES: int = 1
+
+    # Langfuse (observabilité LLM, opt-in) — actif ssi les 3 sont renseignés ;
+    # sinon no-op total (le SDK n'est même pas importé).
+    LANGFUSE_PUBLIC_KEY: str = ""  # SECRET (.env)
+    LANGFUSE_SECRET_KEY: str = ""  # SECRET (.env)
+    LANGFUSE_HOST: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

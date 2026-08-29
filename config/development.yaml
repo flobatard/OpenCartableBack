@@ -30,3 +30,14 @@ S3_BUCKET: opencartable
 
 # Partage public (J2) — durée de vie des liens de partage élèves (jours).
 SHARE_LINK_TTL_DAYS: 270
+
+# Client IA (BYO token) — fallback serveur OPTIONNEL quand l'appelant ne
+# fournit pas sa propre config (provider/clé/modèle voyagent sinon à chaque
+# appel). AI_API_KEY est un secret → .env. Exemple Ollama local :
+# AI_PROVIDER: ollama
+# AI_MODEL: llama3.2
+# AI_BASE_URL: http://localhost:11434
+
+# Langfuse (observabilité LLM, opt-in) — actif ssi les 3 variables sont
+# renseignées ; les clés sont des secrets → .env.
+# LANGFUSE_HOST: https://cloud.langfuse.com

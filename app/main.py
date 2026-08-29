@@ -3,7 +3,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.ai.router import router as ai_router
 from app.auth.router import router as auth_router
+from app.core.ai import shutdown_langfuse
 from app.core.config import settings
 from app.core.database import engine
 from app.course_transfer.router import router as course_transfer_router
@@ -23,7 +25,9 @@ from app.users.router import router as users_router
 async def lifespan(app: FastAPI):
     # Startup logic goes here (warm caches, check connections, ...)
     yield
-    # Shutdown: release the DB connection pool cleanly
+    # Shutdown: flush pending Langfuse traces (no-op unless configured),
+    # then release the DB connection pool cleanly
+    shutdown_langfuse()
     await engine.dispose()
 
 
@@ -60,6 +64,8 @@ def create_app() -> FastAPI:
     app.include_router(public_router, prefix=settings.API_V1_PREFIX)
     # Recherche publique (J3) : même régime sans JWT (préfixe /public/search).
     app.include_router(search_router, prefix=settings.API_V1_PREFIX)
+    # Smoke-test du client IA générique (BYO token) — référence SSE, supprimable.
+    app.include_router(ai_router, prefix=settings.API_V1_PREFIX)
 
     return app
 
