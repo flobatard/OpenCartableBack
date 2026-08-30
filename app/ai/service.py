@@ -29,7 +29,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.schemas import AIConfigIn, ChatRequest, ChatResponse, ChatUsageRead
-from app.ai_credentials.service import config_effective
+from app.ai_credentials.service import config_effective, rembourser_quota_defaut
 from app.core.ai import AIClient, AIRequestConfig, ChatMessage
 from app.core.auth import AuthenticatedUser
 
@@ -57,13 +57,21 @@ async def chat(
 
     La config passe par la cascade ``config_effective`` (config explicite >
     credential utilisateur chiffré > None → fallback serveur d'AIClient).
+    Le quota de l'IA par défaut, réservé par la cascade, est REMBOURSÉ si
+    l'appel provider échoue (ticket) : un échec est net-zéro.
     """
-    completion = await client.complete(
-        _to_core_messages(payload),
-        await config_effective(db, auth, _to_core_config(payload.config)),
-        trace_name=_TRACE_NAME,
-        user_id=auth.sub,
-    )
+    config, ticket = await config_effective(db, auth, _to_core_config(payload.config))
+    try:
+        completion = await client.complete(
+            _to_core_messages(payload),
+            config,
+            trace_name=_TRACE_NAME,
+            user_id=auth.sub,
+        )
+    except Exception:
+        if ticket is not None:
+            await rembourser_quota_defaut(db, ticket)
+        raise
     usage = ChatUsageRead(**completion.usage.model_dump()) if completion.usage else None
     return ChatResponse(
         content=completion.content,
@@ -81,19 +89,32 @@ async def sse_stream(
     La cascade ``config_effective`` est résolue puis ``client.stream(...)``
     appelé ICI, hors du generator : leurs erreurs (credential illisible,
     config absente/invalide) remontent en vraies HTTPException 4xx/503 avant
-    que la route ne retourne la ``StreamingResponse``.
+    que la route ne retourne la ``StreamingResponse``. Remboursement du
+    quota de l'IA par défaut (ticket de la cascade) : sur une erreur eager,
+    et sur une erreur mid-stream survenue AVANT le premier token — un flux
+    qui a déjà produit du contenu reste compté (décision actée).
     """
-    events = client.stream(
-        _to_core_messages(payload),
-        await config_effective(db, auth, _to_core_config(payload.config)),
-        trace_name=_TRACE_NAME,
-        user_id=auth.sub,
-    )
+    config, ticket = await config_effective(db, auth, _to_core_config(payload.config))
+    try:
+        events = client.stream(
+            _to_core_messages(payload),
+            config,
+            trace_name=_TRACE_NAME,
+            user_id=auth.sub,
+        )
+    except Exception:
+        if ticket is not None:
+            await rembourser_quota_defaut(db, ticket)
+        raise
 
     async def _encode() -> AsyncIterator[str]:
+        # La session `db` reste utilisable ici : les dépendances yield de
+        # FastAPI ne sont refermées qu'après l'envoi complet du flux.
+        tokens_emis = False
         try:
             async for event in events:
                 if event.type == "token":
+                    tokens_emis = True
                     yield _sse_event("token", {"delta": event.delta})
                 else:  # done
                     usage = event.usage.model_dump() if event.usage else None
@@ -101,6 +122,8 @@ async def sse_stream(
         except HTTPException as exc:
             # Trop tard pour changer le status HTTP : l'erreur devient un
             # événement SSE portant le status du mapping app/core/ai/errors.py.
+            if ticket is not None and not tokens_emis:
+                await rembourser_quota_defaut(db, ticket)
             yield _sse_event("error", {"status": exc.status_code, "detail": exc.detail})
 
     return _encode()

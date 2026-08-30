@@ -37,6 +37,10 @@ SHARE_LINK_TTL_DAYS: 270
 # AI_PROVIDER: ollama
 # AI_MODEL: llama3.2
 # AI_BASE_URL: http://localhost:11434
+# Quota d'appels à l'IA par défaut (fallback AI_*) par utilisateur et par
+# jour (UTC) — priorité à users.ai_quota_appels s'il est renseigné ;
+# 0 = illimité. Défaut : 30.
+# AI_DEFAULT_DAILY_QUOTA: 30
 
 # Langfuse (observabilité LLM, opt-in) — actif ssi les 3 variables sont
 # renseignées ; les clés sont des secrets → .env.

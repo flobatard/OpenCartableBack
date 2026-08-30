@@ -16,7 +16,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.sql.dml import Delete, Insert, Update
 
 from app.core import crypto
 from app.core.ai import AICompletion, AIStreamEvent, AIUsage, get_ai_client
@@ -43,14 +44,16 @@ def _user_row(**overrides):
         ai_base_url=None,
         ai_api_key_chiffree=None,
         ai_chiffrement_sel=None,
+        ai_quota_appels=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
 
 class _FakeResult:
-    def __init__(self, rows):
+    def __init__(self, rows, rowcount=0):
         self._rows = rows
+        self.rowcount = rowcount
 
     def scalars(self):
         return self
@@ -61,21 +64,32 @@ class _FakeResult:
 
 
 class _FakeSession:
-    """FIFO des SELECT (motif test_users_api.py), INSERT/DELETE tracés."""
+    """FIFO des SELECT (motif test_users_api.py), INSERT/DELETE/UPDATE tracés.
 
-    def __init__(self, select_results=()):
+    ``upsert_rowcount`` scripte le résultat de l'upsert atomique du quota
+    quotidien : 1 = ligne écrite (quota consommé), 0 = garde du WHERE du
+    DO UPDATE non satisfaite (quota du jour épuisé). Seul le service quota
+    lit le rowcount — le poser sur tous les INSERT/DELETE/UPDATE (dont
+    l'update de remboursement) est sans effet ailleurs.
+    """
+
+    def __init__(self, select_results=(), upsert_rowcount=1):
         self._select_results = list(select_results)
+        self.upsert_rowcount = upsert_rowcount
         self.executed = []
         self.commits = 0
 
     async def execute(self, stmt, params=None):
         self.executed.append((stmt, params))
-        if isinstance(stmt, (Insert, Delete)):
-            return _FakeResult([])
+        if isinstance(stmt, (Insert, Delete, Update)):
+            return _FakeResult([], rowcount=self.upsert_rowcount)
         return _FakeResult(self._select_results.pop(0))
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        """Jamais atteint en nominal — filet du remboursement best-effort."""
 
 
 class _FakeAIClient:
@@ -87,6 +101,7 @@ class _FakeAIClient:
         stream_events: list[AIStreamEvent] | None = None,
         stream_error: HTTPException | None = None,
         mid_stream_error: HTTPException | None = None,
+        complete_error: HTTPException | None = None,
     ) -> None:
         self.completion = completion or AICompletion(
             content="Bonjour !", provider="ollama", model="llama3.2"
@@ -94,10 +109,13 @@ class _FakeAIClient:
         self.stream_events = stream_events
         self.stream_error = stream_error
         self.mid_stream_error = mid_stream_error
+        self.complete_error = complete_error
         self.calls: list[dict] = []
 
     async def complete(self, messages, config=None, *, trace_name=None, user_id=None):
         self.calls.append({"messages": messages, "config": config, "user_id": user_id})
+        if self.complete_error is not None:
+            raise self.complete_error
         return self.completion
 
     def stream(self, messages, config=None, *, trace_name=None, user_id=None):
@@ -244,6 +262,189 @@ def test_stream_sans_config_credential_illisible_422_eager(monkeypatch) -> None:
     client, _ = _client(session=_FakeSession([[user]]))
     response = client.post("/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD)
     assert response.status_code == 422
+
+
+# -------------------------------------- quota quotidien de l'IA par défaut
+
+
+def _upserts_quota(session: _FakeSession) -> list:
+    """Les upserts du compteur quotidien (INSERT … ON CONFLICT sur ai_daily_usage)."""
+    return [
+        stmt
+        for stmt, _ in session.executed
+        if isinstance(stmt, Insert) and stmt.table.name == "ai_daily_usage"
+    ]
+
+
+def _remboursements(session: _FakeSession) -> list:
+    """Les updates de remboursement du quota (UPDATE ai_daily_usage)."""
+    return [
+        stmt
+        for stmt, _ in session.executed
+        if isinstance(stmt, Update) and stmt.table.name == "ai_daily_usage"
+    ]
+
+
+def _fallback_serveur(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
+    monkeypatch.setattr(settings, "AI_MODEL", "llama3.2")
+
+
+def test_chat_fallback_consomme_le_quota_par_defaut(monkeypatch) -> None:
+    """Repli sur l'IA serveur → un upsert atomique, gardé par le quota config."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row()]])
+    client, fake = _client(session=session)
+    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    assert fake.calls[0]["config"] is None
+    [stmt] = _upserts_quota(session)
+    compiled = stmt.compile(dialect=postgresql.dialect())
+    assert "ON CONFLICT (user_id, jour) DO UPDATE" in str(compiled)
+    # Plafond DANS le WHERE du DO UPDATE (atomique).
+    assert "ai_daily_usage.appels < " in str(compiled)
+    assert settings.AI_DEFAULT_DAILY_QUOTA in compiled.params.values()
+    assert _remboursements(session) == []  # succès : la réservation reste consommée
+
+
+def test_quota_utilisateur_prime_sur_le_defaut(monkeypatch) -> None:
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row(ai_quota_appels=5)]])
+    client, _ = _client(session=session)
+    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    [stmt] = _upserts_quota(session)
+    compiled = stmt.compile(dialect=postgresql.dialect())
+    assert 5 in compiled.params.values()
+    assert settings.AI_DEFAULT_DAILY_QUOTA not in compiled.params.values()
+
+
+def test_quota_zero_illimite_mais_compte(monkeypatch) -> None:
+    """0 = illimité : l'upsert (statistique) part SANS garde de plafond."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row(ai_quota_appels=0)]])
+    client, fake = _client(session=session)
+    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    assert fake.calls != []
+    [stmt] = _upserts_quota(session)
+    compiled = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT (user_id, jour) DO UPDATE" in compiled
+    assert "ai_daily_usage.appels < " not in compiled
+
+
+def test_chat_quota_epuise_429(monkeypatch) -> None:
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row()]], upsert_rowcount=0)
+    client, fake = _client(session=session)
+    response = client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD)
+    assert response.status_code == 429
+    assert "Quota quotidien" in response.json()["detail"]
+    assert fake.calls == []  # jamais d'appel provider quota épuisé
+
+
+def test_stream_quota_epuise_429_eager(monkeypatch) -> None:
+    """La cascade se résout AVANT le flux : vrai 429 HTTP, pas un event SSE."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row()]], upsert_rowcount=0)
+    client, fake = _client(session=session)
+    assert client.post("/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD).status_code == 429
+    assert fake.calls == []
+
+
+def test_chat_echec_provider_rembourse_le_quota(monkeypatch) -> None:
+    """Échec de l'appel provider : la réservation est remboursée — net-zéro."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row()]])
+    fake = _FakeAIClient(complete_error=HTTPException(503, detail="Fournisseur IA injoignable"))
+    client, _ = _client(fake, session=session)
+    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 503
+    assert len(_upserts_quota(session)) == 1
+    [refund] = _remboursements(session)
+    compiled = str(refund.compile(dialect=postgresql.dialect()))
+    assert "appels - " in compiled  # décrément
+    assert "appels > " in compiled  # garde : jamais négatif
+
+
+def test_chat_echec_byo_token_ne_rembourse_rien(monkeypatch) -> None:
+    """Échec en config explicite : rien n'a été consommé, rien à rembourser."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession()  # file vide : tout execute ferait sauter le test
+    fake = _FakeAIClient(complete_error=HTTPException(503, detail="Fournisseur IA injoignable"))
+    client, _ = _client(fake, session=session)
+    assert client.post("/api/v1/ai/chat", json=CHAT_PAYLOAD).status_code == 503
+    assert session.executed == []
+
+
+def test_stream_erreur_eager_rembourse(monkeypatch) -> None:
+    """Erreur AVANT le flux (validation eager de stream) : remboursée aussi."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row()]])
+    fake = _FakeAIClient(stream_error=HTTPException(422, detail="Config IA invalide"))
+    client, _ = _client(fake, session=session)
+    assert client.post("/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD).status_code == 422
+    assert len(_remboursements(session)) == 1
+
+
+def test_stream_echec_avant_tout_token_rembourse(monkeypatch) -> None:
+    """Erreur mid-stream sans aucun token émis : rien reçu → remboursé."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row()]])
+    fake = _FakeAIClient(
+        stream_events=[AIStreamEvent(type="done")],
+        mid_stream_error=HTTPException(503, detail="Fournisseur IA injoignable"),
+    )
+    client, _ = _client(fake, session=session)
+    with client.stream("POST", "/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD) as response:
+        assert response.status_code == 200  # le 200 est déjà parti, l'erreur est SSE
+        body = response.read().decode("utf-8")
+    assert _parse_sse(body)[-1][0] == "error"
+    assert len(_remboursements(session)) == 1
+
+
+def test_stream_echec_apres_tokens_reste_compte(monkeypatch) -> None:
+    """Un flux qui a déjà produit du contenu reste compté (décision actée)."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession([[_user_row()]])
+    fake = _FakeAIClient(mid_stream_error=HTTPException(503, detail="Fournisseur IA injoignable"))
+    client, _ = _client(fake, session=session)
+    with client.stream("POST", "/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD) as response:
+        body = response.read().decode("utf-8")
+    assert _parse_sse(body)[-1][0] == "error"
+    assert len(_upserts_quota(session)) == 1
+    assert _remboursements(session) == []
+
+
+def test_config_explicite_jamais_de_quota(monkeypatch) -> None:
+    """BYO token (config explicite) : aucun execute — donc aucun comptage."""
+    _fallback_serveur(monkeypatch)
+    session = _FakeSession()  # file vide : tout execute ferait sauter le test
+    client, _ = _client(session=session)
+    assert client.post("/api/v1/ai/chat", json=CHAT_PAYLOAD).status_code == 200
+    assert session.executed == []
+
+
+def test_credential_utilisateur_jamais_de_quota(monkeypatch) -> None:
+    _fallback_serveur(monkeypatch)
+    monkeypatch.setattr(
+        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(CLE_MAITRE).decode()
+    )
+    sel = crypto.nouveau_sel()
+    user = _user_row(
+        ai_provider="anthropic",
+        ai_model="claude-sonnet-5",
+        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
+        ai_chiffrement_sel=sel,
+    )
+    session = _FakeSession([[user]])
+    client, _ = _client(session=session)
+    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    assert _upserts_quota(session) == []
+
+
+def test_sans_fallback_serveur_pas_de_quota() -> None:
+    """AI_PROVIDER vide : le vrai AIClient répondra 422 — rien n'est consommé."""
+    session = _FakeSession([[_user_row()]])
+    client, _ = _client(session=session)
+    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    assert _upserts_quota(session) == []
 
 
 @pytest.mark.parametrize(

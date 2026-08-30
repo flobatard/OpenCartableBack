@@ -23,7 +23,7 @@ async def read_my_ai_credentials(
 ) -> AICredentialsRead:
     """Credential IA de l'utilisateur courant (sans la clé, jamais)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    return service.read_credentials(user)
+    return await service.read_credentials(db, user)
 
 
 @router.put("/users/me/ai-credentials", response_model=AICredentialsRead)

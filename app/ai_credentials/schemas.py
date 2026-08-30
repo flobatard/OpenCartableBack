@@ -22,6 +22,13 @@ class AICredentialsRead(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key_definie: bool = False
+    # IA par défaut (fallback serveur AI_*) : proposée ou non par ce serveur,
+    # et où en est l'utilisateur dans son quota QUOTIDIEN (jour UTC).
+    # ``quota_quotidien`` = plafond effectif résolu (users.ai_quota_appels
+    # sinon AI_DEFAULT_DAILY_QUOTA), 0 = illimité.
+    ia_defaut_disponible: bool = False
+    quota_quotidien: int = 0
+    appels_aujourdhui: int = 0
 
 
 class AICredentialsUpdate(BaseModel):

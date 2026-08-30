@@ -177,6 +177,13 @@ class Settings(BaseSettings):
     # retries bas (ne pas empiler les latences).
     AI_TIMEOUT_SECONDS: float = 60.0
     AI_MAX_RETRIES: int = 1
+    # Quota d'appels servis par l'IA PAR DÉFAUT (le fallback serveur AI_*),
+    # par utilisateur et PAR JOUR (UTC, table ai_daily_usage) : plafond
+    # effectif = users.ai_quota_appels si renseigné, sinon cette valeur ;
+    # 0 = illimité. Les appels BYO token (config explicite de la requête ou
+    # credential utilisateur) ne sont JAMAIS comptés — la clé consommée est
+    # alors celle de l'utilisateur, pas celle du serveur.
+    AI_DEFAULT_DAILY_QUOTA: int = 30
     # SECRET (.env) — clé maître du chiffrement des clés API IA par utilisateur
     # (app/core/crypto.py, AES-256-GCM + HKDF avec sel par utilisateur) :
     # 32 octets encodés base64 urlsafe. Vide = feature indisponible (503 à

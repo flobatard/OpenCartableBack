@@ -42,9 +42,20 @@ def _user_row(**overrides):
         ai_base_url=None,
         ai_api_key_chiffree=None,
         ai_chiffrement_sel=None,
+        ai_quota_appels=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+# Champs IA par défaut de la projection AICredentialsRead, valeurs du cas
+# nominal des tests : pas de fallback serveur (AI_PROVIDER vide), quota
+# standard (AI_DEFAULT_DAILY_QUOTA), aucune ligne d'usage aujourd'hui.
+DEFAUT_QUOTA_FIELDS = {
+    "ia_defaut_disponible": False,
+    "quota_quotidien": 30,
+    "appels_aujourdhui": 0,
+}
 
 
 def _user_avec_cle(**overrides):
@@ -66,6 +77,12 @@ class _FakeResult:
         return self
 
     def one(self):
+        [row] = self._rows
+        return row
+
+    def one_or_none(self):
+        if not self._rows:
+            return None
         [row] = self._rows
         return row
 
@@ -111,26 +128,40 @@ def test_routes_requierent_un_token(client: TestClient):
 
 
 def test_get_sans_credential():
-    response = _client(_FakeSession([[_user_row()]])).get(URL)
+    response = _client(_FakeSession([[_user_row()], []])).get(URL)
     assert response.status_code == 200
     assert response.json() == {
         "provider": None,
         "model": None,
         "base_url": None,
         "api_key_definie": False,
+        **DEFAUT_QUOTA_FIELDS,
     }
 
 
 def test_get_avec_credential_ne_reemet_jamais_la_cle():
-    response = _client(_FakeSession([[_user_avec_cle()]])).get(URL)
+    response = _client(_FakeSession([[_user_avec_cle()], []])).get(URL)
     assert response.status_code == 200
     assert response.json() == {
         "provider": "anthropic",
         "model": "claude-sonnet-5",
         "base_url": None,
         "api_key_definie": True,
+        **DEFAUT_QUOTA_FIELDS,
     }
     assert CLE_API not in response.text
+
+
+def test_get_expose_le_quota_du_jour(monkeypatch):
+    """Fallback serveur configuré + quota individuel + usage du jour servis au front."""
+    monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
+    user = _user_row(ai_quota_appels=5)
+    response = _client(_FakeSession([[user], [3]])).get(URL)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ia_defaut_disponible"] is True
+    assert body["quota_quotidien"] == 5
+    assert body["appels_aujourdhui"] == 3
 
 
 # ---------------------------------------------------------------- PUT
@@ -138,7 +169,7 @@ def test_get_avec_credential_ne_reemet_jamais_la_cle():
 
 def test_put_nominal_chiffre_la_cle():
     user = _user_row()
-    session = _FakeSession([[user]])
+    session = _FakeSession([[user], []])
     response = _client(session).put(
         URL, json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": CLE_API}
     )
@@ -148,6 +179,7 @@ def test_put_nominal_chiffre_la_cle():
         "model": "claude-sonnet-5",
         "base_url": None,
         "api_key_definie": True,
+        **DEFAUT_QUOTA_FIELDS,
     }
     assert CLE_API not in response.text
     assert user.ai_provider == "anthropic" and user.ai_model == "claude-sonnet-5"
@@ -163,7 +195,7 @@ def test_put_nominal_chiffre_la_cle():
 def test_put_sans_cle_conserve_blob_et_sel():
     user = _user_avec_cle()
     blob, sel = user.ai_api_key_chiffree, user.ai_chiffrement_sel
-    response = _client(_FakeSession([[user]])).put(
+    response = _client(_FakeSession([[user], []])).put(
         URL, json={"provider": "anthropic", "model": "claude-opus-5"}
     )
     assert response.status_code == 200
@@ -175,7 +207,7 @@ def test_put_sans_cle_conserve_blob_et_sel():
 def test_put_nouvelle_cle_regenere_le_sel():
     user = _user_avec_cle()
     blob, sel = user.ai_api_key_chiffree, user.ai_chiffrement_sel
-    response = _client(_FakeSession([[user]])).put(
+    response = _client(_FakeSession([[user], []])).put(
         URL, json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "sk-nouvelle"}
     )
     assert response.status_code == 200
@@ -206,7 +238,7 @@ def test_put_invalide(payload: dict):
 
 def test_put_ollama_sans_cle():
     user = _user_row()
-    response = _client(_FakeSession([[user]])).put(
+    response = _client(_FakeSession([[user], []])).put(
         URL, json={"provider": "ollama", "model": "llama3.2", "base_url": "http://pi:11434"}
     )
     assert response.status_code == 200
@@ -215,6 +247,7 @@ def test_put_ollama_sans_cle():
         "model": "llama3.2",
         "base_url": "http://pi:11434",
         "api_key_definie": False,
+        **DEFAUT_QUOTA_FIELDS,
     }
     assert user.ai_api_key_chiffree is None and user.ai_chiffrement_sel is None
 

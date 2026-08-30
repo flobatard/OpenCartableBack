@@ -18,6 +18,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Integer,
     LargeBinary,
     String,
     Table,
@@ -97,6 +98,13 @@ class User(Base):
     ai_base_url: Mapped[str | None] = mapped_column(String(2000))
     ai_api_key_chiffree: Mapped[bytes | None] = mapped_column(LargeBinary)
     ai_chiffrement_sel: Mapped[bytes | None] = mapped_column(LargeBinary)
+    # Quota QUOTIDIEN d'appels à l'IA PAR DÉFAUT (le fallback serveur AI_*) :
+    # NULL = quota standard (settings.AI_DEFAULT_DAILY_QUOTA), 0 = illimité,
+    # sinon plafond individuel par jour. Aucune route ne l'écrit (l'utilisateur
+    # pourrait se dé-limiter) : posé à la main par l'opérateur. Les appels BYO
+    # token (config explicite ou credential ci-dessus) ne sont jamais comptés ;
+    # le comptage par jour vit dans la table ai_daily_usage.
+    ai_quota_appels: Mapped[int | None] = mapped_column(Integer)
     est_prof: Mapped[bool] = mapped_column(default=False, server_default="false")
     est_eleve: Mapped[bool] = mapped_column(default=False, server_default="false")
     # Même dimension que education_levels.systeme ; validé en service
