@@ -2,20 +2,20 @@
 
 C'est la **seconde dépendance d'autorisation** actée au cadrage (§5.1),
 distincte de ``get_current_user`` : aucune identité, aucun JWT, aucun appel
-Zitadel — un token de partage opaque (capability URL) et la ``visibilite``
+Zitadel — un token de partage opaque (capability URL) et la ``visibility``
 du cours décident seuls de l'accès, vérifiés À CHAQUE requête :
 
-- cours ``public``   → accessible sans token (le token, s'il est fourni,
+- cours ``public``  → accessible sans token (le token, s'il est fourni,
   est ignoré) ;
-- cours ``en_cours`` → 404 toujours, même avec un lien valide (les liens
+- cours ``draft``   → 404 toujours, même avec un lien valide (les liens
   sont suspendus, pas supprimés) ;
-- cours ``prive``    → token requis, lié à CE cours, non révoqué, non expiré.
+- cours ``private`` → token requis, lié à CE cours, non révoqué, non expiré.
 
 Sémantique d'erreur : **404 uniformément** (token inconnu/révoqué/expiré,
 cours introuvable/en cours de rédaction) — un 410 serait un oracle
 confirmant qu'un lien a existé, incohérent avec la doctrine du repo
 (« introuvable, jamais interdit »). Seule exception : presign d'une
-ressource ``en_attente`` → 409, miroir exact du régime prof (on est alors
+ressource ``pending`` → 409, miroir exact du régime prof (on est alors
 déjà autorisé sur le cours, aucune fuite).
 
 Tout est en lecture seule : aucune fonction ne commit. L'ordre des
@@ -33,17 +33,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.storage import Storage
-from app.models.block import TYPE_EXERCICE, Block
+from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
-    VISIBILITE_EN_COURS,
-    VISIBILITE_PUBLIC,
+    VISIBILITY_DRAFT,
+    VISIBILITY_PUBLIC,
     Course,
     course_education_levels,
     course_subjects,
 )
 from app.models.education_level import EducationLevel
 from app.models.module import Module
-from app.models.resource import STATUT_DISPONIBLE, Resource
+from app.models.resource import STATUS_AVAILABLE, Resource
 from app.models.share_link import ShareLink
 from app.models.subject import Subject
 from app.models.user import User
@@ -59,7 +59,7 @@ from app.public.schemas import (
 from app.users.service import avatar_url_for
 
 
-def _introuvable() -> HTTPException:
+def _not_found() -> HTTPException:
     # Détail unique et volontairement vague : ne pas distinguer « cours
     # inexistant », « lien révoqué », « lien expiré », « cours dépublié ».
     return HTTPException(
@@ -67,7 +67,7 @@ def _introuvable() -> HTTPException:
     )
 
 
-def _lien_valide(link: ShareLink | None) -> bool:
+def _link_valid(link: ShareLink | None) -> bool:
     """Un lien ouvre l'accès s'il existe, n'est pas révoqué et n'a pas expiré."""
     return (
         link is not None
@@ -76,19 +76,23 @@ def _lien_valide(link: ShareLink | None) -> bool:
     )
 
 
-def _content_public(type_: str, content: dict) -> dict:
+def _public_content(type_: str, content: dict) -> dict:
     """Content JSONB servi aux élèves — NOUVEAU dict, jamais l'original.
 
-    Pour un bloc ``exercice``, reconstruction explicite sans les
-    ``reponse_attendue`` (corrigé du prof, jamais servi — contrat de
+    Pour un bloc ``exercise``, reconstruction explicite sans les
+    ``expected_answer`` (corrigé du prof, jamais servi — contrat de
     block.py). Les autres types sont copiés tels quels.
     """
-    if type_ != TYPE_EXERCICE:
+    if type_ != TYPE_EXERCISE:
         return dict(content)
     return {
-        "enonce": content.get("enonce", ""),
+        "statement": content.get("statement", ""),
         "questions": [
-            {"id": q.get("id"), "enonce": q.get("enonce", ""), "type": q.get("type")}
+            {
+                "id": q.get("id"),
+                "statement": q.get("statement", ""),
+                "type": q.get("type"),
+            }
             for q in content.get("questions", [])
             if isinstance(q, dict)
         ],
@@ -100,9 +104,9 @@ def _block_read(block: Block) -> PublicBlockRead:
         id=block.id,
         position=block.position,
         type=block.type,
-        titre=block.titre,
+        title=block.title,
         description=block.description,
-        content=_content_public(block.type, block.content),
+        content=_public_content(block.type, block.content),
         resource_id=block.resource_id,
         module_id=block.module_id,
     )
@@ -112,8 +116,8 @@ def _resource_read(resource: Resource) -> PublicResourceRead:
     return PublicResourceRead(
         id=resource.id,
         type=resource.type,
-        nom_original=resource.nom_original,
-        taille=resource.taille,
+        original_name=resource.original_name,
+        size=resource.size,
         mime=resource.mime,
     )
 
@@ -123,7 +127,7 @@ def _course_read(
 ) -> PublicCourseRead:
     return PublicCourseRead(
         id=course.id,
-        titre=course.titre,
+        title=course.title,
         description=course.description,
         subjects=subjects,
         education_levels=education_levels,
@@ -139,7 +143,7 @@ async def get_public_course(
     """Autorise l'accès élève à un cours désigné par son id (voir module).
 
     Ordre des execute : 1) cours ; puis UNIQUEMENT si le cours est
-    ``prive`` et qu'un token est fourni : 2) lien (scopé à CE cours —
+    ``private`` et qu'un token est fourni : 2) lien (scopé à CE cours —
     un token du cours A n'ouvre jamais le cours B).
     """
     course = (
@@ -147,12 +151,12 @@ async def get_public_course(
         .scalars()
         .one_or_none()
     )
-    if course is None or course.visibilite == VISIBILITE_EN_COURS:
-        raise _introuvable()
-    if course.visibilite == VISIBILITE_PUBLIC:
+    if course is None or course.visibility == VISIBILITY_DRAFT:
+        raise _not_found()
+    if course.visibility == VISIBILITY_PUBLIC:
         return course
     if token is None:
-        raise _introuvable()
+        raise _not_found()
     link = (
         (
             await db.execute(
@@ -164,8 +168,8 @@ async def get_public_course(
         .scalars()
         .one_or_none()
     )
-    if not _lien_valide(link):
-        raise _introuvable()
+    if not _link_valid(link):
+        raise _not_found()
     return course
 
 
@@ -174,22 +178,22 @@ async def get_course_for_token(db: AsyncSession, token: str) -> Course:
 
     Ordre des execute : 1) lien par token, 2) cours du lien. Un lien valide
     sur un cours ``public`` reste valide (le prof a élargi l'accès) ; un
-    cours ``en_cours`` est introuvable même avec un lien valide.
+    cours ``draft`` est introuvable même avec un lien valide.
     """
     link = (
         (await db.execute(select(ShareLink).where(ShareLink.token == token)))
         .scalars()
         .one_or_none()
     )
-    if not _lien_valide(link):
-        raise _introuvable()
+    if not _link_valid(link):
+        raise _not_found()
     course = (
         (await db.execute(select(Course).where(Course.id == link.course_id)))
         .scalars()
         .one_or_none()
     )
-    if course is None or course.visibilite == VISIBILITE_EN_COURS:
-        raise _introuvable()
+    if course is None or course.visibility == VISIBILITY_DRAFT:
+        raise _not_found()
     return course
 
 
@@ -197,20 +201,20 @@ async def course_detail_public(db: AsyncSession, course: Course) -> PublicCourse
     """Détail complet filtré d'un cours déjà autorisé.
 
     Ordre des execute : 1) noms de matières, 2) noms de niveaux, 3) blocs
-    (tri stable ``position, id``), 4) ressources ``disponible`` (tri
+    (tri stable ``position, id``), 4) ressources ``available`` (tri
     ``created_at desc, id``, miroir de la liste prof).
     """
     subjects = list(
         (
             await db.execute(
-                select(Subject.nom)
+                select(Subject.name)
                 .select_from(
                     course_subjects.join(
                         Subject, Subject.id == course_subjects.c.subject_id
                     )
                 )
                 .where(course_subjects.c.course_id == course.id)
-                .order_by(Subject.nom)
+                .order_by(Subject.name)
             )
         )
         .scalars()
@@ -219,7 +223,7 @@ async def course_detail_public(db: AsyncSession, course: Course) -> PublicCourse
     education_levels = list(
         (
             await db.execute(
-                select(EducationLevel.nom)
+                select(EducationLevel.name)
                 .select_from(
                     course_education_levels.join(
                         EducationLevel,
@@ -228,7 +232,7 @@ async def course_detail_public(db: AsyncSession, course: Course) -> PublicCourse
                     )
                 )
                 .where(course_education_levels.c.course_id == course.id)
-                .order_by(EducationLevel.nom)
+                .order_by(EducationLevel.name)
             )
         )
         .scalars()
@@ -251,7 +255,7 @@ async def course_detail_public(db: AsyncSession, course: Course) -> PublicCourse
                 select(Resource)
                 .where(
                     Resource.course_id == course.id,
-                    Resource.statut == STATUT_DISPONIBLE,
+                    Resource.status == STATUS_AVAILABLE,
                 )
                 .order_by(Resource.created_at.desc(), Resource.id)
             )
@@ -278,7 +282,7 @@ async def presign_download_public(
     """URL présignée de lecture d'une ressource d'un cours déjà autorisé.
 
     Ordre des execute : 1) ressource (scopée cours). 409 si la ressource
-    n'est pas ``disponible`` (miroir exact du régime prof). Le bucket n'est
+    n'est pas ``available`` (miroir exact du régime prof). Le bucket n'est
     jamais public : c'est la présignature qui matérialise l'accès (§5.6).
     """
     resource = (
@@ -293,14 +297,14 @@ async def presign_download_public(
         .one_or_none()
     )
     if resource is None:
-        raise _introuvable()
-    if resource.statut != STATUT_DISPONIBLE:
+        raise _not_found()
+    if resource.status != STATUS_AVAILABLE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Ressource non disponible (upload non confirmé)",
         )
     download_url = storage.presign_get(
-        resource.s3_key, resource.nom_original, inline=inline
+        resource.s3_key, resource.original_name, inline=inline
     )
     return PublicDownloadRead(
         download_url=download_url, expires_in=settings.S3_PRESIGN_GET_TTL
@@ -326,9 +330,9 @@ async def get_module_public(
         .one_or_none()
     )
     if module is None:
-        raise _introuvable()
+        raise _not_found()
     return PublicModuleRead(
-        id=module.id, titre=module.titre, html=module.html, css=module.css, js=module.js
+        id=module.id, title=module.title, html=module.html, css=module.css, js=module.js
     )
 
 
@@ -341,7 +345,7 @@ async def list_public_courses_by_professor(
     Ordre des execute : 1) utilisateur, 2) cours publics ; puis, s'il y en
     a : 3) noms de matières, 4) noms de niveaux, 5) comptes de blocs.
     Utilisateur inconnu ou sans cours public → même réponse (liste vide,
-    ``nom_public``/``avatar_url`` éventuels) : pas d'oracle d'existence
+    ``public_name``/``avatar_url`` éventuels) : pas d'oracle d'existence
     d'un compte. L'``avatar_url`` est présignée localement (aucune I/O).
     """
     user = (
@@ -355,7 +359,7 @@ async def list_public_courses_by_professor(
                 select(Course)
                 .where(
                     Course.owner_id == user_id,
-                    Course.visibilite == VISIBILITE_PUBLIC,
+                    Course.visibility == VISIBILITY_PUBLIC,
                 )
                 .order_by(Course.updated_at.desc(), Course.id)
             )
@@ -363,36 +367,36 @@ async def list_public_courses_by_professor(
         .scalars()
         .all()
     )
-    nom_public = user.nom_public if user is not None else None
+    public_name = user.public_name if user is not None else None
     avatar_url = (
-        avatar_url_for(user.avatar_s3_key, user.avatar_statut, storage)
+        avatar_url_for(user.avatar_s3_key, user.avatar_status, storage)
         if user is not None
         else None
     )
     if not courses:
         return PublicProfessorRead(
-            nom_public=nom_public, avatar_url=avatar_url, courses=[]
+            public_name=public_name, avatar_url=avatar_url, courses=[]
         )
     course_ids = [c.id for c in courses]
 
-    matieres: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
-    lignes_matieres = (
+    subjects: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
+    subject_rows = (
         await db.execute(
-            select(course_subjects.c.course_id, Subject.nom)
+            select(course_subjects.c.course_id, Subject.name)
             .select_from(
                 course_subjects.join(Subject, Subject.id == course_subjects.c.subject_id)
             )
             .where(course_subjects.c.course_id.in_(course_ids))
-            .order_by(course_subjects.c.course_id, Subject.nom)
+            .order_by(course_subjects.c.course_id, Subject.name)
         )
     ).all()
-    for course_id, nom in lignes_matieres:
-        matieres[course_id].append(nom)
+    for course_id, name in subject_rows:
+        subjects[course_id].append(name)
 
-    niveaux: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
-    lignes_niveaux = (
+    levels: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
+    level_rows = (
         await db.execute(
-            select(course_education_levels.c.course_id, EducationLevel.nom)
+            select(course_education_levels.c.course_id, EducationLevel.name)
             .select_from(
                 course_education_levels.join(
                     EducationLevel,
@@ -400,13 +404,13 @@ async def list_public_courses_by_professor(
                 )
             )
             .where(course_education_levels.c.course_id.in_(course_ids))
-            .order_by(course_education_levels.c.course_id, EducationLevel.nom)
+            .order_by(course_education_levels.c.course_id, EducationLevel.name)
         )
     ).all()
-    for course_id, nom in lignes_niveaux:
-        niveaux[course_id].append(nom)
+    for course_id, name in level_rows:
+        levels[course_id].append(name)
 
-    comptes = dict(
+    counts = dict(
         (
             await db.execute(
                 select(Block.course_id, func.count())
@@ -416,10 +420,10 @@ async def list_public_courses_by_professor(
         ).all()
     )
     return PublicProfessorRead(
-        nom_public=nom_public,
+        public_name=public_name,
         avatar_url=avatar_url,
         courses=[
-            _course_read(c, matieres[c.id], niveaux[c.id], comptes.get(c.id, 0))
+            _course_read(c, subjects[c.id], levels[c.id], counts.get(c.id, 0))
             for c in courses
         ],
     )

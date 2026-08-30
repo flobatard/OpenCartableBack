@@ -6,13 +6,13 @@ from pydantic import BaseModel
 class EducationLevelRead(BaseModel):
     id: uuid.UUID
     parent_id: uuid.UUID | None
-    nom: str
+    name: str
     code: str
-    systeme: str
+    system: str
     cite: int | None
     age_min: int | None
     age_max: int | None
-    profondeur: int
+    depth: int
     position: int
     children: list["EducationLevelRead"] = []
 

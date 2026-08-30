@@ -5,7 +5,7 @@ incrémentée par un ``INSERT … ON CONFLICT DO UPDATE`` **atomique** dont le
 plafond vit dans le WHERE (:mod:`app.ai_credentials.service`) : deux requêtes
 concurrentes ne peuvent pas dépasser le quota. Les appels BYO token (config
 explicite de la requête ou credential utilisateur) ne sont jamais comptés.
-Le plafond effectif (``users.ai_quota_appels`` sinon
+Le plafond effectif (``users.ai_daily_call_quota`` sinon
 ``settings.AI_DEFAULT_DAILY_QUOTA``, 0 = illimité) n'est PAS stocké ici :
 il est résolu à chaque appel.
 """
@@ -27,8 +27,8 @@ class AIDailyUsage(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     # Jour UTC (pas le fuseau du serveur) : la fenêtre bascule à minuit UTC.
-    jour: Mapped[date] = mapped_column(Date, primary_key=True)
-    appels: Mapped[int] = mapped_column(Integer, nullable=False)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    calls: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Pas de relation ORM (lazy-load async interdit) ni de purge automatique :
     # une ligne par utilisateur actif et par jour, volume négligeable à court

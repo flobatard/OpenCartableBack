@@ -4,17 +4,17 @@ Seul consommateur de :mod:`app.core.crypto` (confinement). L'ordre des
 ``execute`` de chaque fonction est stable et documenté : les tests le
 rejouent avec une fausse session FIFO (voir tests/test_ai_credentials_api.py).
 
-Cascade de résolution des appels IA (``config_effective``) :
+Cascade de résolution des appels IA (``effective_config``) :
 config explicite de la requête > credential utilisateur déchiffré > ``None``
 (le ``resolve_config`` d'AIClient applique alors le fallback serveur AI_*).
 Le repli sur le fallback serveur est le SEUL cas soumis au quota QUOTIDIEN
-d'appels (``AI_DEFAULT_DAILY_QUOTA`` / ``users.ai_quota_appels``, comptage
+d'appels (``AI_DEFAULT_DAILY_QUOTA`` / ``users.ai_daily_call_quota``, comptage
 par jour UTC dans la table ``ai_daily_usage``) : les appels BYO token
 consomment la clé de l'utilisateur, jamais celle du serveur. Sémantique
 **réservation + remboursement** : le quota est consommé atomiquement AVANT
 l'appel provider (plafond dur, 429 avant le 200 du flux SSE) et le
 consommateur rembourse via le :class:`QuotaTicket` si l'appel échoue
-(``rembourser_quota_defaut``) — un échec provider est net-zéro.
+(``refund_default_quota``) — un échec provider est net-zéro.
 """
 
 import contextlib
@@ -29,7 +29,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_credentials.schemas import (
-    PROVIDERS_CLE_OPTIONNELLE,
+    PROVIDERS_WITH_OPTIONAL_KEY,
     AICredentialsRead,
     AICredentialsUpdate,
 )
@@ -42,50 +42,50 @@ from app.models.user import User
 from app.users import service as users_service
 
 
-def _invalide(detail: str) -> HTTPException:
+def _invalid(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
-def _cle_maitre() -> bytes:
+def _master_key() -> bytes:
     """Clé maître décodée ; 503 si absente/invalide (misconfiguration serveur)."""
     try:
-        return crypto.decoder_cle_maitre(settings.AI_CREDENTIALS_MASTER_KEY)
-    except crypto.CleMaitreAbsente:
+        return crypto.decode_master_key(settings.AI_CREDENTIALS_MASTER_KEY)
+    except crypto.MasterKeyMissing:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Chiffrement des credentials IA non configuré sur ce serveur",
         ) from None
 
 
-def _quota_effectif(user: User) -> int:
-    """Plafond quotidien résolu : ``ai_quota_appels`` sinon le défaut config."""
+def _effective_quota(user: User) -> int:
+    """Plafond quotidien résolu : ``ai_daily_call_quota`` sinon le défaut config."""
     return (
-        user.ai_quota_appels
-        if user.ai_quota_appels is not None
+        user.ai_daily_call_quota
+        if user.ai_daily_call_quota is not None
         else settings.AI_DEFAULT_DAILY_QUOTA
     )
 
 
-async def _usage_du_jour(db: AsyncSession, user: User) -> int:
+async def _usage_for_day(db: AsyncSession, user: User) -> int:
     """Appels déjà servis par l'IA par défaut aujourd'hui (jour UTC), 0 sans ligne."""
     result = await db.execute(
-        select(AIDailyUsage.appels).where(
+        select(AIDailyUsage.calls).where(
             AIDailyUsage.user_id == user.id,
-            AIDailyUsage.jour == datetime.now(UTC).date(),
+            AIDailyUsage.day == datetime.now(UTC).date(),
         )
     )
     return result.scalars().one_or_none() or 0
 
 
-def _read(user: User, appels_aujourdhui: int) -> AICredentialsRead:
+def _read(user: User, calls_today: int) -> AICredentialsRead:
     return AICredentialsRead(
         provider=user.ai_provider,
         model=user.ai_model,
         base_url=user.ai_base_url,
-        api_key_definie=user.ai_api_key_chiffree is not None,
-        ia_defaut_disponible=bool(settings.AI_PROVIDER),
-        quota_quotidien=_quota_effectif(user),
-        appels_aujourdhui=appels_aujourdhui,
+        api_key_set=user.ai_api_key_encrypted is not None,
+        default_ai_available=bool(settings.AI_PROVIDER),
+        daily_quota=_effective_quota(user),
+        calls_today=calls_today,
     )
 
 
@@ -96,7 +96,7 @@ async def read_credentials(db: AsyncSession, user: User) -> AICredentialsRead:
     affiché par l'écran de réglages IA du front. Ordre des execute :
     1 select (usage du jour).
     """
-    return _read(user, await _usage_du_jour(db, user))
+    return _read(user, await _usage_for_day(db, user))
 
 
 async def update_credentials(
@@ -111,21 +111,21 @@ async def update_credentials(
     jour, pour la réponse), un commit.
     """
     if payload.api_key is not None:
-        cle_maitre = _cle_maitre()
-        sel = crypto.nouveau_sel()
-        user.ai_api_key_chiffree = crypto.chiffrer_secret(
-            payload.api_key.get_secret_value(), cle_maitre, sel
+        master_key = _master_key()
+        salt = crypto.new_salt()
+        user.ai_api_key_encrypted = crypto.encrypt_secret(
+            payload.api_key.get_secret_value(), master_key, salt
         )
-        user.ai_chiffrement_sel = sel
-    elif user.ai_api_key_chiffree is None and payload.provider not in PROVIDERS_CLE_OPTIONNELLE:
-        raise _invalide(f"Clé API requise pour le provider {payload.provider.value}")
+        user.ai_encryption_salt = salt
+    elif user.ai_api_key_encrypted is None and payload.provider not in PROVIDERS_WITH_OPTIONAL_KEY:
+        raise _invalid(f"Clé API requise pour le provider {payload.provider.value}")
 
     user.ai_provider = payload.provider.value
     user.ai_model = payload.model
     user.ai_base_url = payload.base_url
-    reponse = _read(user, await _usage_du_jour(db, user))
+    response = _read(user, await _usage_for_day(db, user))
     await db.commit()
-    return reponse
+    return response
 
 
 async def delete_credentials(db: AsyncSession, user: User) -> None:
@@ -133,8 +133,8 @@ async def delete_credentials(db: AsyncSession, user: User) -> None:
     user.ai_provider = None
     user.ai_model = None
     user.ai_base_url = None
-    user.ai_api_key_chiffree = None
-    user.ai_chiffrement_sel = None
+    user.ai_api_key_encrypted = None
+    user.ai_encryption_salt = None
     await db.commit()
 
 
@@ -142,34 +142,34 @@ async def delete_credentials(db: AsyncSession, user: User) -> None:
 class QuotaTicket:
     """Réservation du quota d'IA par défaut, à rembourser si l'appel échoue.
 
-    Capture la ligne ``(user_id, jour)`` réellement consommée : un échec qui
+    Capture la ligne ``(user_id, day)`` réellement consommée : un échec qui
     traverse minuit UTC rembourse le bon jour.
     """
 
     user_id: uuid.UUID
-    jour: date
+    day: date
 
 
-async def _consommer_quota_defaut(db: AsyncSession, user: User) -> QuotaTicket:
+async def _consume_default_quota(db: AsyncSession, user: User) -> QuotaTicket:
     """Consomme un appel du quota QUOTIDIEN de l'IA par défaut — 429 si épuisé.
 
-    Quota par jour (UTC) : ``ai_quota_appels`` si renseigné, sinon
+    Quota par jour (UTC) : ``ai_daily_call_quota`` si renseigné, sinon
     ``AI_DEFAULT_DAILY_QUOTA`` ; 0 = illimité (l'appel est quand même compté,
     à des fins de statistiques). Upsert **atomique** sur ``ai_daily_usage``
-    (PK ``user_id, jour``) : le plafond est dans le WHERE du DO UPDATE, deux
+    (PK ``user_id, day``) : le plafond est dans le WHERE du DO UPDATE, deux
     appels concurrents ne peuvent donc pas le dépasser — rowcount 0 = quota
     du jour épuisé, rien n'a été écrit. Sémantique réservation : consommé
     AVANT l'appel provider, remboursé par le consommateur via le ticket
     retourné si l'appel échoue. Ordre des execute : 1 insert (upsert), un
     commit.
     """
-    quota = _quota_effectif(user)
-    jour = datetime.now(UTC).date()
-    stmt = pg_insert(AIDailyUsage).values(user_id=user.id, jour=jour, appels=1)
+    quota = _effective_quota(user)
+    day = datetime.now(UTC).date()
+    stmt = pg_insert(AIDailyUsage).values(user_id=user.id, day=day, calls=1)
     stmt = stmt.on_conflict_do_update(
-        index_elements=["user_id", "jour"],
-        set_={"appels": AIDailyUsage.appels + 1},
-        where=(AIDailyUsage.appels < quota) if quota > 0 else None,
+        index_elements=["user_id", "day"],
+        set_={"calls": AIDailyUsage.calls + 1},
+        where=(AIDailyUsage.calls < quota) if quota > 0 else None,
     )
     result = await db.execute(stmt)
     await db.commit()
@@ -181,13 +181,13 @@ async def _consommer_quota_defaut(db: AsyncSession, user: User) -> QuotaTicket:
                 "demain ou enregistrez votre propre clé API dans les paramètres"
             ),
         )
-    return QuotaTicket(user_id=user.id, jour=jour)
+    return QuotaTicket(user_id=user.id, day=day)
 
 
-async def rembourser_quota_defaut(db: AsyncSession, ticket: QuotaTicket) -> None:
+async def refund_default_quota(db: AsyncSession, ticket: QuotaTicket) -> None:
     """Rembourse une réservation dont l'appel provider a échoué — best-effort.
 
-    UPDATE décrémental sur la ligne du ticket, garde ``appels > 0`` (jamais
+    UPDATE décrémental sur la ligne du ticket, garde ``calls > 0`` (jamais
     négatif). Toute erreur DB est avalée (rollback silencieux) : le
     remboursement ne doit JAMAIS masquer l'erreur d'origine du provider — au
     pire un appel échoué reste compté. Ordre des execute : 1 update, un
@@ -198,10 +198,10 @@ async def rembourser_quota_defaut(db: AsyncSession, ticket: QuotaTicket) -> None
             update(AIDailyUsage)
             .where(
                 AIDailyUsage.user_id == ticket.user_id,
-                AIDailyUsage.jour == ticket.jour,
-                AIDailyUsage.appels > 0,
+                AIDailyUsage.day == ticket.day,
+                AIDailyUsage.calls > 0,
             )
-            .values(appels=AIDailyUsage.appels - 1)
+            .values(calls=AIDailyUsage.calls - 1)
         )
         await db.commit()
     except Exception:  # pragma: no cover - filet best-effort
@@ -209,8 +209,8 @@ async def rembourser_quota_defaut(db: AsyncSession, ticket: QuotaTicket) -> None
             await db.rollback()
 
 
-async def config_effective(
-    db: AsyncSession, auth: AuthenticatedUser, explicite: AIRequestConfig | None
+async def effective_config(
+    db: AsyncSession, auth: AuthenticatedUser, explicit: AIRequestConfig | None
 ) -> tuple[AIRequestConfig | None, QuotaTicket | None]:
     """Cascade : config explicite > credential utilisateur > None (fallback AI_*).
 
@@ -224,25 +224,25 @@ async def config_effective(
     cas : rien n'a été consommé) ; sans fallback configuré, rien n'est
     consommé (le 422 de ``resolve_config`` suivra). Ordre des execute : ceux
     de ``get_or_create_by_sub`` (1 insert, 1 select) quand la config n'est
-    pas explicite, + l'upsert de ``_consommer_quota_defaut`` en cas de repli.
+    pas explicite, + l'upsert de ``_consume_default_quota`` en cas de repli.
     """
-    if explicite is not None:
-        return explicite, None
+    if explicit is not None:
+        return explicit, None
     user = await users_service.get_or_create_by_sub(db, auth)
     if user.ai_provider is None:
         if settings.AI_PROVIDER:
-            return None, await _consommer_quota_defaut(db, user)
+            return None, await _consume_default_quota(db, user)
         return None, None
     api_key: SecretStr | None = None
-    if user.ai_api_key_chiffree is not None:
+    if user.ai_api_key_encrypted is not None:
         try:
             api_key = SecretStr(
-                crypto.dechiffrer_secret(
-                    user.ai_api_key_chiffree, _cle_maitre(), user.ai_chiffrement_sel
+                crypto.decrypt_secret(
+                    user.ai_api_key_encrypted, _master_key(), user.ai_encryption_salt
                 )
             )
-        except crypto.ErreurDechiffrement:
-            raise _invalide(
+        except crypto.DecryptionError:
+            raise _invalid(
                 "Identifiants IA illisibles — ré-enregistrez votre clé API dans les paramètres"
             ) from None
     return AIRequestConfig(

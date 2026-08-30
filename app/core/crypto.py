@@ -29,57 +29,57 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 FORMAT_V1 = 0x01
-SEL_LEN = 16
+SALT_LEN = 16
 _NONCE_LEN = 12
-_CLE_LEN = 32
+_KEY_LEN = 32
 _INFO = b"opencartable/ai-credentials/v1"
 
 
-class CleMaitreAbsente(Exception):
+class MasterKeyMissing(Exception):
     """AI_CREDENTIALS_MASTER_KEY absente ou invalide (feature indisponible)."""
 
 
-class ErreurDechiffrement(Exception):
+class DecryptionError(Exception):
     """Blob illisible : version inconnue, tronqué, ou clé/sel ne correspondent pas."""
 
 
-def nouveau_sel() -> bytes:
-    return os.urandom(SEL_LEN)
+def new_salt() -> bytes:
+    return os.urandom(SALT_LEN)
 
 
-def decoder_cle_maitre(valeur: str) -> bytes:
+def decode_master_key(value: str) -> bytes:
     """Décode la clé maître du .env (32 octets base64 urlsafe)."""
-    if not valeur:
-        raise CleMaitreAbsente("AI_CREDENTIALS_MASTER_KEY non configurée")
+    if not value:
+        raise MasterKeyMissing("AI_CREDENTIALS_MASTER_KEY non configurée")
     try:
-        cle = base64.urlsafe_b64decode(valeur.encode("ascii"))
+        key = base64.urlsafe_b64decode(value.encode("ascii"))
     except (binascii.Error, ValueError, UnicodeEncodeError) as exc:
-        raise CleMaitreAbsente(
+        raise MasterKeyMissing(
             "AI_CREDENTIALS_MASTER_KEY illisible (base64 urlsafe attendu)"
         ) from exc
-    if len(cle) != _CLE_LEN:
-        raise CleMaitreAbsente("AI_CREDENTIALS_MASTER_KEY doit faire 32 octets décodés")
-    return cle
+    if len(key) != _KEY_LEN:
+        raise MasterKeyMissing("AI_CREDENTIALS_MASTER_KEY doit faire 32 octets décodés")
+    return key
 
 
-def _deriver(cle_maitre: bytes, sel: bytes) -> bytes:
+def _derive(master_key: bytes, salt: bytes) -> bytes:
     return HKDF(
-        algorithm=hashes.SHA256(), length=_CLE_LEN, salt=sel, info=_INFO
-    ).derive(cle_maitre)
+        algorithm=hashes.SHA256(), length=_KEY_LEN, salt=salt, info=_INFO
+    ).derive(master_key)
 
 
-def chiffrer_secret(clair: str, cle_maitre: bytes, sel: bytes) -> bytes:
+def encrypt_secret(plaintext: str, master_key: bytes, salt: bytes) -> bytes:
     nonce = os.urandom(_NONCE_LEN)
-    ciphertext = AESGCM(_deriver(cle_maitre, sel)).encrypt(nonce, clair.encode("utf-8"), b"")
+    ciphertext = AESGCM(_derive(master_key, salt)).encrypt(nonce, plaintext.encode("utf-8"), b"")
     return bytes([FORMAT_V1]) + nonce + ciphertext
 
 
-def dechiffrer_secret(blob: bytes, cle_maitre: bytes, sel: bytes) -> str:
+def decrypt_secret(blob: bytes, master_key: bytes, salt: bytes) -> str:
     if len(blob) < 1 + _NONCE_LEN + 16 or blob[0] != FORMAT_V1:
-        raise ErreurDechiffrement("Format de blob inconnu ou tronqué")
+        raise DecryptionError("Format de blob inconnu ou tronqué")
     nonce, ciphertext = blob[1 : 1 + _NONCE_LEN], blob[1 + _NONCE_LEN :]
     try:
-        clair = AESGCM(_deriver(cle_maitre, sel)).decrypt(nonce, ciphertext, b"")
+        plaintext = AESGCM(_derive(master_key, salt)).decrypt(nonce, ciphertext, b"")
     except InvalidTag as exc:
-        raise ErreurDechiffrement("Clé maître ou sel ne correspondent pas au blob") from exc
-    return clair.decode("utf-8")
+        raise DecryptionError("Clé maître ou sel ne correspondent pas au blob") from exc
+    return plaintext.decode("utf-8")

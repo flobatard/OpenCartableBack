@@ -58,7 +58,7 @@ class Storage:
         )
 
     def presign_get(
-        self, s3_key: str, nom_original: str, inline: bool = False
+        self, s3_key: str, original_name: str, inline: bool = False
     ) -> str:
         """URL présignée (GET, TTL court) pour lire/télécharger un objet.
 
@@ -67,7 +67,7 @@ class Storage:
         télécharger (gateway de lecture), ``False`` force le téléchargement.
         """
         disposition_type = "inline" if inline else "attachment"
-        disposition = f'{disposition_type}; filename="{nom_original}"'
+        disposition = f'{disposition_type}; filename="{original_name}"'
         return self._client.generate_presigned_url(
             "get_object",
             Params={

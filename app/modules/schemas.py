@@ -24,14 +24,14 @@ class ModuleCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    titre: str = Field(min_length=1, max_length=255)
+    title: str = Field(min_length=1, max_length=255)
     html: str = Field(default="", max_length=MAX_CODE_LENGTH)
     css: str = Field(default="", max_length=MAX_CODE_LENGTH)
     js: str = Field(default="", max_length=MAX_CODE_LENGTH)
 
-    @field_validator("titre")
+    @field_validator("title")
     @classmethod
-    def _titre_non_blanc(cls, v: str) -> str:
+    def _title_not_blank(cls, v: str) -> str:
         v = v.strip()
         if not v:
             raise ValueError("Le titre ne peut pas être vide")
@@ -42,7 +42,7 @@ class ModuleSummary(BaseModel):
     """Module sans son code — la liste de l'onglet Modules reste légère."""
 
     id: uuid.UUID
-    titre: str
+    title: str
     created_at: datetime
     updated_at: datetime
 
@@ -64,16 +64,16 @@ class ModuleUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    titre: str | None = Field(default=None, min_length=1, max_length=255)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
     html: str | None = Field(default=None, max_length=MAX_CODE_LENGTH)
     css: str | None = Field(default=None, max_length=MAX_CODE_LENGTH)
     js: str | None = Field(default=None, max_length=MAX_CODE_LENGTH)
 
-    @field_validator("titre")
+    @field_validator("title")
     @classmethod
-    def _titre_non_blanc(cls, v: str | None) -> str | None:
+    def _title_not_blank(cls, v: str | None) -> str | None:
         if v is None:
-            # ``titre: null`` n'a pas de sens (un module a toujours un titre) ;
+            # ``title: null`` n'a pas de sens (un module a toujours un titre) ;
             # rejeté ici plutôt qu'en service pour une 422 de validation.
             raise ValueError("Le titre ne peut pas être null")
         v = v.strip()
@@ -83,7 +83,7 @@ class ModuleUpdate(BaseModel):
 
     @field_validator("html", "css", "js")
     @classmethod
-    def _code_non_null(cls, v: str | None) -> str | None:
+    def _code_not_null(cls, v: str | None) -> str | None:
         if v is None:
             # Sans ce rejet, ``{"js": null}`` passerait la validation puis
             # serait ignoré par le service : un 200 fantôme qui bump quand
@@ -92,7 +92,7 @@ class ModuleUpdate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _au_moins_un_champ(self) -> "ModuleUpdate":
+    def _at_least_one_field(self) -> "ModuleUpdate":
         if not self.model_fields_set:
             raise ValueError("Fournir au moins un champ à modifier")
         return self

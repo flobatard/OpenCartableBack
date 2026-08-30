@@ -3,26 +3,26 @@
 Un cours = une liste de blocs triés par ``position`` (tri stable
 ``ORDER BY position, id`` ; pas d'unicité ``(course_id, position)`` en base —
 un swap la violerait en cours de transaction — le réordonnancement réécrit
-les positions en bloc côté service). ``titre``/``description`` sont des
+les positions en bloc côté service). ``title``/``description`` sont des
 métadonnées facultatives communes à tous les types (affichage en en-tête du
 bloc), distinctes du ``content`` JSONB qui porte le contenu éditorial ; son
 schéma est un contrat applicatif, par ``type`` :
 
-- ``texte`` : ``{"markdown": "..."}`` — cours magistral en markdown simple
+- ``text`` : ``{"markdown": "..."}`` — cours magistral en markdown simple
   (pas de HTML brut), directement consultable par l'IA. Le markdown peut
   contenir des formules LaTeX — ``$…$`` en ligne, ``$$…$$`` centrée —
   stockées telles quelles et rendues par KaTeX côté front.
-- ``exercice`` : ``{"enonce": "md", "questions": [{"id": "<uuid4>",
-  "enonce": "md", "type": "texte_libre", "reponse_attendue": "texte"}]}`` —
-  ``enonce`` racine = sujet de l'exercice (markdown, mêmes règles que
-  ``texte``) ; ``reponse_attendue`` = corrigé du prof en texte simple,
+- ``exercise`` : ``{"statement": "md", "questions": [{"id": "<uuid4>",
+  "statement": "md", "type": "free_text", "expected_answer": "texte"}]}`` —
+  ``statement`` racine = sujet de l'exercice (markdown, mêmes règles que
+  ``text``) ; ``expected_answer`` = corrigé du prof en texte simple,
   qui ne devra JAMAIS être servi aux élèves (le jalon J2 filtrera ce champ
   du content exposé par les liens publics). Les ``questions[].id`` sont
   générés côté service et **stables à vie** : les futures soumissions élèves
   (jalon J2) référenceront ``(block_id, question_id)``, et la review IA aussi.
   Ne jamais régénérer ces ids à l'édition.
-- ``document`` : ``{"legende": str | null, "affichage": "inline" |
-  "telechargement"}`` — pont vers une ressource de la bibliothèque du cours,
+- ``document`` : ``{"caption": str | null, "display": "inline" |
+  "download"}`` — pont vers une ressource de la bibliothèque du cours,
   référencée par la **colonne** ``resource_id`` (seul type de bloc autorisé à
   en porter une, CHECK de cohérence ; jamais dans le ``content``). Nullable :
   le bloc naît vide et se remplit dans l'éditeur ; supprimer la ressource
@@ -39,10 +39,10 @@ schéma est un contrat applicatif, par ``type`` :
 ``search_vector`` (jalon J3) : tsvector FTS du bloc, config ``french_unaccent``,
 maintenu exclusivement par trigger PostgreSQL (``trg_blocks_search_vector``,
 fonction ``blocks_tsvector`` partagée avec le backfill de la migration) —
-jamais écrit par l'ORM. Construit **champ par champ** : ``titre`` (poids B),
-``description``, ``content->>'markdown'``, ``content->>'enonce'``,
-``content->>'legende'`` et les ``questions[].enonce`` (poids C). JAMAIS le
-``content`` entier : ``reponse_attendue`` (corrigé du prof) ne doit pas être
+jamais écrit par l'ORM. Construit **champ par champ** : ``title`` (poids B),
+``description``, ``content->>'markdown'``, ``content->>'statement'``,
+``content->>'caption'`` et les ``questions[].statement`` (poids C). JAMAIS le
+``content`` entier : ``expected_answer`` (corrigé du prof) ne doit pas être
 indexé — il deviendrait cherchable depuis le régime public.
 """
 
@@ -64,8 +64,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-TYPE_TEXTE = "texte"
-TYPE_EXERCICE = "exercice"
+TYPE_TEXT = "text"
+TYPE_EXERCISE = "exercise"
 TYPE_DOCUMENT = "document"
 TYPE_MODULE = "module"
 
@@ -81,7 +81,7 @@ class Block(Base):
         # autogenerate propose un drop_index destructeur).
         Index("ix_blocks_search_vector", "search_vector", postgresql_using="gin"),
         CheckConstraint(
-            f"type IN ('{TYPE_TEXTE}', '{TYPE_EXERCICE}', "
+            f"type IN ('{TYPE_TEXT}', '{TYPE_EXERCISE}', "
             f"'{TYPE_DOCUMENT}', '{TYPE_MODULE}')",
             name="ck_blocks_type",
         ),
@@ -89,13 +89,13 @@ class Block(Base):
         # (nullable : un document peut être vide).
         CheckConstraint(
             f"resource_id IS NULL OR type = '{TYPE_DOCUMENT}'",
-            name="ck_blocks_document_coherence",
+            name="ck_blocks_document_consistency",
         ),
         # Seuls les blocs « module » peuvent porter une FK module
         # (nullable : un bloc module peut être vide).
         CheckConstraint(
             f"module_id IS NULL OR type = '{TYPE_MODULE}'",
-            name="ck_blocks_module_coherence",
+            name="ck_blocks_module_consistency",
         ),
         CheckConstraint("position >= 0", name="ck_blocks_position_positive"),
     )
@@ -108,7 +108,7 @@ class Block(Base):
     )
     position: Mapped[int] = mapped_column(SmallInteger)
     type: Mapped[str] = mapped_column(String(20))
-    titre: Mapped[str | None] = mapped_column(String(300))
+    title: Mapped[str | None] = mapped_column(String(300))
     description: Mapped[str | None] = mapped_column(String(500))
     content: Mapped[dict] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
@@ -126,6 +126,6 @@ class Block(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     # FTS (J3) : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
-    # (voir docstring du module — reponse_attendue exclu). deferred : aucun
+    # (voir docstring du module — expected_answer exclu). deferred : aucun
     # service ne le lit.
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR, deferred=True)

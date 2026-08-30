@@ -26,7 +26,7 @@ from app.models.user import User
 from app.share_links.schemas import ShareLinkCreate, ShareLinkRead
 
 
-def _introuvable(detail: str) -> HTTPException:
+def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
@@ -34,7 +34,7 @@ def _share_link_read(link: ShareLink) -> ShareLinkRead:
     return ShareLinkRead(
         id=link.id,
         token=link.token,
-        libelle=link.libelle,
+        label=link.label,
         expires_at=link.expires_at,
         revoked=link.revoked,
         created_at=link.created_at,
@@ -53,7 +53,7 @@ async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) 
         .one_or_none()
     )
     if course is None:
-        raise _introuvable("Cours introuvable")
+        raise _not_found("Cours introuvable")
     return course
 
 
@@ -103,7 +103,7 @@ async def create_share_link(
                     id=link_id,
                     course_id=course.id,
                     token=token,
-                    libelle=payload.libelle,
+                    label=payload.label,
                     expires_at=expires_at,
                     revoked=False,
                 )
@@ -117,7 +117,7 @@ async def create_share_link(
     return ShareLinkRead(
         id=link_id,
         token=token,
-        libelle=payload.libelle,
+        label=payload.label,
         expires_at=expires_at,
         revoked=False,
         created_at=created_at,
@@ -146,6 +146,6 @@ async def revoke_share_link(
         .one_or_none()
     )
     if link is None:
-        raise _introuvable("Lien de partage introuvable")
+        raise _not_found("Lien de partage introuvable")
     link.revoked = True
     await db.commit()

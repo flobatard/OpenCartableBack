@@ -38,7 +38,7 @@ def _link_row(**overrides):
         id=uuid.uuid4(),
         course_id=None,
         token="tok-" + "a" * 39,
-        libelle="6eB 2026",
+        label="6eB 2026",
         expires_at=_NOW + timedelta(days=270),
         revoked=False,
         created_at=_NOW,
@@ -112,7 +112,7 @@ _LINK_ID = uuid.uuid4()
         ("DELETE", f"/api/v1/courses/{_COURSE_ID}/share-links/{_LINK_ID}", None),
     ],
 )
-def test_auth_requise(method, path, body):
+def test_auth_required(method, path, body):
     response = TestClient(create_app()).request(method, path, json=body)
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
@@ -129,7 +129,7 @@ def test_auth_requise(method, path, body):
         ("DELETE", f"/{_LINK_ID}", None),
     ],
 )
-def test_cours_autrui_introuvable(method, path_suffix, body):
+def test_other_users_course_not_found(method, path_suffix, body):
     user = _user_row()
     session = _FakeSession([[user], []])
     response = _client(session).request(
@@ -144,27 +144,27 @@ def test_cours_autrui_introuvable(method, path_suffix, body):
 # --- Création -----------------------------------------------------------------
 
 
-def test_creation_lien_token_et_expiration():
+def test_link_creation_token_and_expiration():
     user = _user_row()
     course = _course_row()
     # FIFO : cours, puis created_at servi par l'insert RETURNING.
     session = _FakeSession([[user], [course], [_NOW]])
-    avant = datetime.now(UTC)
+    before = datetime.now(UTC)
     response = _client(session).post(
-        f"/api/v1/courses/{course.id}/share-links", json={"libelle": "6eB 2026"}
+        f"/api/v1/courses/{course.id}/share-links", json={"label": "6eB 2026"}
     )
-    apres = datetime.now(UTC)
+    after = datetime.now(UTC)
 
     assert response.status_code == 201
     body = response.json()
     # token_urlsafe(32) = 43 caractères URL-safe (256 bits d'entropie).
     assert len(body["token"]) >= 43
-    assert body["libelle"] == "6eB 2026"
+    assert body["label"] == "6eB 2026"
     assert body["revoked"] is False
     assert body["created_at"] == _NOW_JSON
     expires_at = datetime.fromisoformat(body["expires_at"])
     ttl = timedelta(days=settings.SHARE_LINK_TTL_DAYS)
-    assert avant + ttl <= expires_at <= apres + ttl
+    assert before + ttl <= expires_at <= after + ttl
 
     # Le token inséré est bien celui renvoyé (capability URL recopiable).
     [(stmt, _)] = [
@@ -172,25 +172,25 @@ def test_creation_lien_token_et_expiration():
         for stmt, params in session.executed
         if isinstance(stmt, Insert) and stmt.table.name == "share_links"
     ]
-    valeurs = stmt.compile().params
-    assert valeurs["token"] == body["token"]
-    assert valeurs["revoked"] is False
+    values = stmt.compile().params
+    assert values["token"] == body["token"]
+    assert values["revoked"] is False
     # Créer un lien ne bump pas updated_at (le contenu du cours ne change pas).
     assert course.updated_at == _NOW
 
 
-def test_creation_lien_sans_libelle_et_libelle_blanc():
+def test_link_creation_without_label_and_blank_label():
     user = _user_row()
     course = _course_row()
     session = _FakeSession([[user], [course], [_NOW]])
     response = _client(session).post(
-        f"/api/v1/courses/{course.id}/share-links", json={"libelle": "   "}
+        f"/api/v1/courses/{course.id}/share-links", json={"label": "   "}
     )
     assert response.status_code == 201
-    assert response.json()["libelle"] is None
+    assert response.json()["label"] is None
 
 
-def test_creation_deux_liens_tokens_distincts():
+def test_two_link_creations_distinct_tokens():
     user = _user_row()
     course = _course_row()
     session1 = _FakeSession([[user], [course], [_NOW]])
@@ -211,22 +211,22 @@ def test_creation_deux_liens_tokens_distincts():
 # --- Liste --------------------------------------------------------------------
 
 
-def test_liste_liens_revoques_inclus():
+def test_list_includes_revoked_links():
     user = _user_row()
     course = _course_row()
-    actif = _link_row(course_id=course.id)
-    revoque = _link_row(course_id=course.id, libelle=None, revoked=True)
+    active = _link_row(course_id=course.id)
+    revoked_link = _link_row(course_id=course.id, label=None, revoked=True)
     # FIFO : cours (contrôle de propriété), puis liens (tri côté SQL).
-    session = _FakeSession([[user], [course], [actif, revoque]])
+    session = _FakeSession([[user], [course], [active, revoked_link]])
     response = _client(session).get(f"/api/v1/courses/{course.id}/share-links")
 
     assert response.status_code == 200
     body = response.json()
-    assert [link["id"] for link in body] == [str(actif.id), str(revoque.id)]
+    assert [link["id"] for link in body] == [str(active.id), str(revoked_link.id)]
     assert body[0] == {
-        "id": str(actif.id),
-        "token": actif.token,
-        "libelle": "6eB 2026",
+        "id": str(active.id),
+        "token": active.token,
+        "label": "6eB 2026",
         "expires_at": "2027-04-03T12:00:00Z",
         "revoked": False,
         "created_at": _NOW_JSON,
@@ -238,7 +238,7 @@ def test_liste_liens_revoques_inclus():
 # --- Révocation ---------------------------------------------------------------
 
 
-def test_revocation_soft():
+def test_soft_revocation():
     user = _user_row()
     course = _course_row()
     link = _link_row(course_id=course.id)
@@ -256,7 +256,7 @@ def test_revocation_soft():
     assert session.commits >= 2  # upsert auth + révocation
 
 
-def test_revocation_idempotente():
+def test_revocation_idempotent():
     user = _user_row()
     course = _course_row()
     link = _link_row(course_id=course.id, revoked=True)
@@ -268,7 +268,7 @@ def test_revocation_idempotente():
     assert link.revoked is True
 
 
-def test_revocation_lien_inconnu_ou_autre_cours():
+def test_revocation_unknown_link_or_other_course():
     user = _user_row()
     course = _course_row()
     session = _FakeSession([[user], [course], []])

@@ -25,21 +25,21 @@ from app.courses.schemas import (
     CourseDetailRead,
     CourseRead,
     DocumentContent,
-    ExerciceContent,
+    ExerciseContent,
     PreviewSettings,
-    TexteContent,
-    VisibiliteUpdate,
+    TextContent,
+    VisibilityUpdate,
 )
-from app.models.block import TYPE_DOCUMENT, TYPE_EXERCICE, TYPE_MODULE, TYPE_TEXTE, Block
+from app.models.block import TYPE_DOCUMENT, TYPE_EXERCISE, TYPE_MODULE, TYPE_TEXT, Block
 from app.models.course import (
-    VISIBILITE_EN_COURS,
+    VISIBILITY_DRAFT,
     Course,
     course_education_levels,
     course_subjects,
 )
 from app.models.education_level import EducationLevel
 from app.models.module import Module
-from app.models.resource import STATUT_DISPONIBLE, Resource
+from app.models.resource import STATUS_AVAILABLE, Resource
 from app.models.subject import Subject
 from app.models.user import User
 
@@ -49,38 +49,38 @@ def _dedupe(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
     return list(dict.fromkeys(ids))
 
 
-def _invalide(detail: str) -> HTTPException:
+def _invalid(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
-def _introuvable(detail: str) -> HTTPException:
+def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
-def _contenu_par_defaut(type_: str) -> dict:
+def _default_content(type_: str) -> dict:
     """Contenu JSONB initial d'un bloc, conforme au contrat de block.py.
 
     Les éditeurs dédiés rempliront ces gabarits ; les ``questions[].id``
-    des exercices sont générés à l'update (voir ``_contenu_exercice``).
+    des exercices sont générés à l'update (voir ``_exercise_content``).
     """
     return {
-        TYPE_TEXTE: lambda: {"markdown": ""},
-        TYPE_EXERCICE: lambda: {"enonce": "", "questions": []},
-        TYPE_DOCUMENT: lambda: {"legende": None, "affichage": "inline"},
+        TYPE_TEXT: lambda: {"markdown": ""},
+        TYPE_EXERCISE: lambda: {"statement": "", "questions": []},
+        TYPE_DOCUMENT: lambda: {"caption": None, "display": "inline"},
         TYPE_MODULE: dict,
     }[type_]()
 
 
 # Forme de content admise par type de bloc (garde-fou d'update_block).
 # « module » n'a pas de forme éditable avant le J4.
-_TYPE_PAR_CONTENU = {
-    TexteContent: TYPE_TEXTE,
-    ExerciceContent: TYPE_EXERCICE,
+_TYPE_BY_CONTENT = {
+    TextContent: TYPE_TEXT,
+    ExerciseContent: TYPE_EXERCISE,
     DocumentContent: TYPE_DOCUMENT,
 }
 
 
-def _contenu_exercice(block: Block, content: ExerciceContent) -> dict:
+def _exercise_content(block: Block, content: ExerciseContent) -> dict:
     """Nouveau dict JSONB d'un bloc exercice.
 
     Les ids fournis sont préservés et doivent exister dans le bloc édité
@@ -89,20 +89,20 @@ def _contenu_exercice(block: Block, content: ExerciceContent) -> dict:
     n'est pas JSON-sérialisable par asyncpg). Sémantique remplacement :
     question absente du payload = supprimée.
     """
-    existants = {
+    existing = {
         q.get("id") for q in block.content.get("questions", []) if isinstance(q, dict)
     }
-    inconnus = {str(q.id) for q in content.questions if q.id is not None} - existants
-    if inconnus:
-        raise _invalide(f"Questions inconnues : {sorted(inconnus)}")
+    unknown = {str(q.id) for q in content.questions if q.id is not None} - existing
+    if unknown:
+        raise _invalid(f"Questions inconnues : {sorted(unknown)}")
     return {
-        "enonce": content.enonce,
+        "statement": content.statement,
         "questions": [
             {
                 "id": str(q.id) if q.id is not None else str(uuid.uuid4()),
-                "enonce": q.enonce,
+                "statement": q.statement,
                 "type": q.type,
-                "reponse_attendue": q.reponse_attendue,
+                "expected_answer": q.expected_answer,
             }
             for q in content.questions
         ],
@@ -117,13 +117,13 @@ def _course_read(
 ) -> CourseRead:
     return CourseRead(
         id=course.id,
-        titre=course.titre,
+        title=course.title,
         description=course.description,
         subject_ids=subject_ids,
         education_level_ids=education_level_ids,
         block_count=block_count,
         preview_settings=course.preview_settings,
-        visibilite=course.visibilite,
+        visibility=course.visibility,
         created_at=course.created_at,
         updated_at=course.updated_at,
     )
@@ -134,7 +134,7 @@ def _block_read(block: Block) -> BlockRead:
         id=block.id,
         position=block.position,
         type=block.type,
-        titre=block.titre,
+        title=block.title,
         description=block.description,
         content=block.content,
         resource_id=block.resource_id,
@@ -157,7 +157,7 @@ async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) 
         .one_or_none()
     )
     if course is None:
-        raise _introuvable("Cours introuvable")
+        raise _not_found("Cours introuvable")
     return course
 
 
@@ -182,19 +182,19 @@ async def list_courses(db: AsyncSession, user: User) -> list[CourseRead]:
         return []
     course_ids = [c.id for c in courses]
 
-    matieres: dict[uuid.UUID, list[uuid.UUID]] = {c.id: [] for c in courses}
-    lignes_matieres = (
+    subjects: dict[uuid.UUID, list[uuid.UUID]] = {c.id: [] for c in courses}
+    subject_rows = (
         await db.execute(
             select(course_subjects.c.course_id, course_subjects.c.subject_id)
             .where(course_subjects.c.course_id.in_(course_ids))
             .order_by(course_subjects.c.course_id, course_subjects.c.subject_id)
         )
     ).all()
-    for course_id, subject_id in lignes_matieres:
-        matieres[course_id].append(subject_id)
+    for course_id, subject_id in subject_rows:
+        subjects[course_id].append(subject_id)
 
-    niveaux: dict[uuid.UUID, list[uuid.UUID]] = {c.id: [] for c in courses}
-    lignes_niveaux = (
+    levels: dict[uuid.UUID, list[uuid.UUID]] = {c.id: [] for c in courses}
+    level_rows = (
         await db.execute(
             select(
                 course_education_levels.c.course_id,
@@ -207,10 +207,10 @@ async def list_courses(db: AsyncSession, user: User) -> list[CourseRead]:
             )
         )
     ).all()
-    for course_id, level_id in lignes_niveaux:
-        niveaux[course_id].append(level_id)
+    for course_id, level_id in level_rows:
+        levels[course_id].append(level_id)
 
-    comptes = dict(
+    counts = dict(
         (
             await db.execute(
                 select(Block.course_id, func.count())
@@ -220,7 +220,7 @@ async def list_courses(db: AsyncSession, user: User) -> list[CourseRead]:
         ).all()
     )
 
-    return [_course_read(c, matieres[c.id], niveaux[c.id], comptes.get(c.id, 0)) for c in courses]
+    return [_course_read(c, subjects[c.id], levels[c.id], counts.get(c.id, 0)) for c in courses]
 
 
 async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> CourseRead:
@@ -234,14 +234,14 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
     subject_ids = _dedupe(payload.subject_ids)
     education_level_ids = _dedupe(payload.education_level_ids)
 
-    matieres_connues = set(
+    known_subjects = set(
         (await db.execute(select(Subject.id).where(Subject.id.in_(subject_ids)))).scalars().all()
     )
-    inconnues = set(subject_ids) - matieres_connues
-    if inconnues:
-        raise _invalide(f"Matières inconnues : {sorted(map(str, inconnues))}")
+    unknown_subjects = set(subject_ids) - known_subjects
+    if unknown_subjects:
+        raise _invalid(f"Matières inconnues : {sorted(map(str, unknown_subjects))}")
 
-    niveaux_connus = set(
+    known_levels = set(
         (
             await db.execute(
                 select(EducationLevel.id).where(EducationLevel.id.in_(education_level_ids))
@@ -250,9 +250,9 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
         .scalars()
         .all()
     )
-    inconnus = set(education_level_ids) - niveaux_connus
-    if inconnus:
-        raise _invalide(f"Niveaux d'étude inconnus : {sorted(map(str, inconnus))}")
+    unknown_levels = set(education_level_ids) - known_levels
+    if unknown_levels:
+        raise _invalid(f"Niveaux d'étude inconnus : {sorted(map(str, unknown_levels))}")
 
     course_id = uuid.uuid4()
     created_at, updated_at = (
@@ -261,7 +261,7 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
             .values(
                 id=course_id,
                 owner_id=user.id,
-                titre=payload.titre,
+                title=payload.title,
                 description=payload.description,
             )
             .returning(Course.created_at, Course.updated_at)
@@ -284,13 +284,13 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
 
     return CourseRead(
         id=course_id,
-        titre=payload.titre,
+        title=payload.title,
         description=payload.description,
         subject_ids=subject_ids,
         education_level_ids=education_level_ids,
         block_count=0,
         preview_settings={},
-        visibilite=VISIBILITE_EN_COURS,
+        visibility=VISIBILITY_DRAFT,
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -379,18 +379,18 @@ async def update_preview_settings(
     return payload
 
 
-async def update_visibilite(
-    db: AsyncSession, user: User, course_id: uuid.UUID, payload: VisibiliteUpdate
-) -> VisibiliteUpdate:
+async def update_visibility(
+    db: AsyncSession, user: User, course_id: uuid.UUID, payload: VisibilityUpdate
+) -> VisibilityUpdate:
     """Change le régime d'accès élève d'un cours du prof (404 si autrui).
 
     Ordre des execute : 1) cours (contrôle de propriété). Le cours est
     « touché » (updated_at) pour remonter dans la liste. Passer en
-    ``en_cours`` suspend les liens de partage sans les toucher : la règle
+    ``draft`` suspend les liens de partage sans les toucher : la règle
     vit dans app/public/service.py, vérifiée à chaque accès.
     """
     course = await _get_owned_course(db, user, course_id)
-    course.visibilite = payload.visibilite
+    course.visibility = payload.visibility
     course.updated_at = datetime.now(UTC)
     await db.commit()
     return payload
@@ -418,14 +418,14 @@ async def add_block(
         .one()
     )
     block_id = uuid.uuid4()
-    content = _contenu_par_defaut(payload.type)
+    content = _default_content(payload.type)
     await db.execute(
         insert(Block).values(
             id=block_id,
             course_id=course.id,
             position=position,
             type=payload.type,
-            titre=payload.titre,
+            title=payload.title,
             description=payload.description,
             content=content,
             resource_id=None,
@@ -438,7 +438,7 @@ async def add_block(
         id=block_id,
         position=position,
         type=payload.type,
-        titre=payload.titre,
+        title=payload.title,
         description=payload.description,
         content=content,
         resource_id=None,
@@ -468,7 +468,7 @@ async def delete_block(
         .one_or_none()
     )
     if block is None:
-        raise _introuvable("Bloc introuvable")
+        raise _not_found("Bloc introuvable")
     await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
     course.updated_at = datetime.now(UTC)
     await db.commit()
@@ -494,7 +494,7 @@ async def update_block(
     forme du ``content`` fourni ne correspond pas au type du bloc, si une
     question porte un id inconnu du bloc, si ``resource_id`` est fourni sur
     un bloc non-document, si la ressource est inconnue du cours / pas encore
-    ``disponible``, si ``module_id`` est fourni sur un bloc non-module, ou
+    ``available``, si ``module_id`` est fourni sur un bloc non-module, ou
     si le module est inconnu du cours (pas de statut à vérifier : le code
     vit en base). Toute 422 est levée AVANT la moindre écriture d'attribut
     (pas de mutation partielle). Seuls les champs présents dans le payload
@@ -513,11 +513,11 @@ async def update_block(
         .one_or_none()
     )
     if block is None:
-        raise _introuvable("Bloc introuvable")
-    champs = payload.model_fields_set
-    if "resource_id" in champs:
+        raise _not_found("Bloc introuvable")
+    fields = payload.model_fields_set
+    if "resource_id" in fields:
         if block.type != TYPE_DOCUMENT:
-            raise _invalide("resource_id ne s'applique qu'aux blocs « document »")
+            raise _invalid("resource_id ne s'applique qu'aux blocs « document »")
         if payload.resource_id is not None:
             # 422 et non 404 : le bloc ciblé, lui, existe (motif « Matières
             # inconnues ») ; le filtre course_id scelle l'appartenance.
@@ -534,12 +534,12 @@ async def update_block(
                 .one_or_none()
             )
             if resource is None:
-                raise _invalide("Ressource inconnue")
-            if resource.statut != STATUT_DISPONIBLE:
-                raise _invalide("Ressource non disponible")
-    if "module_id" in champs:
+                raise _invalid("Ressource inconnue")
+            if resource.status != STATUS_AVAILABLE:
+                raise _invalid("Ressource non disponible")
+    if "module_id" in fields:
         if block.type != TYPE_MODULE:
-            raise _invalide("module_id ne s'applique qu'aux blocs « module »")
+            raise _invalid("module_id ne s'applique qu'aux blocs « module »")
         if payload.module_id is not None:
             # 422 et non 404 : le bloc ciblé, lui, existe (motif « Matières
             # inconnues ») ; le filtre course_id scelle l'appartenance.
@@ -556,34 +556,34 @@ async def update_block(
                 .one_or_none()
             )
             if module is None:
-                raise _invalide("Module inconnu")
-    nouveau_contenu: dict | None = None
+                raise _invalid("Module inconnu")
+    new_content: dict | None = None
     if payload.content is not None:
-        type_attendu = _TYPE_PAR_CONTENU[type(payload.content)]
-        if block.type != type_attendu:
-            raise _invalide(
-                f"Le contenu fourni correspond à un bloc « {type_attendu} », "
+        expected_type = _TYPE_BY_CONTENT[type(payload.content)]
+        if block.type != expected_type:
+            raise _invalid(
+                f"Le contenu fourni correspond à un bloc « {expected_type} », "
                 f"pas « {block.type} »"
             )
-        if isinstance(payload.content, TexteContent):
-            nouveau_contenu = {"markdown": payload.content.markdown}
-        elif isinstance(payload.content, ExerciceContent):
-            nouveau_contenu = _contenu_exercice(block, payload.content)
+        if isinstance(payload.content, TextContent):
+            new_content = {"markdown": payload.content.markdown}
+        elif isinstance(payload.content, ExerciseContent):
+            new_content = _exercise_content(block, payload.content)
         else:
-            nouveau_contenu = {
-                "legende": payload.content.legende,
-                "affichage": payload.content.affichage,
+            new_content = {
+                "caption": payload.content.caption,
+                "display": payload.content.display,
             }
-    if "titre" in champs:
-        block.titre = payload.titre
-    if "description" in champs:
+    if "title" in fields:
+        block.title = payload.title
+    if "description" in fields:
         block.description = payload.description
-    if "resource_id" in champs:
+    if "resource_id" in fields:
         block.resource_id = payload.resource_id
-    if "module_id" in champs:
+    if "module_id" in fields:
         block.module_id = payload.module_id
-    if nouveau_contenu is not None:
-        block.content = nouveau_contenu
+    if new_content is not None:
+        block.content = new_content
     course.updated_at = datetime.now(UTC)
     await db.commit()
     return _block_read(block)
@@ -599,11 +599,11 @@ async def reorder_blocks(
     executemany des positions (omis si le cours n'a pas de blocs).
     """
     course = await _get_owned_course(db, user, course_id)
-    ids_du_cours = set(
+    course_block_ids = set(
         (await db.execute(select(Block.id).where(Block.course_id == course.id))).scalars().all()
     )
-    if set(payload.block_ids) != ids_du_cours:
-        raise _invalide("block_ids doit contenir exactement les blocs du cours")
+    if set(payload.block_ids) != course_block_ids:
+        raise _invalid("block_ids doit contenir exactement les blocs du cours")
     if payload.block_ids:
         # Update sur la Table (pas l'entité ORM) : executemany pur Core,
         # sans passer par le bulk-update-by-pk de l'ORM.

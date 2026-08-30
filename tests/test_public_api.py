@@ -1,9 +1,9 @@
 """Routes /public/* — régime d'accès élève (J2), sans JWT ni identité.
 
-L'inverse du ``test_auth_requise`` systématique des autres suites : ici le
+L'inverse du ``test_auth_required`` systématique des autres suites : ici le
 client n'envoie JAMAIS d'en-tête Authorization et les routes doivent
 répondre quand même. Sémantique d'erreur : 404 uniforme (token inconnu/
-révoqué/expiré, cours en_cours ou privé sans token) — jamais 401/403/410.
+révoqué/expiré, cours ``draft`` ou privé sans token) — jamais 401/403/410.
 
 Fausse session FIFO habituelle (ordre des ``execute`` documenté dans
 app/public/service.py) ; l'expiration des liens est comparée en Python,
@@ -31,10 +31,10 @@ def _course_row(**overrides):
     defaults = dict(
         id=uuid.uuid4(),
         owner_id=uuid.uuid4(),
-        titre="Fractions",
+        title="Fractions",
         description="Les bases",
         preview_settings={},
-        visibilite="public",
+        visibility="public",
         updated_at=_NOW,
     )
     defaults.update(overrides)
@@ -46,7 +46,7 @@ def _link_row(course_id, **overrides):
         id=uuid.uuid4(),
         course_id=course_id,
         token=_TOKEN,
-        libelle=None,
+        label=None,
         expires_at=datetime.now(UTC) + timedelta(days=100),
         revoked=False,
         created_at=_NOW,
@@ -60,8 +60,8 @@ def _block_row(course_id, **overrides):
         id=uuid.uuid4(),
         course_id=course_id,
         position=0,
-        type="texte",
-        titre=None,
+        type="text",
+        title=None,
         description=None,
         content={"markdown": "Bonjour"},
         resource_id=None,
@@ -77,10 +77,10 @@ def _resource_row(course_id, **overrides):
         course_id=course_id,
         type="image",
         s3_key="abc/photo.png",
-        nom_original="photo.png",
-        taille=1234,
+        original_name="photo.png",
+        size=1234,
         mime="image/png",
-        statut="disponible",
+        status="available",
         created_at=_NOW,
     )
     defaults.update(overrides)
@@ -91,7 +91,7 @@ def _module_row(course_id, **overrides):
     defaults = dict(
         id=uuid.uuid4(),
         course_id=course_id,
-        titre="Quiz",
+        title="Quiz",
         html="<p>Q</p>",
         css="",
         js="console.log('ok')",
@@ -103,10 +103,10 @@ def _module_row(course_id, **overrides):
 def _user_row(**overrides):
     defaults = dict(
         id=uuid.uuid4(),
-        nom_public="M. Dupont",
+        public_name="M. Dupont",
         avatar_s3_key=None,
         avatar_mime=None,
-        avatar_statut=None,
+        avatar_status=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -157,8 +157,8 @@ class _FakeStorage:
     def __init__(self):
         self.inline_calls = []
 
-    def presign_get(self, s3_key, nom_original, inline=False):
-        self.inline_calls.append((s3_key, nom_original, inline))
+    def presign_get(self, s3_key, original_name, inline=False):
+        self.inline_calls.append((s3_key, original_name, inline))
         return f"https://s3.test/{s3_key}?signed=1"
 
 
@@ -171,15 +171,15 @@ def _client(session, storage=None) -> TestClient:
 
 
 # Sélections vides du détail (matières, niveaux, blocs, ressources).
-_DETAIL_VIDE = [[], [], [], []]
+_EMPTY_DETAIL = [[], [], [], []]
 
 
 # --- Aucune route publique n'exige de Bearer ----------------------------------
 
 
-def test_routes_publiques_repondent_sans_authorization():
+def test_public_routes_respond_without_authorization():
     course = _course_row()
-    session = _FakeSession([[course], *_DETAIL_VIDE])
+    session = _FakeSession([[course], *_EMPTY_DETAIL])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
     assert response.status_code == 200
     assert "WWW-Authenticate" not in response.headers
@@ -189,37 +189,37 @@ def test_routes_publiques_repondent_sans_authorization():
 # --- Autorisation par visibilité ------------------------------------------------
 
 
-def test_cours_public_accessible_sans_token():
-    course = _course_row(visibilite="public")
-    session = _FakeSession([[course], *_DETAIL_VIDE])
+def test_public_course_accessible_without_token():
+    course = _course_row(visibility="public")
+    session = _FakeSession([[course], *_EMPTY_DETAIL])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
     assert response.status_code == 200
-    assert response.json()["titre"] == "Fractions"
+    assert response.json()["title"] == "Fractions"
 
 
-def test_cours_prive_sans_token_introuvable():
-    course = _course_row(visibilite="prive")
+def test_private_course_without_token_not_found():
+    course = _course_row(visibility="private")
     session = _FakeSession([[course]])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
 
 
-def test_cours_prive_token_valide_ok():
-    course = _course_row(visibilite="prive")
+def test_private_course_valid_token_ok():
+    course = _course_row(visibility="private")
     link = _link_row(course.id)
     # FIFO : cours, lien (scopé cours), puis détail.
-    session = _FakeSession([[course], [link], *_DETAIL_VIDE])
+    session = _FakeSession([[course], [link], *_EMPTY_DETAIL])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}", params={"token": _TOKEN}
     )
     assert response.status_code == 200
 
 
-def test_cours_en_cours_introuvable_meme_avec_token():
+def test_draft_course_not_found_even_with_token():
     # Le lien est suspendu, pas supprimé : la visibilité prime, court-circuit
     # avant même le select du lien.
-    course = _course_row(visibilite="en_cours")
+    course = _course_row(visibility="draft")
     session = _FakeSession([[course]])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}", params={"token": _TOKEN}
@@ -227,7 +227,7 @@ def test_cours_en_cours_introuvable_meme_avec_token():
     assert response.status_code == 404
 
 
-def test_cours_inexistant_introuvable():
+def test_missing_course_not_found():
     session = _FakeSession([[]])
     response = _client(session).get(f"/api/v1/public/courses/{uuid.uuid4()}")
     assert response.status_code == 404
@@ -240,8 +240,8 @@ def test_cours_inexistant_introuvable():
         dict(expires_at=datetime.now(UTC) - timedelta(seconds=1)),
     ],
 )
-def test_cours_prive_lien_revoque_ou_expire_introuvable(link_overrides):
-    course = _course_row(visibilite="prive")
+def test_private_course_revoked_or_expired_link_not_found(link_overrides):
+    course = _course_row(visibility="private")
     link = _link_row(course.id, **link_overrides)
     session = _FakeSession([[course], [link]])
     response = _client(session).get(
@@ -251,9 +251,9 @@ def test_cours_prive_lien_revoque_ou_expire_introuvable(link_overrides):
     assert response.json()["detail"] == "Cours introuvable"
 
 
-def test_token_du_cours_a_ne_donne_pas_le_cours_b():
+def test_token_for_course_a_does_not_grant_course_b():
     # Le select du lien est scopé (course_id + token) : il ne retourne rien.
-    course_b = _course_row(visibilite="prive")
+    course_b = _course_row(visibility="private")
     session = _FakeSession([[course_b], []])
     response = _client(session).get(
         f"/api/v1/public/courses/{course_b.id}", params={"token": _TOKEN}
@@ -264,13 +264,13 @@ def test_token_du_cours_a_ne_donne_pas_le_cours_b():
 # --- Entrée par lien : /public/shared/{token} -----------------------------------
 
 
-def test_shared_lien_valide_renvoie_le_detail():
-    course = _course_row(visibilite="prive")
+def test_shared_valid_link_returns_detail():
+    course = _course_row(visibility="private")
     link = _link_row(course.id)
-    bloc = _block_row(course.id)
+    block = _block_row(course.id)
     # FIFO : lien (par token), cours, puis détail (matières, niveaux,
     # blocs, ressources).
-    session = _FakeSession([[link], [course], [], [], [bloc], []])
+    session = _FakeSession([[link], [course], [], [], [block], []])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
 
     assert response.status_code == 200
@@ -280,25 +280,25 @@ def test_shared_lien_valide_renvoie_le_detail():
     assert body["blocks"][0]["content"] == {"markdown": "Bonjour"}
 
 
-def test_shared_token_inconnu_introuvable():
+def test_shared_unknown_token_not_found():
     session = _FakeSession([[]])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
 
 
-def test_shared_cours_repasse_en_cours_introuvable():
-    course = _course_row(visibilite="en_cours")
+def test_shared_course_back_to_draft_not_found():
+    course = _course_row(visibility="draft")
     link = _link_row(course.id)
     session = _FakeSession([[link], [course]])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
     assert response.status_code == 404
 
 
-def test_shared_lien_valide_sur_cours_devenu_public_reste_valide():
-    course = _course_row(visibilite="public")
+def test_shared_valid_link_on_course_turned_public_stays_valid():
+    course = _course_row(visibility="public")
     link = _link_row(course.id)
-    session = _FakeSession([[link], [course], *_DETAIL_VIDE])
+    session = _FakeSession([[link], [course], *_EMPTY_DETAIL])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
     assert response.status_code == 200
 
@@ -306,24 +306,24 @@ def test_shared_lien_valide_sur_cours_devenu_public_reste_valide():
 # --- Filtrage du corrigé des exercices ------------------------------------------
 
 
-def test_content_exercice_sans_reponse_attendue():
+def test_exercise_content_without_expected_answer():
     course = _course_row()
     q1 = str(uuid.uuid4())
     q2 = str(uuid.uuid4())
-    bloc = _block_row(
+    block = _block_row(
         course.id,
-        type="exercice",
+        type="exercise",
         content={
-            "enonce": "Calculer",
+            "statement": "Calculer",
             "questions": [
-                {"id": q1, "enonce": "2+2 ?", "type": "texte_libre",
-                 "reponse_attendue": "4"},
-                {"id": q2, "enonce": "3+3 ?", "type": "texte_libre",
-                 "reponse_attendue": "6"},
+                {"id": q1, "statement": "2+2 ?", "type": "free_text",
+                 "expected_answer": "4"},
+                {"id": q2, "statement": "3+3 ?", "type": "free_text",
+                 "expected_answer": "6"},
             ],
         },
     )
-    session = _FakeSession([[course], [], [], [bloc], []])
+    session = _FakeSession([[course], [], [], [block], []])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
 
     assert response.status_code == 200
@@ -331,23 +331,23 @@ def test_content_exercice_sans_reponse_attendue():
     # Ids/énoncés/type préservés (les soumissions élèves référencent
     # (block_id, question_id)) ; le corrigé n'existe pas, par construction.
     assert content == {
-        "enonce": "Calculer",
+        "statement": "Calculer",
         "questions": [
-            {"id": q1, "enonce": "2+2 ?", "type": "texte_libre"},
-            {"id": q2, "enonce": "3+3 ?", "type": "texte_libre"},
+            {"id": q1, "statement": "2+2 ?", "type": "free_text"},
+            {"id": q2, "statement": "3+3 ?", "type": "free_text"},
         ],
     }
-    assert "reponse_attendue" not in str(response.json())
+    assert "expected_answer" not in str(response.json())
     # Le JSONB d'origine n'a pas été muté (nouveau dict côté service).
-    assert bloc.content["questions"][0]["reponse_attendue"] == "4"
+    assert block.content["questions"][0]["expected_answer"] == "4"
 
 
-def test_detail_complet_noms_denormalises_et_ressources_disponibles():
+def test_full_detail_denormalized_names_and_available_resources():
     course = _course_row(preview_settings={"font": "serif"})
-    bloc = _block_row(course.id)
-    ressource = _resource_row(course.id)
+    block = _block_row(course.id)
+    resource = _resource_row(course.id)
     session = _FakeSession(
-        [[course], ["Mathématiques"], ["6e"], [bloc], [ressource]]
+        [[course], ["Mathématiques"], ["6e"], [block], [resource]]
     )
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
 
@@ -358,10 +358,10 @@ def test_detail_complet_noms_denormalises_et_ressources_disponibles():
     assert body["preview_settings"] == {"font": "serif"}
     assert body["resources"] == [
         {
-            "id": str(ressource.id),
+            "id": str(resource.id),
             "type": "image",
-            "nom_original": "photo.png",
-            "taille": 1234,
+            "original_name": "photo.png",
+            "size": 1234,
             "mime": "image/png",
         }
     ]
@@ -372,13 +372,13 @@ def test_detail_complet_noms_denormalises_et_ressources_disponibles():
 # --- Presign ressource -----------------------------------------------------------
 
 
-def test_presign_ressource_publique():
+def test_public_resource_presign():
     course = _course_row()
-    ressource = _resource_row(course.id)
+    resource = _resource_row(course.id)
     storage = _FakeStorage()
-    session = _FakeSession([[course], [ressource]])
+    session = _FakeSession([[course], [resource]])
     response = _client(session, storage).get(
-        f"/api/v1/public/courses/{course.id}/resources/{ressource.id}/download",
+        f"/api/v1/public/courses/{course.id}/resources/{resource.id}/download",
         params={"disposition": "inline"},
     )
 
@@ -389,18 +389,18 @@ def test_presign_ressource_publique():
     assert storage.inline_calls == [("abc/photo.png", "photo.png", True)]
 
 
-def test_presign_ressource_en_attente_conflit():
+def test_pending_resource_presign_conflict():
     # Miroir exact du régime prof : on est déjà autorisé sur le cours, 409.
     course = _course_row()
-    ressource = _resource_row(course.id, statut="en_attente")
-    session = _FakeSession([[course], [ressource]])
+    resource = _resource_row(course.id, status="pending")
+    session = _FakeSession([[course], [resource]])
     response = _client(session).get(
-        f"/api/v1/public/courses/{course.id}/resources/{ressource.id}/download"
+        f"/api/v1/public/courses/{course.id}/resources/{resource.id}/download"
     )
     assert response.status_code == 409
 
 
-def test_presign_ressource_autre_cours_introuvable():
+def test_resource_from_other_course_not_found():
     course = _course_row()
     session = _FakeSession([[course], []])
     response = _client(session).get(
@@ -412,7 +412,7 @@ def test_presign_ressource_autre_cours_introuvable():
 # --- Module ----------------------------------------------------------------------
 
 
-def test_module_public_code_servi():
+def test_public_module_code_served():
     course = _course_row()
     module = _module_row(course.id)
     session = _FakeSession([[course], [module]])
@@ -423,14 +423,14 @@ def test_module_public_code_servi():
     assert response.status_code == 200
     assert response.json() == {
         "id": str(module.id),
-        "titre": "Quiz",
+        "title": "Quiz",
         "html": "<p>Q</p>",
         "css": "",
         "js": "console.log('ok')",
     }
 
 
-def test_module_autre_cours_introuvable():
+def test_module_from_other_course_not_found():
     course = _course_row()
     session = _FakeSession([[course], []])
     response = _client(session).get(
@@ -442,10 +442,10 @@ def test_module_autre_cours_introuvable():
 # --- Catalogue public d'un prof ---------------------------------------------------
 
 
-def test_catalogue_cours_publics_du_prof():
+def test_teacher_public_course_catalog():
     user = _user_row()
     c1 = _course_row(owner_id=user.id)
-    c2 = _course_row(owner_id=user.id, titre="Géométrie", description=None)
+    c2 = _course_row(owner_id=user.id, title="Géométrie", description=None)
     # FIFO : user, cours publics, noms matières, noms niveaux, comptes blocs.
     session = _FakeSession(
         [
@@ -460,9 +460,9 @@ def test_catalogue_cours_publics_du_prof():
 
     assert response.status_code == 200
     body = response.json()
-    assert body["nom_public"] == "M. Dupont"
+    assert body["public_name"] == "M. Dupont"
     assert body["avatar_url"] is None  # prof sans photo
-    assert [c["titre"] for c in body["courses"]] == ["Fractions", "Géométrie"]
+    assert [c["title"] for c in body["courses"]] == ["Fractions", "Géométrie"]
     assert body["courses"][0]["subjects"] == ["Mathématiques"]
     assert body["courses"][0]["block_count"] == 3
     assert body["courses"][1]["subjects"] == []
@@ -470,11 +470,11 @@ def test_catalogue_cours_publics_du_prof():
     assert body["courses"][1]["block_count"] == 0
 
 
-def test_catalogue_prof_avec_avatar():
+def test_catalog_teacher_with_avatar():
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="disponible",
+        avatar_status="available",
     )
     session = _FakeSession([[user], []])
     storage = _FakeStorage()
@@ -490,77 +490,77 @@ def test_catalogue_prof_avec_avatar():
     ]
 
 
-def test_catalogue_user_inconnu_liste_vide_sans_oracle():
+def test_catalog_unknown_user_empty_list_without_oracle():
     # Utilisateur inexistant : même forme de réponse (200, liste vide).
     session = _FakeSession([[], []])
     response = _client(session).get(
         f"/api/v1/public/professors/{uuid.uuid4()}/courses"
     )
     assert response.status_code == 200
-    assert response.json() == {"nom_public": None, "avatar_url": None, "courses": []}
+    assert response.json() == {"public_name": None, "avatar_url": None, "courses": []}
 
 
-def test_catalogue_prof_sans_nom_public_anonyme():
-    user = _user_row(nom_public=None)
+def test_catalog_teacher_without_public_name_anonymous():
+    user = _user_row(public_name=None)
     session = _FakeSession([[user], []])
     response = _client(session).get(f"/api/v1/public/professors/{user.id}/courses")
     assert response.status_code == 200
-    assert response.json() == {"nom_public": None, "avatar_url": None, "courses": []}
+    assert response.json() == {"public_name": None, "avatar_url": None, "courses": []}
 
 
 # --- Arbres de taxonomie publics (facettes de recherche, J3) -------------------
 
 
-def _subject_tree_row(nom, profondeur=0, parent_id=None, position=0):
+def _subject_tree_row(name, depth=0, parent_id=None, position=0):
     return SimpleNamespace(
         id=uuid.uuid4(),
         parent_id=parent_id,
-        nom=nom,
-        code=nom.lower().replace(" ", "-"),
-        profondeur=profondeur,
+        name=name,
+        code=name.lower().replace(" ", "-"),
+        depth=depth,
         position=position,
     )
 
 
-def _level_tree_row(nom, profondeur=0, parent_id=None, position=0):
+def _level_tree_row(name, depth=0, parent_id=None, position=0):
     return SimpleNamespace(
         id=uuid.uuid4(),
         parent_id=parent_id,
-        nom=nom,
-        code=f"fr.{nom.lower().replace(' ', '-')}",
-        systeme="fr",
+        name=name,
+        code=f"fr.{name.lower().replace(' ', '-')}",
+        system="fr",
         cite=None,
         age_min=None,
         age_max=None,
-        profondeur=profondeur,
+        depth=depth,
         position=position,
     )
 
 
-def test_arbre_matieres_public_sans_authorization():
+def test_public_subject_tree_without_authorization():
     # Délégation pure vers le service subjects : même forme de réponse que
     # la route JWT, mais accessible anonymement (facettes de la recherche).
-    racine = _subject_tree_row("Mathématiques")
-    enfant = _subject_tree_row("Algèbre", profondeur=1, parent_id=racine.id)
-    session = _FakeSession([[racine, enfant]])
+    root = _subject_tree_row("Mathématiques")
+    child = _subject_tree_row("Algèbre", depth=1, parent_id=root.id)
+    session = _FakeSession([[root, child]])
     response = _client(session).get("/api/v1/public/subjects/tree")
 
     assert response.status_code == 200
     assert "WWW-Authenticate" not in response.headers
-    [noeud] = response.json()
-    assert noeud["nom"] == "Mathématiques"
-    assert [c["nom"] for c in noeud["children"]] == ["Algèbre"]
+    [node] = response.json()
+    assert node["name"] == "Mathématiques"
+    assert [c["name"] for c in node["children"]] == ["Algèbre"]
 
 
-def test_arbre_niveaux_public_sans_authorization():
-    racine = _level_tree_row("Collège")
-    enfant = _level_tree_row("6e", profondeur=1, parent_id=racine.id)
-    session = _FakeSession([[racine, enfant]])
+def test_public_level_tree_without_authorization():
+    root = _level_tree_row("Collège")
+    child = _level_tree_row("6e", depth=1, parent_id=root.id)
+    session = _FakeSession([[root, child]])
     response = _client(session).get("/api/v1/public/education-levels/tree")
 
     assert response.status_code == 200
     assert "WWW-Authenticate" not in response.headers
-    [noeud] = response.json()
-    assert noeud["nom"] == "Collège"
-    assert noeud["systeme"] == "fr"
-    assert [c["nom"] for c in noeud["children"]] == ["6e"]
+    [node] = response.json()
+    assert node["name"] == "Collège"
+    assert node["system"] == "fr"
+    assert [c["name"] for c in node["children"]] == ["6e"]

@@ -3,9 +3,10 @@
 Deux étages de tests, car la fausse session FIFO ne valide pas du SQL :
 - contrat HTTP + ordre des ``execute`` + assemblage (motif test_public_api) ;
 - assertions sur le **SQL compilé** des builders purs de ``app/search/service``
-  (websearch_to_tsquery/french_unaccent/ts_rank/visibilite… — c'est le seul
-  moyen de valider la FTS sans Postgres), plus un garde-fou textuel sur la
-  migration : ``blocks_tsvector`` ne doit jamais indexer ``reponse_attendue``.
+  (websearch_to_tsquery/french_unaccent/ts_rank/visibility… — c'est le seul
+  moyen de valider la FTS sans Postgres), plus un garde-fou textuel sur les
+  migrations : ``blocks_tsvector`` ne doit jamais indexer le corrigé
+  (``reponse_attendue`` historique comme ``expected_answer``).
 """
 
 import re
@@ -35,10 +36,10 @@ def _course_row(**overrides):
     defaults = dict(
         id=uuid.uuid4(),
         owner_id=uuid.uuid4(),
-        titre="Théorème de Pythagore",
+        title="Théorème de Pythagore",
         description="Triangle rectangle",
         preview_settings={},
-        visibilite="public",
+        visibility="public",
         updated_at=_NOW,
     )
     defaults.update(overrides)
@@ -85,7 +86,7 @@ class _FakeSession:
 class _FakeStorage:
     """Faux client S3 : seul presign_get sert ici (avatar_url des profs)."""
 
-    def presign_get(self, s3_key, nom_original, inline=False):
+    def presign_get(self, s3_key, original_name, inline=False):
         return f"https://s3.test/get/{s3_key}"
 
 
@@ -100,7 +101,7 @@ def _client(session) -> TestClient:
 # --- Contrat HTTP : régime public, pagination, assemblage ----------------------
 
 
-def test_recherche_cours_repond_sans_authorization():
+def test_search_courses_responds_without_authorization():
     session = _FakeSession([[0], []])
     response = _client(session).get("/api/v1/public/search/courses")
     assert response.status_code == 200
@@ -108,9 +109,9 @@ def test_recherche_cours_repond_sans_authorization():
     assert session.commits == 0  # lecture seule
 
 
-def test_recherche_cours_page_assemblee():
+def test_search_courses_page_assembled():
     c1 = _course_row()
-    c2 = _course_row(titre="Racines carrées", description=None)
+    c2 = _course_row(title="Racines carrées", description=None)
     # FIFO : count, page, noms matières, noms niveaux, comptes de blocs.
     session = _FakeSession(
         [
@@ -130,7 +131,7 @@ def test_recherche_cours_page_assemblee():
     assert body["total"] == 12
     assert body["limit"] == 2
     assert body["offset"] == 0
-    assert [c["titre"] for c in body["items"]] == [
+    assert [c["title"] for c in body["items"]] == [
         "Théorème de Pythagore",
         "Racines carrées",
     ]
@@ -140,7 +141,7 @@ def test_recherche_cours_page_assemblee():
     assert body["items"][1]["block_count"] == 0
 
 
-def test_recherche_cours_sans_resultat_deux_executes():
+def test_search_courses_no_result_two_executes():
     session = _FakeSession([[0], []])
     response = _client(session).get(
         "/api/v1/public/search/courses", params={"q": "introuvable"}
@@ -151,7 +152,7 @@ def test_recherche_cours_sans_resultat_deux_executes():
     assert len(session.executed) == 2
 
 
-def test_facette_matiere_inconnue_page_vide_sans_oracle():
+def test_unknown_subject_facet_empty_page_without_oracle():
     # Id de matière inconnu : 200 + page vide immédiate (pas de 422 — une URL
     # partagée avec une facette périmée doit rester servable), un seul execute.
     session = _FakeSession([[]])
@@ -163,24 +164,24 @@ def test_facette_matiere_inconnue_page_vide_sans_oracle():
     assert len(session.executed) == 1
 
 
-def test_facette_matiere_resout_le_sous_arbre_par_code():
+def test_subject_facet_resolves_subtree_by_code():
     sid = uuid.uuid4()
-    enfant_id = uuid.uuid4()
+    child_id = uuid.uuid4()
     # FIFO : code de la matière, ids du sous-arbre, count, page (vide).
-    session = _FakeSession([["mathematiques.algebre"], [sid, enfant_id], [0], []])
+    session = _FakeSession([["mathematiques.algebre"], [sid, child_id], [0], []])
     response = _client(session).get(
         "/api/v1/public/search/courses", params={"subject_id": str(sid)}
     )
     assert response.status_code == 200
     assert len(session.executed) == 4
     # Le select du sous-arbre matche le code exact OU le préfixe descendant.
-    sql_sous_arbre = str(
+    subtree_sql = str(
         session.executed[1][0].compile(dialect=postgresql.dialect())
     )
-    assert "LIKE" in sql_sous_arbre
+    assert "LIKE" in subtree_sql
 
 
-def test_facette_niveau_inconnu_page_vide_sans_oracle():
+def test_unknown_level_facet_empty_page_without_oracle():
     session = _FakeSession([[]])
     response = _client(session).get(
         "/api/v1/public/search/courses",
@@ -191,28 +192,28 @@ def test_facette_niveau_inconnu_page_vide_sans_oracle():
     assert len(session.executed) == 1
 
 
-def test_recherche_sans_q_est_un_catalogue():
+def test_search_without_q_is_a_catalog():
     # Facettes seules (ou rien) : autorisé — tri par updated_at, pas de FTS.
     session = _FakeSession([[0], []])
     response = _client(session).get("/api/v1/public/search/courses")
     assert response.status_code == 200
-    sql_page = str(session.executed[1][0].compile(dialect=postgresql.dialect()))
-    assert "websearch_to_tsquery" not in sql_page
-    assert "updated_at DESC" in sql_page
+    page_sql = str(session.executed[1][0].compile(dialect=postgresql.dialect()))
+    assert "websearch_to_tsquery" not in page_sql
+    assert "updated_at DESC" in page_sql
 
 
-def test_q_blanc_traite_comme_absent():
+def test_blank_q_treated_as_absent():
     # websearch_to_tsquery('') ne matcherait rien : un q blanc est neutralisé.
     session = _FakeSession([[0], []])
     response = _client(session).get(
         "/api/v1/public/search/courses", params={"q": "   "}
     )
     assert response.status_code == 200
-    sql_page = str(session.executed[1][0].compile(dialect=postgresql.dialect()))
-    assert "websearch_to_tsquery" not in sql_page
+    page_sql = str(session.executed[1][0].compile(dialect=postgresql.dialect()))
+    assert "websearch_to_tsquery" not in page_sql
 
 
-def test_pagination_bornes_validees():
+def test_pagination_bounds_validated():
     response = _client(_FakeSession()).get(
         "/api/v1/public/search/courses", params={"limit": 51}
     )
@@ -223,15 +224,15 @@ def test_pagination_bornes_validees():
     assert response.status_code == 422
 
 
-def test_recherche_teachers_page_assemblee():
+def test_search_teachers_page_assembled():
     uid1, uid2 = uuid.uuid4(), uuid.uuid4()
-    # FIFO : count, page (id, nom_public, avatar_s3_key, avatar_statut),
+    # FIFO : count, page (id, public_name, avatar_s3_key, avatar_status),
     # matières enseignées, comptes de cours publics.
     session = _FakeSession(
         [
             [2],
             [
-                (uid1, "Mme Ada", "users/u1/avatar/x/avatar.jpg", "disponible"),
+                (uid1, "Mme Ada", "users/u1/avatar/x/avatar.jpg", "available"),
                 (uid2, "M. Turing", None, None),
             ],
             [(uid1, "Informatique"), (uid1, "Mathématiques")],
@@ -245,7 +246,7 @@ def test_recherche_teachers_page_assemblee():
     assert response.status_code == 200
     body = response.json()
     assert body["total"] == 2
-    assert [t["nom_public"] for t in body["items"]] == ["Mme Ada", "M. Turing"]
+    assert [t["public_name"] for t in body["items"]] == ["Mme Ada", "M. Turing"]
     assert body["items"][0]["subjects"] == ["Informatique", "Mathématiques"]
     assert body["items"][0]["public_course_count"] == 3
     assert body["items"][0]["avatar_url"] == (
@@ -258,7 +259,7 @@ def test_recherche_teachers_page_assemblee():
     assert "avatar_s3_key" not in response.text
 
 
-def test_recherche_teachers_sans_resultat():
+def test_search_teachers_no_result():
     session = _FakeSession([[0], []])
     response = _client(session).get("/api/v1/public/search/teachers")
     assert response.status_code == 200
@@ -277,7 +278,7 @@ def _sql(stmt) -> str:
     return str(_compiled(stmt))
 
 
-def test_sql_cours_fts_et_visibilite():
+def test_sql_courses_fts_and_visibility():
     tsq = _tsquery("pythagore")
     compiled = _compiled(_courses_page_stmt(tsq, None, None, 20, 0))
     sql = str(compiled)
@@ -286,53 +287,54 @@ def test_sql_cours_fts_et_visibilite():
     assert "french_unaccent" in compiled.params.values()
     assert "ts_rank" in sql
     assert "search_vector @@" in sql
-    assert "visibilite" in sql  # seuls les cours publics
+    assert "visibility" in sql  # seuls les cours publics
     assert "blocks" in sql  # le vecteur des blocs participe (EXISTS + rank)
-    assert "reponse_attendue" not in sql  # garde-fou du corrigé
+    assert "expected_answer" not in sql  # garde-fou du corrigé
     assert "LIMIT" in sql and "OFFSET" in sql
 
 
-def test_sql_cours_count_filtre_comme_la_page():
+def test_sql_courses_count_filters_like_page():
     tsq = _tsquery("pythagore")
     sql = _sql(_courses_count_stmt(tsq, [uuid.uuid4()], [uuid.uuid4()]))
     assert "count(" in sql
     assert "course_subjects" in sql
     assert "course_education_levels" in sql
-    assert "visibilite" in sql
+    assert "visibility" in sql
 
 
-def test_sql_teachers_criteres_de_visibilite():
+def test_sql_teachers_visibility_criteria():
     tsq = _tsquery("ada")
     compiled = _compiled(_teachers_page_stmt(tsq, None, None, 20, 0))
     sql = str(compiled)
-    assert "cherchable" in sql  # opt-in explicite
-    assert "nom_public IS NOT NULL" in sql
-    assert "visibilite" in sql  # au moins un cours public (EXISTS)
+    assert "searchable" in sql  # opt-in explicite
+    assert "public_name IS NOT NULL" in sql
+    assert "visibility" in sql  # au moins un cours public (EXISTS)
     assert "to_tsvector" in sql  # vecteur à la volée
     assert "french_unaccent" in compiled.params.values()
-    assert "contexte" in sql  # matières « enseigne » uniquement
+    assert "context" in sql  # matières « teaching » uniquement
     assert "email" not in sql  # jamais de donnée privée
     assert "users.sub" not in sql  # ni l'identifiant OIDC
     # Colonnes avatar sélectionnées pour minter avatar_url (jamais le mime).
-    assert "avatar_s3_key" in sql and "avatar_statut" in sql
+    assert "avatar_s3_key" in sql and "avatar_status" in sql
     assert "avatar_mime" not in sql
 
 
-def test_sql_teachers_count_sans_q():
+def test_sql_teachers_count_without_q():
     sql = _sql(_teachers_count_stmt(None, None, None))
     assert "websearch_to_tsquery" not in sql
-    assert "cherchable" in sql
+    assert "searchable" in sql
     assert "avatar_s3_key" not in sql  # le count ne sélectionne pas les colonnes
 
 
 # --- Garde-fou migration : le corrigé n'entre jamais dans l'index --------------
 
 
-def test_migration_blocks_tsvector_nindexe_pas_le_corrige():
+def test_migrations_blocks_tsvector_never_index_expected_answer():
     """Scanne les corps SQL ``$$…$$`` des fonctions ``blocks_tsvector`` de
-    toutes les migrations : ``reponse_attendue`` ne doit jamais y figurer
-    (il deviendrait cherchable depuis le régime public). Vacuité assumée
-    tant que la migration J3 n'existe pas encore."""
+    toutes les migrations — historiques (clé JSONB française
+    ``reponse_attendue``) comme récentes (clé anglaise ``expected_answer``) :
+    aucune des deux clés ne doit jamais y figurer (le corrigé deviendrait
+    cherchable depuis le régime public)."""
     versions = Path(__file__).resolve().parent.parent / "alembic" / "versions"
     pattern = re.compile(
         r"CREATE\s+FUNCTION\s+blocks_tsvector.*?\$\$(.*?)\$\$",
@@ -341,3 +343,4 @@ def test_migration_blocks_tsvector_nindexe_pas_le_corrige():
     for path in sorted(versions.glob("*.py")):
         for body in pattern.findall(path.read_text(encoding="utf-8")):
             assert "reponse_attendue" not in body, path.name
+            assert "expected_answer" not in body, path.name

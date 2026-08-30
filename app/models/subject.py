@@ -22,7 +22,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
-PROFONDEUR_MAX = 3  # 0=discipline, 1=domaine, 2=sous-domaine, 3=sujet
+MAX_DEPTH = 3  # 0=discipline, 1=domaine, 2=sous-domaine, 3=sujet
 
 
 class Subject(Base):
@@ -32,15 +32,15 @@ class Subject(Base):
         # noms de disciplines racines (parent_id NULL).
         UniqueConstraint(
             "parent_id",
-            "nom",
-            name="uq_subjects_parent_id_nom",
+            "name",
+            name="uq_subjects_parent_id_name",
             postgresql_nulls_not_distinct=True,
         ),
         CheckConstraint(
-            f"profondeur >= 0 AND profondeur <= {PROFONDEUR_MAX}",
-            name="ck_subjects_profondeur",
+            f"depth >= 0 AND depth <= {MAX_DEPTH}",
+            name="ck_subjects_depth",
         ),
-        CheckConstraint("parent_id != id", name="ck_subjects_pas_son_propre_parent"),
+        CheckConstraint("parent_id != id", name="ck_subjects_not_own_parent"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -49,10 +49,10 @@ class Subject(Base):
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("subjects.id", ondelete="CASCADE"), index=True
     )
-    nom: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(200))
     # Chemin slug complet, stable et unique (ex. "mathematiques.algebre").
     code: Mapped[str] = mapped_column(String(500), unique=True)
-    profondeur: Mapped[int] = mapped_column(SmallInteger)
+    depth: Mapped[int] = mapped_column(SmallInteger)
     position: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

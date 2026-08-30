@@ -13,6 +13,7 @@ compteur au flux décompressé), la somme est bornée par
 ``TRANSFER_MAX_ZIP_BYTES`` et le manifest est lu borné.
 """
 
+import json
 import re
 import zipfile
 from tempfile import SpooledTemporaryFile
@@ -21,7 +22,11 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.storage import Storage
-from app.course_transfer.schemas import MAX_MANIFEST_BYTES, CourseManifest
+from app.course_transfer.schemas import (
+    MAX_MANIFEST_BYTES,
+    CourseManifest,
+    normalize_manifest_v1,
+)
 
 MANIFEST_NAME = "manifest.json"
 
@@ -40,7 +45,7 @@ _UUID = (
 REF_RE = re.compile(rf"\boc-(resource|module):({_UUID})\b")
 
 
-class ArchiveInvalide(ValueError):
+class InvalidArchive(ValueError):
     """Archive illisible ou incohérente avec son manifest (→ 422)."""
 
 
@@ -56,8 +61,8 @@ def rewrite_refs(
 
     def _sub(match: re.Match[str]) -> str:
         maps = resource_map if match.group(1) == "resource" else module_map
-        nouveau = maps.get(match.group(2).lower())
-        return f"oc-{match.group(1)}:{nouveau}" if nouveau else match.group(0)
+        new_ref = maps.get(match.group(2).lower())
+        return f"oc-{match.group(1)}:{new_ref}" if new_ref else match.group(0)
 
     return REF_RE.sub(_sub, text)
 
@@ -70,24 +75,25 @@ def rewrite_block_content(
 ) -> dict:
     """NOUVEAU dict de content aux références réécrites (jamais de mutation).
 
-    Seuls les champs markdown sont réécrits : ``markdown`` (texte), ``enonce``
-    et ``questions[].enonce`` (exercice). ``legende`` et ``reponse_attendue``
-    sont du texte simple jamais rendu en markdown — non touchés.
+    Seuls les champs markdown sont réécrits : ``markdown`` (texte),
+    ``statement`` et ``questions[].statement`` (exercice). ``caption`` et
+    ``expected_answer`` sont du texte simple jamais rendu en markdown — non
+    touchés.
     """
-    if type_ == "texte":
+    if type_ == "text":
         return {
             **content,
             "markdown": rewrite_refs(content.get("markdown", ""), resource_map, module_map),
         }
-    if type_ == "exercice":
+    if type_ == "exercise":
         return {
             **content,
-            "enonce": rewrite_refs(content.get("enonce", ""), resource_map, module_map),
+            "statement": rewrite_refs(content.get("statement", ""), resource_map, module_map),
             "questions": [
                 {
                     **question,
-                    "enonce": rewrite_refs(
-                        question.get("enonce", ""), resource_map, module_map
+                    "statement": rewrite_refs(
+                        question.get("statement", ""), resource_map, module_map
                     ),
                 }
                 for question in content.get("questions", [])
@@ -122,30 +128,39 @@ def parse_zip_sync(fileobj) -> tuple[zipfile.ZipFile, CourseManifest]:
     """Ouvre l'archive d'import et valide manifest + cohérence des entrées.
 
     Le ``ZipFile`` retourné reste ouvert : l'appelant en extraira les entrées
-    binaires (``extract_entry_sync``). Toute incohérence → ``ArchiveInvalide``
+    binaires (``extract_entry_sync``). Toute incohérence → ``InvalidArchive``
     (422) : pas un zip, manifest absent/trop gros/invalide, entrée binaire
-    déclarée absente, ``file_size`` ≠ ``taille`` déclarée, somme des tailles
+    déclarée absente, ``file_size`` ≠ ``size`` déclarée, somme des tailles
     au-dessus de ``TRANSFER_MAX_ZIP_BYTES``.
     """
     try:
         zf = zipfile.ZipFile(fileobj)
     except zipfile.BadZipFile as exc:
-        raise ArchiveInvalide("Le fichier n'est pas une archive zip valide") from exc
+        raise InvalidArchive("Le fichier n'est pas une archive zip valide") from exc
     try:
         info = zf.getinfo(MANIFEST_NAME)
     except KeyError:
-        raise ArchiveInvalide("manifest.json absent de l'archive") from None
+        raise InvalidArchive("manifest.json absent de l'archive") from None
     if info.file_size > MAX_MANIFEST_BYTES:
-        raise ArchiveInvalide("manifest.json trop volumineux")
+        raise InvalidArchive("manifest.json trop volumineux")
     with zf.open(info) as fh:
         raw = fh.read(MAX_MANIFEST_BYTES + 1)
     if len(raw) > MAX_MANIFEST_BYTES:
         # file_size mentait (zip-bomb) : le flux décompressé fait foi.
-        raise ArchiveInvalide("manifest.json trop volumineux")
+        raise InvalidArchive("manifest.json trop volumineux")
     try:
-        manifest = CourseManifest.model_validate_json(raw)
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise InvalidArchive(f"manifest.json invalide : {exc}") from exc
+    # Compat v1 : le dict brut est traduit AVANT validation (clés/valeurs
+    # françaises historiques → nomenclature v2) ; toute autre version
+    # inconnue échoue au Literal de CourseManifest (422).
+    if isinstance(data, dict) and data.get("format_version") == 1:
+        data = normalize_manifest_v1(data)
+    try:
+        manifest = CourseManifest.model_validate(data)
     except ValidationError as exc:
-        raise ArchiveInvalide(f"manifest.json invalide : {exc}") from exc
+        raise InvalidArchive(f"manifest.json invalide : {exc}") from exc
 
     total = 0
     for resource in manifest.resources:
@@ -153,15 +168,15 @@ def parse_zip_sync(fileobj) -> tuple[zipfile.ZipFile, CourseManifest]:
         try:
             entry = zf.getinfo(name)
         except KeyError:
-            raise ArchiveInvalide(f"Entrée absente de l'archive : {name}") from None
-        if entry.file_size != resource.taille:
-            raise ArchiveInvalide(
+            raise InvalidArchive(f"Entrée absente de l'archive : {name}") from None
+        if entry.file_size != resource.size:
+            raise InvalidArchive(
                 f"Taille incohérente pour {name} "
-                f"(déclarée {resource.taille}, archive {entry.file_size})"
+                f"(déclarée {resource.size}, archive {entry.file_size})"
             )
-        total += resource.taille
+        total += resource.size
     if total > settings.TRANSFER_MAX_ZIP_BYTES:
-        raise ArchiveInvalide("Archive au-dessus du plafond global")
+        raise InvalidArchive("Archive au-dessus du plafond global")
     return zf, manifest
 
 
@@ -172,7 +187,7 @@ def extract_entry_sync(
 
     Double filet au-delà du ``file_size`` déclaré (déjà vérifié par
     ``parse_zip_sync``) : compteur sur le flux décompressé — au premier octet
-    excédentaire, ``ArchiveInvalide``. ``zipfile`` vérifie le CRC en fin de
+    excédentaire, ``InvalidArchive``. ``zipfile`` vérifie le CRC en fin de
     lecture. Le fichier est rembobiné, prêt pour ``storage.put_object``.
     """
     tmp = SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES)
@@ -182,14 +197,14 @@ def extract_entry_sync(
             while chunk := src.read(_CHUNK):
                 total += len(chunk)
                 if total > expected_size:
-                    raise ArchiveInvalide(f"{name} dépasse la taille déclarée")
+                    raise InvalidArchive(f"{name} dépasse la taille déclarée")
                 tmp.write(chunk)
         if total != expected_size:
-            raise ArchiveInvalide(f"{name} plus courte que la taille déclarée")
+            raise InvalidArchive(f"{name} plus courte que la taille déclarée")
     except zipfile.BadZipFile as exc:
         tmp.close()
-        raise ArchiveInvalide(f"Entrée corrompue : {name}") from exc
-    except ArchiveInvalide:
+        raise InvalidArchive(f"Entrée corrompue : {name}") from exc
+    except InvalidArchive:
         tmp.close()
         raise
     tmp.seek(0)

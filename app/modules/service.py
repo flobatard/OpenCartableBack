@@ -23,14 +23,14 @@ from app.models.user import User
 from app.modules.schemas import ModuleCreate, ModuleRead, ModuleSummary, ModuleUpdate
 
 
-def _introuvable(detail: str) -> HTTPException:
+def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 def _module_summary(module: Module) -> ModuleSummary:
     return ModuleSummary(
         id=module.id,
-        titre=module.titre,
+        title=module.title,
         created_at=module.created_at,
         updated_at=module.updated_at,
     )
@@ -39,7 +39,7 @@ def _module_summary(module: Module) -> ModuleSummary:
 def _module_read(module: Module) -> ModuleRead:
     return ModuleRead(
         id=module.id,
-        titre=module.titre,
+        title=module.title,
         html=module.html,
         css=module.css,
         js=module.js,
@@ -64,7 +64,7 @@ async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) 
         .one_or_none()
     )
     if course is None:
-        raise _introuvable("Cours introuvable")
+        raise _not_found("Cours introuvable")
     return course
 
 
@@ -82,7 +82,7 @@ async def _get_module(db: AsyncSession, course: Course, module_id: uuid.UUID) ->
         .one_or_none()
     )
     if module is None:
-        raise _introuvable("Module introuvable")
+        raise _not_found("Module introuvable")
     return module
 
 
@@ -125,7 +125,7 @@ async def create_module(
             .values(
                 id=module_id,
                 course_id=course.id,
-                titre=payload.titre,
+                title=payload.title,
                 html=payload.html,
                 css=payload.css,
                 js=payload.js,
@@ -137,7 +137,7 @@ async def create_module(
     await db.commit()
     return ModuleRead(
         id=module_id,
-        titre=payload.titre,
+        title=payload.title,
         html=payload.html,
         css=payload.css,
         js=payload.js,
@@ -180,14 +180,14 @@ async def update_module(
     """
     course = await _get_owned_course(db, user, course_id)
     module = await _get_module(db, course, module_id)
-    champs = payload.model_fields_set
-    if "titre" in champs:
-        module.titre = payload.titre
-    if "html" in champs:
+    fields = payload.model_fields_set
+    if "title" in fields:
+        module.title = payload.title
+    if "html" in fields:
         module.html = payload.html
-    if "css" in champs:
+    if "css" in fields:
         module.css = payload.css
-    if "js" in champs:
+    if "js" in fields:
         module.js = payload.js
     module.updated_at = datetime.now(UTC)
     course.updated_at = datetime.now(UTC)

@@ -1,8 +1,8 @@
 """Bibliothèque de ressources S3 d'un cours : CRUD + flow presigned.
 
 Flow d'upload (Descriptions.md §5.2) : la ligne ``resources`` est créée
-``en_attente`` *avant* l'upload direct navigateur→S3 (presigned PUT) ; la
-confirmation vérifie l'objet (HEAD S3) et passe le statut à ``disponible``.
+``pending`` *avant* l'upload direct navigateur→S3 (presigned PUT) ; la
+confirmation vérifie l'objet (HEAD S3) et passe le statut à ``available``.
 La ressource est **indépendante des blocs** : confirmer un upload ne crée
 rien d'autre, et supprimer une ressource supprime les blocs ``document`` qui
 la pointent (FK ``CASCADE`` — un document sans son fichier n'a pas de sens).
@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.storage import Storage
 from app.models.course import Course
-from app.models.resource import STATUT_DISPONIBLE, STATUT_EN_ATTENTE, Resource
+from app.models.resource import STATUS_AVAILABLE, STATUS_PENDING, Resource
 from app.models.user import User
 from app.resources.schemas import (
     ResourceCreate,
@@ -34,25 +34,25 @@ from app.resources.schemas import (
 )
 
 # Caractères conservés dans un nom de fichier sanitizé (le reste → « _ »).
-_NOM_AUTORISE = re.compile(r"[^A-Za-z0-9._-]+")
+_ALLOWED_NAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _introuvable(detail: str) -> HTTPException:
+def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
-def _conflit(detail: str) -> HTTPException:
+def _conflict(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
-def _sanitize_nom(nom: str) -> str:
+def _sanitize_name(name: str) -> str:
     """Nom de fichier sûr pour une clé S3 : basename, chars restreints, borné.
 
     Neutralise toute tentative de traversée de chemin (``/``, ``\\``) et borne
     la longueur ; la partie ``uuid/`` de la clé garantit déjà l'unicité.
     """
-    base = nom.replace("\\", "/").rsplit("/", 1)[-1].strip()
-    base = _NOM_AUTORISE.sub("_", base).strip("._")
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    base = _ALLOWED_NAME_CHARS.sub("_", base).strip("._")
     return (base or "fichier")[:200]
 
 
@@ -60,10 +60,10 @@ def _resource_read(resource: Resource) -> ResourceRead:
     return ResourceRead(
         id=resource.id,
         type=resource.type,
-        nom_original=resource.nom_original,
-        taille=resource.taille,
+        original_name=resource.original_name,
+        size=resource.size,
         mime=resource.mime,
-        statut=resource.statut,
+        status=resource.status,
         created_at=resource.created_at,
         updated_at=resource.updated_at,
     )
@@ -85,7 +85,7 @@ async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) 
         .one_or_none()
     )
     if course is None:
-        raise _introuvable("Cours introuvable")
+        raise _not_found("Cours introuvable")
     return course
 
 
@@ -105,7 +105,7 @@ async def _get_resource(
         .one_or_none()
     )
     if resource is None:
-        raise _introuvable("Ressource introuvable")
+        raise _not_found("Ressource introuvable")
     return resource
 
 
@@ -115,7 +115,7 @@ async def list_resources(
     """Bibliothèque du cours, de la plus récente à la plus ancienne.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) ressources
-    (tri stable ``created_at desc, id``). Les ``en_attente`` sont incluses
+    (tri stable ``created_at desc, id``). Les ``pending`` sont incluses
     (le front les affiche atténuées et permet de purger un upload raté).
     Lecture seule : pas de commit.
     """
@@ -141,7 +141,7 @@ async def presign_upload(
     payload: ResourceCreate,
     storage: Storage,
 ) -> ResourcePresign:
-    """Crée la ressource ``en_attente`` et renvoie l'URL présignée d'upload.
+    """Crée la ressource ``pending`` et renvoie l'URL présignée d'upload.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) insert ressource.
     L'URL présignée PUT est du calcul local (pas d'execute). Clé S3 plate
@@ -149,17 +149,17 @@ async def presign_upload(
     """
     course = await _get_owned_course(db, user, course_id)
     resource_id = uuid.uuid4()
-    s3_key = f"courses/{course_id}/resources/{resource_id}/{_sanitize_nom(payload.nom_original)}"
+    s3_key = f"courses/{course_id}/resources/{resource_id}/{_sanitize_name(payload.original_name)}"
     await db.execute(
         insert(Resource).values(
             id=resource_id,
             course_id=course.id,
             type=payload.type,
             s3_key=s3_key,
-            nom_original=payload.nom_original,
-            taille=payload.taille,
+            original_name=payload.original_name,
+            size=payload.size,
             mime=payload.mime,
-            statut=STATUT_EN_ATTENTE,
+            status=STATUS_PENDING,
         )
     )
     await db.commit()
@@ -168,7 +168,7 @@ async def presign_upload(
         resource_id=resource_id,
         s3_key=s3_key,
         upload_url=upload_url,
-        statut=STATUT_EN_ATTENTE,
+        status=STATUS_PENDING,
         expires_in=settings.S3_PRESIGN_PUT_TTL,
     )
 
@@ -180,12 +180,12 @@ async def confirm_upload(
     resource_id: uuid.UUID,
     storage: Storage,
 ) -> ResourceRead:
-    """Vérifie l'objet S3 et passe la ressource à ``disponible``.
+    """Vérifie l'objet S3 et passe la ressource à ``available``.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) ressource
     (scopée cours). Après 2), HEAD S3 : objet absent ou taille incohérente
     → 409 (upload non abouti), ressource déjà confirmée → 409. La ressource
-    passe à ``disponible`` et le cours est « touché » par mutation ORM (pas
+    passe à ``available`` et le cours est « touché » par mutation ORM (pas
     d'UPDATE explicite — flush au commit). Ne crée AUCUN bloc : la ressource
     rejoint la bibliothèque, les blocs ``document`` la pointeront via
     ``BlockUpdate.resource_id``.
@@ -200,19 +200,19 @@ async def confirm_upload(
     """
     course = await _get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
-    if resource.statut == STATUT_DISPONIBLE:
-        raise _conflit("Ressource déjà confirmée")
+    if resource.status == STATUS_AVAILABLE:
+        raise _conflict("Ressource déjà confirmée")
 
     metadata = await storage.head(resource.s3_key)
     if metadata is None:
-        raise _conflit("Objet introuvable sur S3 : upload non abouti")
-    taille_reelle = metadata.get("ContentLength")
-    if taille_reelle is not None and taille_reelle != resource.taille:
-        raise _conflit(
-            f"Taille incohérente (déclarée {resource.taille}, réelle {taille_reelle})"
+        raise _conflict("Objet introuvable sur S3 : upload non abouti")
+    actual_size = metadata.get("ContentLength")
+    if actual_size is not None and actual_size != resource.size:
+        raise _conflict(
+            f"Taille incohérente (déclarée {resource.size}, réelle {actual_size})"
         )
 
-    resource.statut = STATUT_DISPONIBLE
+    resource.status = STATUS_AVAILABLE
     course.updated_at = datetime.now(UTC)
     read = _resource_read(resource)
     await db.commit()
@@ -230,14 +230,14 @@ async def update_resource(
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) ressource
     (scopée cours). Le ``Content-Disposition`` des prochains téléchargements
-    suit le nouveau nom (``presign_get(s3_key, nom_original)``). Le
+    suit le nouveau nom (``presign_get(s3_key, original_name)``). Le
     ``ResourceRead`` est construit AVANT le commit (même piège
     ``MissingGreenlet`` que ``confirm_upload`` : le flush expire
     ``updated_at``, généré côté Postgres).
     """
     course = await _get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
-    resource.nom_original = payload.nom_original
+    resource.original_name = payload.original_name
     course.updated_at = datetime.now(UTC)
     read = _resource_read(resource)
     await db.commit()
@@ -289,10 +289,10 @@ async def presign_download(
     """
     course = await _get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
-    if resource.statut != STATUT_DISPONIBLE:
-        raise _conflit("Ressource non disponible (upload non confirmé)")
+    if resource.status != STATUS_AVAILABLE:
+        raise _conflict("Ressource non disponible (upload non confirmé)")
     download_url = storage.presign_get(
-        resource.s3_key, resource.nom_original, inline=inline
+        resource.s3_key, resource.original_name, inline=inline
     )
     return ResourceDownload(
         download_url=download_url, expires_in=settings.S3_PRESIGN_GET_TTL

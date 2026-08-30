@@ -12,7 +12,7 @@ L'import crée TOUJOURS un nouveau cours : uuid régénérés partout (cours,
 blocs, ressources, modules), références remappées — colonnes
 ``resource_id``/``module_id`` ET références ``oc-resource:``/``oc-module:``
 des chaînes markdown —, ``questions[].id`` conservés verbatim (stables à
-vie), ``visibilite`` par défaut (``en_cours``), classement remappé par les
+vie), ``visibility`` par défaut (``draft``), classement remappé par les
 ``code`` des matières/niveaux (codes inconnus ignorés). Les put S3 précèdent
 le commit : au pire des orphelins bucket, jamais une réf DB pointant un objet
 absent (miroir de ``delete_course``, qui purge S3 APRÈS commit pour la même
@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.storage import Storage
 from app.course_transfer.archive import (
-    ArchiveInvalide,
+    InvalidArchive,
     build_zip_sync,
     extract_entry_sync,
     parse_zip_sync,
@@ -47,26 +47,26 @@ from app.course_transfer.schemas import (
     ManifestResource,
 )
 from app.courses.schemas import CourseRead
-from app.models.block import TYPE_EXERCICE, Block
+from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
-    VISIBILITE_EN_COURS,
+    VISIBILITY_DRAFT,
     Course,
     course_education_levels,
     course_subjects,
 )
 from app.models.education_level import EducationLevel
 from app.models.module import Module
-from app.models.resource import STATUT_DISPONIBLE, Resource
+from app.models.resource import STATUS_AVAILABLE, Resource
 from app.models.subject import Subject
 from app.models.user import User
-from app.resources.service import _sanitize_nom
+from app.resources.service import _sanitize_name
 
 
-def _invalide(detail: str) -> HTTPException:
+def _invalid(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
-def _introuvable(detail: str) -> HTTPException:
+def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
@@ -82,7 +82,7 @@ async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) 
         .one_or_none()
     )
     if course is None:
-        raise _introuvable("Cours introuvable")
+        raise _not_found("Cours introuvable")
     return course
 
 
@@ -93,8 +93,8 @@ async def export_course(
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) codes matières,
     3) codes niveaux, 4) blocs (tri ``position, id``), 5) ressources
-    ``disponible`` uniquement (tri ``created_at desc, id`` — les
-    ``en_attente`` n'ont pas de binaire sûr : exclues, un bloc ``document``
+    ``available`` uniquement (tri ``created_at desc, id`` — les
+    ``pending`` n'ont pas de binaire sûr : exclues, un bloc ``document``
     qui en pointerait une sort détaché), 6) modules (tri ``created_at desc,
     id``). Lecture seule : pas de commit. L'assemblage du zip (lectures S3
     comprises) est déporté en UN ``run_in_threadpool``.
@@ -146,7 +146,7 @@ async def export_course(
                 select(Resource)
                 .where(
                     Resource.course_id == course.id,
-                    Resource.statut == STATUT_DISPONIBLE,
+                    Resource.status == STATUS_AVAILABLE,
                 )
                 .order_by(Resource.created_at.desc(), Resource.id)
             )
@@ -166,13 +166,13 @@ async def export_course(
         .all()
     )
 
-    disponibles = {r.id for r in resources}
+    available = {r.id for r in resources}
     manifest = CourseManifest(
         format=FORMAT,
         format_version=FORMAT_VERSION,
         exported_at=datetime.now(UTC),
         course=ManifestCourse(
-            titre=course.titre,
+            title=course.title,
             description=course.description,
             preview_settings=course.preview_settings,
             subject_codes=subject_codes,
@@ -182,14 +182,14 @@ async def export_course(
             ManifestBlock(
                 position=block.position,
                 type=block.type,
-                titre=block.titre,
+                title=block.title,
                 description=block.description,
                 content=block.content,
                 # Garde défensive : un bloc ne peut pointer qu'une ressource
-                # « disponible » (update_block), mais le manifest exige que
+                # « available » (update_block), mais le manifest exige que
                 # toute ref soit déclarée — on détache plutôt que d'échouer.
                 resource_ref=(
-                    block.resource_id if block.resource_id in disponibles else None
+                    block.resource_id if block.resource_id in available else None
                 ),
                 module_ref=block.module_id,
             )
@@ -199,8 +199,8 @@ async def export_course(
             ManifestResource(
                 id=resource.id,
                 type=resource.type,
-                nom_original=resource.nom_original,
-                taille=resource.taille,
+                original_name=resource.original_name,
+                size=resource.size,
                 mime=resource.mime,
             )
             for resource in resources
@@ -208,7 +208,7 @@ async def export_course(
         modules=[
             ManifestModule(
                 id=module.id,
-                titre=module.titre,
+                title=module.title,
                 html=module.html,
                 css=module.css,
                 js=module.js,
@@ -220,10 +220,10 @@ async def export_course(
     entries = [(str(resource.id), resource.s3_key) for resource in resources]
     tmp = await run_in_threadpool(build_zip_sync, manifest_bytes, entries, storage)
     date = datetime.now(UTC).strftime("%Y%m%d")
-    return f"cours-{_sanitize_nom(course.titre)}-{date}.zip", tmp
+    return f"course-{_sanitize_name(course.title)}-{date}.zip", tmp
 
 
-async def _nettoyer(storage: Storage, s3_keys: list[str]) -> None:
+async def _cleanup(storage: Storage, s3_keys: list[str]) -> None:
     """Purge best-effort des objets déjà poussés lors d'un import échoué."""
     try:
         await storage.delete_many(s3_keys)
@@ -238,15 +238,15 @@ async def import_course(
 
     Phase 0 (sans DB) : taille du corps ≤ ``TRANSFER_MAX_ZIP_BYTES`` sinon
     413 ; ouverture + validation du manifest (``parse_zip_sync``, déporté en
-    thread) sinon 422.
+    thread — les archives v1 y sont traduites en v2) sinon 422.
 
     Ordre des execute : 1) lookup matières par ``code``, 2) lookup niveaux
     (toujours exécutés, même sur listes vides — FIFO constant, motif
     ``create_course`` ; codes inconnus ignorés), 3) insert cours (RETURNING
-    des timestamps ; ``visibilite`` par défaut ``en_cours``), puis si non
+    des timestamps ; ``visibility`` par défaut ``draft``), puis si non
     vides : 4) insert course_subjects, 5) insert course_education_levels,
     6) insert modules (executemany), 7) insert resources (executemany,
-    ``statut='disponible'`` — le commit n'a lieu qu'après les put S3),
+    ``status='available'`` — le commit n'a lieu qu'après les put S3),
     8) insert blocks (executemany, positions réécrites 0..n-1, contenus
     passés par ``rewrite_block_content``, colonnes remappées).
 
@@ -265,8 +265,8 @@ async def import_course(
         )
     try:
         zf, manifest = await run_in_threadpool(parse_zip_sync, upload.file)
-    except ArchiveInvalide as exc:
-        raise _invalide(str(exc)) from exc
+    except InvalidArchive as exc:
+        raise _invalid(str(exc)) from exc
 
     try:
         subject_ids = list(
@@ -299,7 +299,7 @@ async def import_course(
                 .values(
                     id=course_id,
                     owner_id=user.id,
-                    titre=manifest.course.titre,
+                    title=manifest.course.title,
                     description=manifest.course.description,
                     preview_settings=dict(manifest.course.preview_settings),
                 )
@@ -328,7 +328,7 @@ async def import_course(
                     {
                         "id": module_map[str(m.id)],
                         "course_id": course_id,
-                        "titre": m.titre,
+                        "title": m.title,
                         "html": m.html,
                         "css": m.css,
                         "js": m.js,
@@ -346,7 +346,7 @@ async def import_course(
                 new_id = resource_map[str(r.id)]
                 s3_key = (
                     f"courses/{course_id}/resources/{new_id}/"
-                    f"{_sanitize_nom(r.nom_original)}"
+                    f"{_sanitize_name(r.original_name)}"
                 )
                 rows.append(
                     {
@@ -354,10 +354,10 @@ async def import_course(
                         "course_id": course_id,
                         "type": r.type,
                         "s3_key": s3_key,
-                        "nom_original": r.nom_original,
-                        "taille": r.taille,
+                        "original_name": r.original_name,
+                        "size": r.size,
                         "mime": r.mime,
-                        "statut": STATUT_DISPONIBLE,
+                        "status": STATUS_AVAILABLE,
                     }
                 )
                 uploads.append((f"resources/{r.id}", s3_key, r))
@@ -371,7 +371,7 @@ async def import_course(
                 content = rewrite_block_content(
                     block.type, block.content, resource_refs, module_refs
                 )
-                if block.type == TYPE_EXERCICE:
+                if block.type == TYPE_EXERCISE:
                     # Ids présents conservés verbatim (stables à vie) ; une
                     # question sans id (manifest écrit à la main) en reçoit
                     # un frais — jamais de question sans id en base.
@@ -388,7 +388,7 @@ async def import_course(
                         "course_id": course_id,
                         "position": position,
                         "type": block.type,
-                        "titre": block.titre,
+                        "title": block.title,
                         "description": block.description,
                         "content": content,
                         "resource_id": (
@@ -405,33 +405,33 @@ async def import_course(
 
         read = CourseRead(
             id=course_id,
-            titre=manifest.course.titre,
+            title=manifest.course.title,
             description=manifest.course.description,
             subject_ids=subject_ids,
             education_level_ids=education_level_ids,
             block_count=len(manifest.blocks),
             preview_settings=manifest.course.preview_settings,
-            visibilite=VISIBILITE_EN_COURS,
+            visibility=VISIBILITY_DRAFT,
             created_at=created_at,
             updated_at=updated_at,
         )
 
-        poussees: list[str] = []
+        pushed: list[str] = []
         try:
             for entry_name, s3_key, meta in uploads:
-                tmp = await run_in_threadpool(extract_entry_sync, zf, entry_name, meta.taille)
+                tmp = await run_in_threadpool(extract_entry_sync, zf, entry_name, meta.size)
                 try:
                     await storage.put_object(s3_key, tmp, meta.mime)
                 finally:
                     tmp.close()
-                poussees.append(s3_key)
-        except ArchiveInvalide as exc:
+                pushed.append(s3_key)
+        except InvalidArchive as exc:
             await db.rollback()
-            await _nettoyer(storage, poussees)
-            raise _invalide(str(exc)) from exc
+            await _cleanup(storage, pushed)
+            raise _invalid(str(exc)) from exc
         except Exception as exc:
             await db.rollback()
-            await _nettoyer(storage, poussees)
+            await _cleanup(storage, pushed)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Stockage S3 indisponible",

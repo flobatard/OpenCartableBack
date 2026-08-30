@@ -8,16 +8,16 @@ et viser plusieurs classes. Son contenu vit dans la table ``blocks``
 (cf. :mod:`app.models.block`), ses fichiers S3 dans ``resources``
 (cf. :mod:`app.models.resource`).
 
-La ``visibilite`` (jalon J2) pilote le régime d'accès élève (routes publiques
+La ``visibility`` (jalon J2) pilote le régime d'accès élève (routes publiques
 ``app/public/``, sans JWT) : ``public`` = accessible par URL directe et listé
-dans le catalogue public du prof ; ``prive`` = accessible uniquement via un
-lien de partage valide (cf. :mod:`app.models.share_link`) ; ``en_cours``
+dans le catalogue public du prof ; ``private`` = accessible uniquement via un
+lien de partage valide (cf. :mod:`app.models.share_link`) ; ``draft``
 (défaut) = inaccessible publiquement, y compris via un lien existant (les
 liens sont suspendus, pas supprimés). Côté prof, la visibilité ne change
 jamais rien : ses routes restent scopées ``owner_id``.
 
 ``search_vector`` (jalon J3) : tsvector de la recherche plein texte,
-titre (poids A) + description (poids B), config ``french_unaccent``.
+title (poids A) + description (poids B), config ``french_unaccent``.
 Maintenu exclusivement par trigger PostgreSQL (``trg_courses_search_vector``,
 fonction ``courses_tsvector`` partagée avec le backfill de la migration) —
 jamais écrit par l'ORM. Le contenu des blocs a son propre vecteur
@@ -44,18 +44,18 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-VISIBILITE_PUBLIC = "public"
-VISIBILITE_PRIVE = "prive"
-VISIBILITE_EN_COURS = "en_cours"
-VISIBILITES = (VISIBILITE_PUBLIC, VISIBILITE_PRIVE, VISIBILITE_EN_COURS)
+VISIBILITY_PUBLIC = "public"
+VISIBILITY_PRIVATE = "private"
+VISIBILITY_DRAFT = "draft"
+VISIBILITIES = (VISIBILITY_PUBLIC, VISIBILITY_PRIVATE, VISIBILITY_DRAFT)
 
 
 class Course(Base):
     __tablename__ = "courses"
     __table_args__ = (
         CheckConstraint(
-            "visibilite IN ('public', 'prive', 'en_cours')",
-            name="ck_courses_visibilite",
+            "visibility IN ('public', 'private', 'draft')",
+            name="ck_courses_visibility",
         ),
         # Index GIN de la FTS (J3). Créé par la migration J3 ; déclaré ici
         # pour que la metadata reflète la base — sans cette ligne, chaque
@@ -70,7 +70,7 @@ class Course(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    titre: Mapped[str] = mapped_column(String(300))
+    title: Mapped[str] = mapped_column(String(300))
     # Markdown court, présentation du cours.
     description: Mapped[str | None] = mapped_column(String(2000))
     created_at: Mapped[datetime] = mapped_column(
@@ -87,11 +87,11 @@ class Course(Base):
     preview_settings: Mapped[dict] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
-    # Régime d'accès élève (voir docstring du module). server_default 'en_cours' :
+    # Régime d'accès élève (voir docstring du module). server_default 'draft' :
     # aucun cours existant ne devient public à la migration — publier est un
     # opt-in explicite du prof (PUT .../visibility).
-    visibilite: Mapped[str] = mapped_column(
-        String(10), default=VISIBILITE_EN_COURS, server_default=text("'en_cours'")
+    visibility: Mapped[str] = mapped_column(
+        String(10), default=VISIBILITY_DRAFT, server_default=text("'draft'")
     )
     # FTS (J3) : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
     # (voir docstring du module). deferred : aucun service ne le lit, inutile

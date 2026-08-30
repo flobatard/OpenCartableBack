@@ -3,9 +3,9 @@
 Le binaire vit sur S3 (bucket privé, URL présignées) ; la base ne porte que
 les métadonnées et toute la hiérarchie logique — les clés S3 restent plates
 (``uuid/nom-original``, Descriptions.md §5.2). La ligne est créée **avant**
-l'upload direct navigateur → S3 (presigned PUT) avec ``statut='en_attente'`` ;
+l'upload direct navigateur → S3 (presigned PUT) avec ``status='pending'`` ;
 l'endpoint de confirmation vérifie l'objet (HEAD S3) et passe le
-statut à ``'disponible'`` — c'est le mécanisme de cohérence DB↔S3.
+statut à ``'available'`` — c'est le mécanisme de cohérence DB↔S3.
 
 Les ressources forment la **bibliothèque du cours**, indépendante des blocs :
 un bloc ``document`` peut pointer une ressource (``blocks.resource_id``,
@@ -35,8 +35,8 @@ TYPE_IMAGE = "image"
 TYPE_AUDIO = "audio"
 TYPE_VIDEO = "video"
 
-STATUT_EN_ATTENTE = "en_attente"
-STATUT_DISPONIBLE = "disponible"
+STATUS_PENDING = "pending"
+STATUS_AVAILABLE = "available"
 
 
 class Resource(Base):
@@ -49,10 +49,10 @@ class Resource(Base):
             name="ck_resources_type",
         ),
         CheckConstraint(
-            f"statut IN ('{STATUT_EN_ATTENTE}', '{STATUT_DISPONIBLE}')",
-            name="ck_resources_statut",
+            f"status IN ('{STATUS_PENDING}', '{STATUS_AVAILABLE}')",
+            name="ck_resources_status",
         ),
-        CheckConstraint("taille >= 0", name="ck_resources_taille_positive"),
+        CheckConstraint("size >= 0", name="ck_resources_size_positive"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -64,12 +64,12 @@ class Resource(Base):
     type: Mapped[str] = mapped_column(String(20))
     # Clé plate « uuid/nom-original » ; 1024 = longueur max d'une clé S3.
     s3_key: Mapped[str] = mapped_column(String(1024))
-    nom_original: Mapped[str] = mapped_column(String(255))
+    original_name: Mapped[str] = mapped_column(String(255))
     # Octets, déclarée au presign, vérifiée à la confirmation d'upload.
-    taille: Mapped[int] = mapped_column(BigInteger)
+    size: Mapped[int] = mapped_column(BigInteger)
     mime: Mapped[str] = mapped_column(String(255))
-    statut: Mapped[str] = mapped_column(
-        String(15), default=STATUT_EN_ATTENTE, server_default=STATUT_EN_ATTENTE
+    status: Mapped[str] = mapped_column(
+        String(15), default=STATUS_PENDING, server_default=STATUS_PENDING
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

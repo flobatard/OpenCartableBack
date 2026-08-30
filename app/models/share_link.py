@@ -12,7 +12,7 @@ Un cours peut porter plusieurs liens (un par classe, par exemple), chacun
 révocable individuellement (``revoked``, soft delete — le lien reste listé
 côté prof) et expirant à ``expires_at`` (``SHARE_LINK_TTL_DAYS``, 9 mois par
 défaut). Un lien valide n'ouvre le cours que si sa visibilité l'autorise :
-``courses.visibilite = 'en_cours'`` suspend tous les liens du cours sans les
+``courses.visibility = 'draft'`` suspend tous les liens du cours sans les
 supprimer (vérification à chaque accès, cf. ``app/public/service.py``).
 """
 
@@ -38,7 +38,7 @@ class ShareLink(Base):
     # token_urlsafe(32) = 43 caractères ; l'index unique sert aussi de lookup.
     token: Mapped[str] = mapped_column(String(64), unique=True)
     # Aide-mémoire du prof pour distinguer ses liens (« 6eB 2026 »).
-    libelle: Mapped[str | None] = mapped_column(String(200))
+    label: Mapped[str | None] = mapped_column(String(200))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(

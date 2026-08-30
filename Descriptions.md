@@ -109,28 +109,28 @@ Le point structurant : **deux populations, deux modèles d'accès** sur la même
 - **Prof** : flow OIDC *Authorization Code + PKCE* entièrement géré **côté front** (client public Angular, pas de secret). Le back ne reçoit que le token : il ne fait **pas** de session, il valide le JWT Zitadel à chaque requête (signature via JWKS découvert depuis l'issuer, vérif `issuer` / `audience` / expiration) et lit les rôles dans les claims. Seuls deux réglages côté API : `OIDC_ISSUER` et `OIDC_AUDIENCE`.
 - **Élève** : **non authentifié** pour la consultation. L'accès aux cours partagés est porté par un *token de partage* opaque (cf. 5.6), pas par une identité. Un élève *peut* toutefois créer un compte OIDC pour disposer d'un profil — cela ne change rien au régime d'accès aux liens publics.
 - Conséquence : des routes « admin » (JWT requis) et des routes « publiques » (token de partage requis) bien séparées, avec deux dépendances d'autorisation distinctes côté FastAPI.
-- **Comptes & profil** : l'API ne stocke toujours aucun credential — la table `users` ne porte que le `sub` OIDC (auto-provisioning au premier `GET /api/v1/users/me` d'un JWT valide, `ON CONFLICT DO NOTHING`), l'e-mail en snapshot et le profil d'onboarding (rôles cumulables `est_prof`/`est_eleve`, système scolaire, niveaux et matières par contexte). Les rôles applicatifs vivent **en base**, indépendants des rôles Zitadel des claims (`urn:zitadel:iam:...`) : changer d'IdP ne touche ni le modèle ni l'onboarding.
+- **Comptes & profil** : l'API ne stocke toujours aucun credential — la table `users` ne porte que le `sub` OIDC (auto-provisioning au premier `GET /api/v1/users/me` d'un JWT valide, `ON CONFLICT DO NOTHING`), l'e-mail en snapshot et le profil d'onboarding (rôles cumulables `is_teacher`/`is_student`, système scolaire, niveaux et matières par contexte). Les rôles applicatifs vivent **en base**, indépendants des rôles Zitadel des claims (`urn:zitadel:iam:...`) : changer d'IdP ne touche ni le modèle ni l'onboarding.
 
 ### 5.2 Stockage & gestion des fichiers (S3)
 - **Bucket privé**, jamais exposé directement. L'API mint des **URL présignées** : `PUT` pour l'upload, `GET` (TTL court) pour la lecture/téléchargement.
 - **Upload direct navigateur → S3** via presigned PUT, pour ne **pas** faire transiter les gros fichiers par le backend (essentiel vu l'hébergement sur Pi : on préserve RAM et bande passante du serveur). **Exception actée** : l'export/import de cours (`app/course_transfer/`) assemble et parse l'archive `.zip` côté API — binaires compris —, volumes bornés (`TRANSFER_MAX_ZIP_BYTES` 500 Mo par archive, `S3_MAX_UPLOAD_BYTES` 100 Mo par fichier) ; le plafond dur du corps HTTP relève du nginx d'infra, hors repo (Starlette spoole le multipart sur disque avant le handler).
 - **Organisation** : clé préfixée par cours (`courses/<course_id>/resources/<resource_id>/<nom-sanitizé>`) — purge par préfixe simple à la suppression d'un cours — la hiérarchie logique (matière → cours → ressource) restant portée par la **base**, pas par les préfixes S3.
-- **Cohérence DB↔S3** : la ligne `resource` est créée *avant* l'upload avec `statut='en_attente'` ; un endpoint de confirmation vérifie l'objet (HEAD S3) et passe le statut à `'disponible'`. Seules les ressources disponibles sont servies.
+- **Cohérence DB↔S3** : la ligne `resource` est créée *avant* l'upload avec `status='pending'` ; un endpoint de confirmation vérifie l'objet (HEAD S3) et passe le statut à `'available'`. Seules les ressources disponibles sont servies.
 - **Types & previews** : PDF et images au MVP. Génération de miniatures/aperçus à différer (coûteux en CPU sur ARM — à faire en tâche asynchrone, voire à la demande).
 
 ### 5.3 Modélisation du contenu : blocs (progression) et ressources (bibliothèque), découplés
 Pour « agencer texte de cours + documents + images », le modèle gagnant est un **contenu par blocs ordonnés** (façon éditeur type Notion, en plus simple), avec une séparation stricte : les **blocs** portent la progression pédagogique, les **ressources** (fichiers S3) forment une **bibliothèque par cours**, indépendante des blocs.
-- Un cours = une liste ordonnée de blocs de quatre types : `texte`, `exercice`, `document`, `module`.
-- Le **texte de cours** (bloc `texte`) est du **markdown simple stocké dans le JSONB du bloc** (`{"markdown": ...}`) — pas de HTML brut : plus sûr, réindexable, directement exploitable par l'IA. Titres, paragraphes, encadrés **et liens externes** sont couverts par le markdown, sans types de blocs dédiés (l'ancien type `lien` a été supprimé).
-- Les **exercices** (bloc `exercice`) portent des questions à champ libre dans le JSONB, chacune avec un **id uuid stable** généré côté service : les soumissions élèves (J2) et la review IA référenceront `(block_id, question_id)`.
-- Les blocs `document` sont un **pont nullable** vers une ressource de la bibliothèque du cours : la référence vit en **colonne** `resource_id` (jamais dans le JSONB, qui ne porte que l'éditorial `{"legende", "affichage"}`). Un bloc document naît vide et se remplit dans l'éditeur ; supprimer la ressource **supprime** les blocs qui la pointent (FK `CASCADE` — un document sans son fichier n'a pas de sens). Une ressource peut exister sans aucun bloc, et être pointée par plusieurs blocs.
+- Un cours = une liste ordonnée de blocs de quatre types : `text`, `exercise`, `document`, `module`.
+- Le **texte de cours** (bloc `text`) est du **markdown simple stocké dans le JSONB du bloc** (`{"markdown": ...}`) — pas de HTML brut : plus sûr, réindexable, directement exploitable par l'IA. Titres, paragraphes, encadrés **et liens externes** sont couverts par le markdown, sans types de blocs dédiés (l'ancien type `lien` a été supprimé).
+- Les **exercices** (bloc `exercise`) portent des questions à champ libre dans le JSONB, chacune avec un **id uuid stable** généré côté service : les soumissions élèves (J2) et la review IA référenceront `(block_id, question_id)`.
+- Les blocs `document` sont un **pont nullable** vers une ressource de la bibliothèque du cours : la référence vit en **colonne** `resource_id` (jamais dans le JSONB, qui ne porte que l'éditorial `{"caption", "display"}`). Un bloc document naît vide et se remplit dans l'éditeur ; supprimer la ressource **supprime** les blocs qui la pointent (FK `CASCADE` — un document sans son fichier n'a pas de sens). Une ressource peut exister sans aucun bloc, et être pointée par plusieurs blocs.
 - Les blocs `module` (modules interactifs HTML/CSS/JS, cf. §5.5) suivent le même motif que les blocs `document` : un **pont nullable** vers un module de la **bibliothèque de modules du cours** (table `modules`), référencé par la **colonne** `module_id` (jamais dans le JSONB, réservé pour de futurs réglages d'affichage), FK `CASCADE` (supprimer le module supprime ses blocs pointeurs), CHECK de cohérence symétrique à celui des documents.
 - Enjeu UX côté Angular : page de cours à onglets (Blocs / Ressources / Modules / Aperçu), éditeur d'ordre des blocs (drag & drop), picker de ressources dans l'éditeur du bloc document, picker de module dans l'éditeur du bloc module.
 
 ### 5.4 Recherche (J3 — livré)
 - **FTS Postgres** en config **`french_unaccent`** : extension contrib `unaccent` + copie de la config `french` (stemming français ET insensibilité aux accents, à l'indexation comme à la requête — « theoreme » trouve « Théorème »). Exception **actée** à la règle « pas d'extension Postgres » (arbitrage explicite du J3). Requêtes via `websearch_to_tsquery` (syntaxe libre type moteur de recherche, injection-safe par construction).
-- **Deux vecteurs stockés, combinés à la requête** (jamais consolidés — consolider imposerait de ré-agréger tout le cours à chaque autosave de bloc) : `courses.search_vector` (titre poids A, description B) et `blocks.search_vector` (titre B ; description, markdown, énoncés d'exercice et légendes C — construit **champ par champ, jamais le `content` entier** : `reponse_attendue`, le corrigé du prof, ne doit pas devenir cherchable depuis le régime public). Maintenus par **triggers PostgreSQL** `BEFORE INSERT OR UPDATE OF …` (fonctions SQL `courses_tsvector`/`blocks_tsvector` partagées entre triggers et backfill de migration — une seule définition de « quoi indexer »), index **GIN** sur chaque vecteur.
-- **Régime public sans JWT** (package `app/search/`, routes `GET /api/v1/public/search/courses` et `/teachers`) — règle d'or : seuls les cours `visibilite='public'` remontent ; un prof ne remonte que si `cherchable` (**opt-in explicite** du profil, `users.cherchable`) AND `nom_public` non NULL AND au moins un cours public — son vecteur est calculé **à la volée** (nom public + matières « enseigne », table minuscule). Pas d'oracle : une facette inconnue renvoie une page vide, jamais une erreur (une URL partagée avec un id périmé reste servable).
+- **Deux vecteurs stockés, combinés à la requête** (jamais consolidés — consolider imposerait de ré-agréger tout le cours à chaque autosave de bloc) : `courses.search_vector` (titre poids A, description B) et `blocks.search_vector` (titre B ; description, markdown, énoncés d'exercice et légendes C — construit **champ par champ, jamais le `content` entier** : `expected_answer`, le corrigé du prof, ne doit pas devenir cherchable depuis le régime public). Maintenus par **triggers PostgreSQL** `BEFORE INSERT OR UPDATE OF …` (fonctions SQL `courses_tsvector`/`blocks_tsvector` partagées entre triggers et backfill de migration — une seule définition de « quoi indexer »), index **GIN** sur chaque vecteur.
+- **Régime public sans JWT** (package `app/search/`, routes `GET /api/v1/public/search/courses` et `/teachers`) — règle d'or : seuls les cours `visibility='public'` remontent ; un prof ne remonte que si `searchable` (**opt-in explicite** du profil, `users.searchable`) AND `public_name` non NULL AND au moins un cours public — son vecteur est calculé **à la volée** (nom public + matières « teaching », table minuscule). Pas d'oracle : une facette inconnue renvoie une page vide, jamais une erreur (une URL partagée avec un id périmé reste servable).
 - **Facettes** : matière = sous-arbre entier via le `code` (chemin slug complet unique, préfixe `LIKE` — pas de CTE récursive) ; niveau = nœud + enfants directs (2 profondeurs max). Les arbres de taxonomie sont aussi exposés en **lecture publique** (`GET /api/v1/public/subjects/tree` et `/public/education-levels/tree`, délégation pure) pour alimenter les sélecteurs de la page de recherche anonyme. La recherche **sans texte libre est autorisée** (catalogue public trié `updated_at desc`).
 - **Pagination** : première enveloppe paginée de l'API — `{items, total, limit, offset}` (`limit` 1–50, défaut 20 ; `offset` borné) — précédent pour les futures listes.
 - Évolution : recherche **sémantique** via ChromaDB si la vectorisation est actée (cf. 5.7), combinable avec la FTS (recherche hybride).
@@ -182,40 +182,40 @@ erDiagram
       uuid id
       string sub
       string email
-      string nom_public
-      bool cherchable
-      bool est_prof
-      bool est_eleve
-      string systeme_scolaire
+      string public_name
+      bool searchable
+      bool is_teacher
+      bool is_student
+      string school_system
       timestamptz onboarded_at
       timestamptz updated_at
     }
     SUBJECT {
       uuid id
       uuid parent_id
-      string nom
+      string name
       string code
-      int profondeur
+      int depth
       int position
       timestamptz updated_at
     }
     EDUCATION_LEVEL {
       uuid id
       uuid parent_id
-      string nom
+      string name
       string code
-      string systeme
+      string system
       int cite
       int age_min
       int age_max
-      int profondeur
+      int depth
       int position
       timestamptz updated_at
     }
     COURSE {
       uuid id
       uuid owner_id
-      string titre
+      string title
       string description
       tsvector search_vector
       timestamptz updated_at
@@ -235,10 +235,10 @@ erDiagram
       uuid course_id
       string type
       string s3_key
-      string nom_original
-      bigint taille
+      string original_name
+      bigint size
       string mime
-      string statut
+      string status
       timestamptz updated_at
     }
     SHARE_LINK {
@@ -251,11 +251,11 @@ erDiagram
 
 `SUBJECT` est auto-référencée : discipline (profondeur 0) → domaine (1) → sous-domaine (2) → sujet (3), profondeur flexible (une branche peut s'arrêter avant le niveau 3). La taxonomie est pré-remplie par une migration de seed (IDs uuid5 déterministes dérivés du `code`, chemin slug complet — source de vérité : `app/subjects/seed_data.py`, contrat append-only).
 
-`EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`systeme`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association `course_education_levels`, remplace l'ancien champ texte `niveau`) est implémenté.
+`EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`system`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association `course_education_levels`, remplace l'ancien champ texte `niveau`) est implémenté.
 
-`USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `contexte` (« enseigne » / « apprend ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `systeme_scolaire` du profil (validation en service ; soumission `PUT /api/v1/users/me/onboarding`, sémantique remplacement → sert aussi d'édition de profil).
+`USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `context` (« teaching » / « learning ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `school_system` du profil (validation en service ; soumission `PUT /api/v1/users/me/onboarding`, sémantique remplacement → sert aussi d'édition de profil).
 
-`COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`texte`/`exercice`/`document`/`module`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `document` peuvent porter une FK `resource_id` — **nullable** (bloc créé vide) et `ON DELETE CASCADE` (supprimer la ressource supprime les blocs qui la pointent) — CHECK de cohérence en base. `RESOURCE` est la **bibliothèque du cours**, indépendante des blocs : `s3_key` plate unique, ligne créée en `statut='en_attente'` avant l'upload presigned puis confirmée `'disponible'` (cf. §5.2), CRUD complet (liste, renommage, suppression avec purge S3). `MODULE` est la **bibliothèque de modules interactifs du cours** (J4, livré) : `titre` + code `html`/`css`/`js` en colonnes texte (pas de S3, cf. §5.5), CRUD complet ; seuls les blocs `module` peuvent porter une FK `module_id` — **nullable** et `ON DELETE CASCADE`, CHECK de cohérence symétrique à celui des documents. `SHARE_LINK` (J2) est en place (token opaque, expiration obligatoire, révocation soft — cf. §5.6), tout comme les **`search_vector` FTS** de `COURSE` et `BLOCK` (J3) — maintenus par triggers, jamais écrits par l'ORM (cf. §5.4) — et l'opt-in `USER.cherchable` de la recherche publique de professeurs.
+`COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`text`/`exercise`/`document`/`module`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `document` peuvent porter une FK `resource_id` — **nullable** (bloc créé vide) et `ON DELETE CASCADE` (supprimer la ressource supprime les blocs qui la pointent) — CHECK de cohérence en base. `RESOURCE` est la **bibliothèque du cours**, indépendante des blocs : `s3_key` plate unique, ligne créée en `status='pending'` avant l'upload presigned puis confirmée `'available'` (cf. §5.2), CRUD complet (liste, renommage, suppression avec purge S3). `MODULE` est la **bibliothèque de modules interactifs du cours** (J4, livré) : `title` + code `html`/`css`/`js` en colonnes texte (pas de S3, cf. §5.5), CRUD complet ; seuls les blocs `module` peuvent porter une FK `module_id` — **nullable** et `ON DELETE CASCADE`, CHECK de cohérence symétrique à celui des documents. `SHARE_LINK` (J2) est en place (token opaque, expiration obligatoire, révocation soft — cf. §5.6), tout comme les **`search_vector` FTS** de `COURSE` et `BLOCK` (J3) — maintenus par triggers, jamais écrits par l'ORM (cf. §5.4) — et l'opt-in `USER.searchable` de la recherche publique de professeurs.
 
 ---
 

@@ -2,7 +2,7 @@
 
 Motif ``_FakeStorage`` : un ``_FakeAIClient`` duck-typé est injecté via
 ``app.dependency_overrides[get_ai_client]`` (+ ``get_current_user`` et
-``get_db`` — la cascade ``config_effective`` lit le credential utilisateur
+``get_db`` — la cascade ``effective_config`` lit le credential utilisateur
 quand la requête ne porte pas de config). Le SSE est lu via
 ``client.stream(...)`` du TestClient.
 """
@@ -30,8 +30,8 @@ CHAT_PAYLOAD = {
     "messages": [{"role": "user", "content": "Bonjour"}],
     "config": {"provider": "ollama", "model": "llama3.2"},
 }
-SANS_CONFIG_PAYLOAD = {"messages": [{"role": "user", "content": "Salut"}]}
-CLE_MAITRE = os.urandom(32)
+NO_CONFIG_PAYLOAD = {"messages": [{"role": "user", "content": "Salut"}]}
+MASTER_KEY = os.urandom(32)
 
 
 def _user_row(**overrides):
@@ -42,9 +42,9 @@ def _user_row(**overrides):
         ai_provider=None,
         ai_model=None,
         ai_base_url=None,
-        ai_api_key_chiffree=None,
-        ai_chiffrement_sel=None,
-        ai_quota_appels=None,
+        ai_api_key_encrypted=None,
+        ai_encryption_salt=None,
+        ai_daily_call_quota=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -168,7 +168,7 @@ def _parse_sse(body: str) -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize("path", ["/api/v1/ai/chat", "/api/v1/ai/chat/stream"])
-def test_routes_requierent_un_token(client: TestClient, path: str) -> None:
+def test_routes_require_token(client: TestClient, path: str) -> None:
     response = client.post(path, json=CHAT_PAYLOAD)
     assert response.status_code == 401
 
@@ -191,9 +191,9 @@ def test_chat_nominal() -> None:
     assert fake.calls[0]["config"].provider.value == "ollama"
 
 
-def test_chat_sans_config_ni_credential_utilise_le_fallback() -> None:
+def test_chat_without_config_or_credential_uses_fallback() -> None:
     client, fake = _client()
-    response = client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD)
+    response = client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD)
     assert response.status_code == 200
     assert fake.calls[0]["config"] is None  # la résolution du fallback vit dans AIClient
 
@@ -201,7 +201,7 @@ def test_chat_sans_config_ni_credential_utilise_le_fallback() -> None:
 # ------------------------------------------------- cascade credential utilisateur
 
 
-def test_config_explicite_ne_lit_pas_le_credential() -> None:
+def test_explicit_config_does_not_read_credential() -> None:
     session = _FakeSession()  # file vide : tout execute ferait sauter le test
     client, fake = _client(session=session)
     assert client.post("/api/v1/ai/chat", json=CHAT_PAYLOAD).status_code == 200
@@ -209,65 +209,65 @@ def test_config_explicite_ne_lit_pas_le_credential() -> None:
     assert fake.calls[0]["config"].provider.value == "ollama"
 
 
-def test_chat_sans_config_utilise_le_credential_dechiffre(monkeypatch) -> None:
+def test_chat_without_config_uses_decrypted_credential(monkeypatch) -> None:
     monkeypatch.setattr(
-        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(CLE_MAITRE).decode()
+        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(MASTER_KEY).decode()
     )
-    sel = crypto.nouveau_sel()
+    salt = crypto.new_salt()
     user = _user_row(
         ai_provider="anthropic",
         ai_model="claude-sonnet-5",
-        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
-        ai_chiffrement_sel=sel,
+        ai_api_key_encrypted=crypto.encrypt_secret("sk-user", MASTER_KEY, salt),
+        ai_encryption_salt=salt,
     )
     client, fake = _client(session=_FakeSession([[user]]))
-    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 200
     config = fake.calls[0]["config"]
     assert config.provider.value == "anthropic"
     assert config.model == "claude-sonnet-5"
     assert config.api_key.get_secret_value() == "sk-user"
 
 
-def test_chat_credential_illisible_422(monkeypatch) -> None:
+def test_chat_unreadable_credential_422(monkeypatch) -> None:
     """Clé maître changée depuis l'enregistrement → 422 explicite, pas de fallback."""
     monkeypatch.setattr(
         settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode()
     )
-    sel = crypto.nouveau_sel()
+    salt = crypto.new_salt()
     user = _user_row(
         ai_provider="anthropic",
         ai_model="claude-sonnet-5",
-        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
-        ai_chiffrement_sel=sel,
+        ai_api_key_encrypted=crypto.encrypt_secret("sk-user", MASTER_KEY, salt),
+        ai_encryption_salt=salt,
     )
     client, fake = _client(session=_FakeSession([[user]]))
-    response = client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD)
+    response = client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD)
     assert response.status_code == 422
     assert "ré-enregistrez" in response.json()["detail"]
     assert fake.calls == []
 
 
-def test_stream_sans_config_credential_illisible_422_eager(monkeypatch) -> None:
+def test_stream_without_config_unreadable_credential_422_eager(monkeypatch) -> None:
     """La cascade se résout AVANT le flux : vrai status HTTP, pas un event SSE."""
     monkeypatch.setattr(
         settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode()
     )
-    sel = crypto.nouveau_sel()
+    salt = crypto.new_salt()
     user = _user_row(
         ai_provider="anthropic",
         ai_model="claude-sonnet-5",
-        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
-        ai_chiffrement_sel=sel,
+        ai_api_key_encrypted=crypto.encrypt_secret("sk-user", MASTER_KEY, salt),
+        ai_encryption_salt=salt,
     )
     client, _ = _client(session=_FakeSession([[user]]))
-    response = client.post("/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD)
+    response = client.post("/api/v1/ai/chat/stream", json=NO_CONFIG_PAYLOAD)
     assert response.status_code == 422
 
 
 # -------------------------------------- quota quotidien de l'IA par défaut
 
 
-def _upserts_quota(session: _FakeSession) -> list:
+def _quota_upserts(session: _FakeSession) -> list:
     """Les upserts du compteur quotidien (INSERT … ON CONFLICT sur ai_daily_usage)."""
     return [
         stmt
@@ -276,7 +276,7 @@ def _upserts_quota(session: _FakeSession) -> list:
     ]
 
 
-def _remboursements(session: _FakeSession) -> list:
+def _refunds(session: _FakeSession) -> list:
     """Les updates de remboursement du quota (UPDATE ai_daily_usage)."""
     return [
         stmt
@@ -285,87 +285,87 @@ def _remboursements(session: _FakeSession) -> list:
     ]
 
 
-def _fallback_serveur(monkeypatch) -> None:
+def _server_fallback(monkeypatch) -> None:
     monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
     monkeypatch.setattr(settings, "AI_MODEL", "llama3.2")
 
 
-def test_chat_fallback_consomme_le_quota_par_defaut(monkeypatch) -> None:
+def test_chat_fallback_consumes_default_quota(monkeypatch) -> None:
     """Repli sur l'IA serveur → un upsert atomique, gardé par le quota config."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession([[_user_row()]])
     client, fake = _client(session=session)
-    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 200
     assert fake.calls[0]["config"] is None
-    [stmt] = _upserts_quota(session)
+    [stmt] = _quota_upserts(session)
     compiled = stmt.compile(dialect=postgresql.dialect())
-    assert "ON CONFLICT (user_id, jour) DO UPDATE" in str(compiled)
+    assert "ON CONFLICT (user_id, day) DO UPDATE" in str(compiled)
     # Plafond DANS le WHERE du DO UPDATE (atomique).
-    assert "ai_daily_usage.appels < " in str(compiled)
+    assert "ai_daily_usage.calls < " in str(compiled)
     assert settings.AI_DEFAULT_DAILY_QUOTA in compiled.params.values()
-    assert _remboursements(session) == []  # succès : la réservation reste consommée
+    assert _refunds(session) == []  # succès : la réservation reste consommée
 
 
-def test_quota_utilisateur_prime_sur_le_defaut(monkeypatch) -> None:
-    _fallback_serveur(monkeypatch)
-    session = _FakeSession([[_user_row(ai_quota_appels=5)]])
+def test_user_quota_overrides_default(monkeypatch) -> None:
+    _server_fallback(monkeypatch)
+    session = _FakeSession([[_user_row(ai_daily_call_quota=5)]])
     client, _ = _client(session=session)
-    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
-    [stmt] = _upserts_quota(session)
+    assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 200
+    [stmt] = _quota_upserts(session)
     compiled = stmt.compile(dialect=postgresql.dialect())
     assert 5 in compiled.params.values()
     assert settings.AI_DEFAULT_DAILY_QUOTA not in compiled.params.values()
 
 
-def test_quota_zero_illimite_mais_compte(monkeypatch) -> None:
+def test_quota_zero_unlimited_but_counted(monkeypatch) -> None:
     """0 = illimité : l'upsert (statistique) part SANS garde de plafond."""
-    _fallback_serveur(monkeypatch)
-    session = _FakeSession([[_user_row(ai_quota_appels=0)]])
+    _server_fallback(monkeypatch)
+    session = _FakeSession([[_user_row(ai_daily_call_quota=0)]])
     client, fake = _client(session=session)
-    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 200
     assert fake.calls != []
-    [stmt] = _upserts_quota(session)
+    [stmt] = _quota_upserts(session)
     compiled = str(stmt.compile(dialect=postgresql.dialect()))
-    assert "ON CONFLICT (user_id, jour) DO UPDATE" in compiled
-    assert "ai_daily_usage.appels < " not in compiled
+    assert "ON CONFLICT (user_id, day) DO UPDATE" in compiled
+    assert "ai_daily_usage.calls < " not in compiled
 
 
-def test_chat_quota_epuise_429(monkeypatch) -> None:
-    _fallback_serveur(monkeypatch)
+def test_chat_quota_exhausted_429(monkeypatch) -> None:
+    _server_fallback(monkeypatch)
     session = _FakeSession([[_user_row()]], upsert_rowcount=0)
     client, fake = _client(session=session)
-    response = client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD)
+    response = client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD)
     assert response.status_code == 429
     assert "Quota quotidien" in response.json()["detail"]
     assert fake.calls == []  # jamais d'appel provider quota épuisé
 
 
-def test_stream_quota_epuise_429_eager(monkeypatch) -> None:
+def test_stream_quota_exhausted_429_eager(monkeypatch) -> None:
     """La cascade se résout AVANT le flux : vrai 429 HTTP, pas un event SSE."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession([[_user_row()]], upsert_rowcount=0)
     client, fake = _client(session=session)
-    assert client.post("/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD).status_code == 429
+    assert client.post("/api/v1/ai/chat/stream", json=NO_CONFIG_PAYLOAD).status_code == 429
     assert fake.calls == []
 
 
-def test_chat_echec_provider_rembourse_le_quota(monkeypatch) -> None:
+def test_chat_provider_failure_refunds_quota(monkeypatch) -> None:
     """Échec de l'appel provider : la réservation est remboursée — net-zéro."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession([[_user_row()]])
     fake = _FakeAIClient(complete_error=HTTPException(503, detail="Fournisseur IA injoignable"))
     client, _ = _client(fake, session=session)
-    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 503
-    assert len(_upserts_quota(session)) == 1
-    [refund] = _remboursements(session)
+    assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 503
+    assert len(_quota_upserts(session)) == 1
+    [refund] = _refunds(session)
     compiled = str(refund.compile(dialect=postgresql.dialect()))
-    assert "appels - " in compiled  # décrément
-    assert "appels > " in compiled  # garde : jamais négatif
+    assert "calls - " in compiled  # décrément
+    assert "calls > " in compiled  # garde : jamais négatif
 
 
-def test_chat_echec_byo_token_ne_rembourse_rien(monkeypatch) -> None:
+def test_chat_byo_token_failure_refunds_nothing(monkeypatch) -> None:
     """Échec en config explicite : rien n'a été consommé, rien à rembourser."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession()  # file vide : tout execute ferait sauter le test
     fake = _FakeAIClient(complete_error=HTTPException(503, detail="Fournisseur IA injoignable"))
     client, _ = _client(fake, session=session)
@@ -373,78 +373,78 @@ def test_chat_echec_byo_token_ne_rembourse_rien(monkeypatch) -> None:
     assert session.executed == []
 
 
-def test_stream_erreur_eager_rembourse(monkeypatch) -> None:
+def test_stream_eager_error_refunds(monkeypatch) -> None:
     """Erreur AVANT le flux (validation eager de stream) : remboursée aussi."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession([[_user_row()]])
     fake = _FakeAIClient(stream_error=HTTPException(422, detail="Config IA invalide"))
     client, _ = _client(fake, session=session)
-    assert client.post("/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD).status_code == 422
-    assert len(_remboursements(session)) == 1
+    assert client.post("/api/v1/ai/chat/stream", json=NO_CONFIG_PAYLOAD).status_code == 422
+    assert len(_refunds(session)) == 1
 
 
-def test_stream_echec_avant_tout_token_rembourse(monkeypatch) -> None:
+def test_stream_failure_before_any_token_refunds(monkeypatch) -> None:
     """Erreur mid-stream sans aucun token émis : rien reçu → remboursé."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession([[_user_row()]])
     fake = _FakeAIClient(
         stream_events=[AIStreamEvent(type="done")],
         mid_stream_error=HTTPException(503, detail="Fournisseur IA injoignable"),
     )
     client, _ = _client(fake, session=session)
-    with client.stream("POST", "/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD) as response:
+    with client.stream("POST", "/api/v1/ai/chat/stream", json=NO_CONFIG_PAYLOAD) as response:
         assert response.status_code == 200  # le 200 est déjà parti, l'erreur est SSE
         body = response.read().decode("utf-8")
     assert _parse_sse(body)[-1][0] == "error"
-    assert len(_remboursements(session)) == 1
+    assert len(_refunds(session)) == 1
 
 
-def test_stream_echec_apres_tokens_reste_compte(monkeypatch) -> None:
+def test_stream_failure_after_tokens_stays_counted(monkeypatch) -> None:
     """Un flux qui a déjà produit du contenu reste compté (décision actée)."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession([[_user_row()]])
     fake = _FakeAIClient(mid_stream_error=HTTPException(503, detail="Fournisseur IA injoignable"))
     client, _ = _client(fake, session=session)
-    with client.stream("POST", "/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD) as response:
+    with client.stream("POST", "/api/v1/ai/chat/stream", json=NO_CONFIG_PAYLOAD) as response:
         body = response.read().decode("utf-8")
     assert _parse_sse(body)[-1][0] == "error"
-    assert len(_upserts_quota(session)) == 1
-    assert _remboursements(session) == []
+    assert len(_quota_upserts(session)) == 1
+    assert _refunds(session) == []
 
 
-def test_config_explicite_jamais_de_quota(monkeypatch) -> None:
+def test_explicit_config_never_quota(monkeypatch) -> None:
     """BYO token (config explicite) : aucun execute — donc aucun comptage."""
-    _fallback_serveur(monkeypatch)
+    _server_fallback(monkeypatch)
     session = _FakeSession()  # file vide : tout execute ferait sauter le test
     client, _ = _client(session=session)
     assert client.post("/api/v1/ai/chat", json=CHAT_PAYLOAD).status_code == 200
     assert session.executed == []
 
 
-def test_credential_utilisateur_jamais_de_quota(monkeypatch) -> None:
-    _fallback_serveur(monkeypatch)
+def test_user_credential_never_quota(monkeypatch) -> None:
+    _server_fallback(monkeypatch)
     monkeypatch.setattr(
-        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(CLE_MAITRE).decode()
+        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(MASTER_KEY).decode()
     )
-    sel = crypto.nouveau_sel()
+    salt = crypto.new_salt()
     user = _user_row(
         ai_provider="anthropic",
         ai_model="claude-sonnet-5",
-        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
-        ai_chiffrement_sel=sel,
+        ai_api_key_encrypted=crypto.encrypt_secret("sk-user", MASTER_KEY, salt),
+        ai_encryption_salt=salt,
     )
     session = _FakeSession([[user]])
     client, _ = _client(session=session)
-    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
-    assert _upserts_quota(session) == []
+    assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 200
+    assert _quota_upserts(session) == []
 
 
-def test_sans_fallback_serveur_pas_de_quota() -> None:
+def test_without_server_fallback_no_quota() -> None:
     """AI_PROVIDER vide : le vrai AIClient répondra 422 — rien n'est consommé."""
     session = _FakeSession([[_user_row()]])
     client, _ = _client(session=session)
-    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
-    assert _upserts_quota(session) == []
+    assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 200
+    assert _quota_upserts(session) == []
 
 
 @pytest.mark.parametrize(
@@ -457,7 +457,7 @@ def test_sans_fallback_serveur_pas_de_quota() -> None:
         {"messages": [{"role": "user", "content": "x"}], "config": {"provider": "skynet", "model": "m"}},  # noqa: E501
     ],
 )
-def test_chat_payload_invalide(payload: dict) -> None:
+def test_chat_invalid_payload(payload: dict) -> None:
     client, _ = _client()
     assert client.post("/api/v1/ai/chat", json=payload).status_code == 422
 
@@ -480,7 +480,7 @@ def test_stream_nominal() -> None:
     ]
 
 
-def test_stream_erreur_avant_le_flux() -> None:
+def test_stream_error_before_flow() -> None:
     """Erreur eager (config invalide) → vrai status HTTP, pas un event SSE."""
     fake = _FakeAIClient(stream_error=HTTPException(422, detail="Clé API requise"))
     client, _ = _client(fake)
@@ -489,7 +489,7 @@ def test_stream_erreur_avant_le_flux() -> None:
     assert response.json()["detail"] == "Clé API requise"
 
 
-def test_stream_erreur_en_cours_de_flux() -> None:
+def test_stream_mid_stream_error() -> None:
     """Erreur mid-stream → HTTP 200 (déjà parti) + événement SSE ``error``."""
     fake = _FakeAIClient(
         mid_stream_error=HTTPException(503, detail="Fournisseur IA injoignable")

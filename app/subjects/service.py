@@ -8,7 +8,7 @@ from app.subjects.schemas import SubjectRead
 
 
 async def list_subjects(db: AsyncSession) -> Sequence[Subject]:
-    stmt = select(Subject).order_by(Subject.profondeur, Subject.position, Subject.nom)
+    stmt = select(Subject).order_by(Subject.depth, Subject.position, Subject.name)
     return (await db.execute(stmt)).scalars().all()
 
 
@@ -25,9 +25,9 @@ def build_tree(subjects: Sequence[Subject]) -> list[SubjectRead]:
         node = SubjectRead(
             id=s.id,
             parent_id=s.parent_id,
-            nom=s.nom,
+            name=s.name,
             code=s.code,
-            profondeur=s.profondeur,
+            depth=s.depth,
             position=s.position,
             children=[],
         )

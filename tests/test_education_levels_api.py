@@ -11,17 +11,17 @@ from app.education_levels.service import build_tree
 from app.main import create_app
 
 
-def _row(nom, profondeur, parent_id=None, position=0, cite=None, age_min=None, age_max=None):
+def _row(name, depth, parent_id=None, position=0, cite=None, age_min=None, age_max=None):
     return SimpleNamespace(
         id=uuid.uuid4(),
         parent_id=parent_id,
-        nom=nom,
-        code=f"fr.{nom.lower().replace(' ', '-')}",
-        systeme="fr",
+        name=name,
+        code=f"fr.{name.lower().replace(' ', '-')}",
+        system="fr",
         cite=cite,
         age_min=age_min,
         age_max=age_max,
-        profondeur=profondeur,
+        depth=depth,
         position=position,
     )
 
@@ -60,19 +60,19 @@ def test_tree_requires_auth(client: TestClient):
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_tree_nested_response_avec_pivots_internationaux():
+def test_tree_nested_response_with_international_pivots():
     college = _row("Collège", 0, cite=2, age_min=11, age_max=15)
-    sixieme = _row("6e", 1, parent_id=college.id, cite=2, age_min=11, age_max=12)
-    superieur = _row("Supérieur", 0, position=1, age_min=18)  # cite/age_max None
-    client = _client_with_overrides([college, superieur, sixieme])
+    sixth_grade = _row("6e", 1, parent_id=college.id, cite=2, age_min=11, age_max=12)
+    higher_ed = _row("Supérieur", 0, position=1, age_min=18)  # cite/age_max None
+    client = _client_with_overrides([college, higher_ed, sixth_grade])
 
     response = client.get("/api/v1/education-levels/tree")
     assert response.status_code == 200
     body = response.json()
-    assert [n["nom"] for n in body] == ["Collège", "Supérieur"]
+    assert [n["name"] for n in body] == ["Collège", "Supérieur"]
     assert body[0]["cite"] == 2
-    assert body[0]["systeme"] == "fr"
-    assert body[0]["children"][0]["nom"] == "6e"
+    assert body[0]["system"] == "fr"
+    assert body[0]["children"][0]["name"] == "6e"
     assert body[0]["children"][0]["age_min"] == 11
     assert body[0]["children"][0]["age_max"] == 12
     # Les pivots absents sortent en null explicite (contrat front).
@@ -80,21 +80,21 @@ def test_tree_nested_response_avec_pivots_internationaux():
     assert body[1]["age_max"] is None
 
 
-def test_build_tree_vide():
+def test_build_tree_empty():
     assert build_tree([]) == []
 
 
-def test_build_tree_ordre_des_freres():
-    racine = _row("Lycée", 0, cite=3)
-    # Le service trie par (profondeur, position) : on fournit les lignes déjà triées
-    premiere = _row("Seconde", 1, parent_id=racine.id, position=0, cite=3)
-    seconde = _row("Terminale", 1, parent_id=racine.id, position=1, cite=3)
-    arbre = build_tree([racine, premiere, seconde])
-    assert [n.nom for n in arbre[0].children] == ["Seconde", "Terminale"]
+def test_build_tree_sibling_order():
+    root = _row("Lycée", 0, cite=3)
+    # Le service trie par (depth, position) : on fournit les lignes déjà triées
+    first = _row("Seconde", 1, parent_id=root.id, position=0, cite=3)
+    second = _row("Terminale", 1, parent_id=root.id, position=1, cite=3)
+    tree = build_tree([root, first, second])
+    assert [n.name for n in tree[0].children] == ["Seconde", "Terminale"]
 
 
-def test_build_tree_orphelin_tolere():
-    orphelin = _row("Sans parent", 1, parent_id=uuid.uuid4())
-    arbre = build_tree([orphelin])
-    assert len(arbre) == 1
-    assert arbre[0].nom == "Sans parent"
+def test_build_tree_orphan_tolerated():
+    orphan = _row("Sans parent", 1, parent_id=uuid.uuid4())
+    tree = build_tree([orphan])
+    assert len(tree) == 1
+    assert tree[0].name == "Sans parent"

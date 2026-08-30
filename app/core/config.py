@@ -179,7 +179,7 @@ class Settings(BaseSettings):
     AI_MAX_RETRIES: int = 1
     # Quota d'appels servis par l'IA PAR DÉFAUT (le fallback serveur AI_*),
     # par utilisateur et PAR JOUR (UTC, table ai_daily_usage) : plafond
-    # effectif = users.ai_quota_appels si renseigné, sinon cette valeur ;
+    # effectif = users.ai_daily_call_quota si renseigné, sinon cette valeur ;
     # 0 = illimité. Les appels BYO token (config explicite de la requête ou
     # credential utilisateur) ne sont JAMAIS comptés — la clé consommée est
     # alors celle de l'utilisateur, pas celle du serveur.

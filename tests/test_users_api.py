@@ -25,14 +25,14 @@ def _user_row(**overrides):
         id=uuid.uuid4(),
         sub="prof-123",
         email=None,
-        est_prof=False,
-        est_eleve=False,
-        systeme_scolaire=None,
-        nom_public=None,
-        cherchable=False,
+        is_teacher=False,
+        is_student=False,
+        school_system=None,
+        public_name=None,
+        searchable=False,
         avatar_s3_key=None,
         avatar_mime=None,
-        avatar_statut=None,
+        avatar_status=None,
         onboarded_at=None,
     )
     defaults.update(overrides)
@@ -54,8 +54,8 @@ class _FakeStorage:
         self.put_calls.append((s3_key, content_type))
         return f"https://s3.test/put/{s3_key}"
 
-    def presign_get(self, s3_key, nom_original, inline=False):
-        self.get_calls.append((s3_key, nom_original))
+    def presign_get(self, s3_key, original_name, inline=False):
+        self.get_calls.append((s3_key, original_name))
         self.inline_calls.append(inline)
         return f"https://s3.test/get/{s3_key}"
 
@@ -130,7 +130,7 @@ def test_onboarding_requires_auth(client: TestClient):
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_me_premiere_connexion_auto_provisionne():
+def test_me_first_login_auto_provisions():
     user = _user_row()
     # SELECTs : ligne user, associations niveaux (vides), matières (vides)
     session = _FakeSession([[user], [], []])
@@ -140,8 +140,8 @@ def test_me_premiere_connexion_auto_provisionne():
     body = response.json()
     assert body["sub"] == "prof-123"
     assert body["onboarding_complete"] is False
-    assert body["est_prof"] is False and body["est_eleve"] is False
-    assert body["enseignement"] is None and body["apprentissage"] is None
+    assert body["is_teacher"] is False and body["is_student"] is False
+    assert body["teaching"] is None and body["learning"] is None
 
     # Le premier statement est bien l'upsert ON CONFLICT sur users.
     stmt, _ = session.executed[0]
@@ -151,7 +151,7 @@ def test_me_premiere_connexion_auto_provisionne():
     assert session.commits >= 1
 
 
-def test_me_rafraichit_email_depuis_le_claim():
+def test_me_refreshes_email_from_claim():
     user = _user_row(email="ancien@example.org")
     session = _FakeSession([[user], [], []])
     response = _client(session, email="nouveau@example.org").get("/api/v1/users/me")
@@ -160,20 +160,20 @@ def test_me_rafraichit_email_depuis_le_claim():
     assert response.json()["email"] == "nouveau@example.org"
 
 
-def test_me_user_onboarde_double_role():
+def test_me_onboarded_user_dual_role():
     user = _user_row(
-        est_prof=True,
-        est_eleve=True,
-        systeme_scolaire="fr",
+        is_teacher=True,
+        is_student=True,
+        school_system="fr",
         onboarded_at=datetime.now(UTC),
     )
-    niveau_enseigne, niveau_appris = uuid.uuid4(), uuid.uuid4()
-    matiere_enseignee, matiere_apprise = uuid.uuid4(), uuid.uuid4()
+    taught_level, learned_level = uuid.uuid4(), uuid.uuid4()
+    taught_subject, learned_subject = uuid.uuid4(), uuid.uuid4()
     session = _FakeSession(
         [
             [user],
-            [(niveau_appris, "apprend"), (niveau_enseigne, "enseigne")],
-            [(matiere_apprise, "apprend"), (matiere_enseignee, "enseigne")],
+            [(learned_level, "learning"), (taught_level, "teaching")],
+            [(learned_subject, "learning"), (taught_subject, "teaching")],
         ]
     )
     response = _client(session).get("/api/v1/users/me")
@@ -181,16 +181,16 @@ def test_me_user_onboarde_double_role():
     assert response.status_code == 200
     body = response.json()
     assert body["onboarding_complete"] is True
-    assert body["enseignement"]["education_level_ids"] == [str(niveau_enseigne)]
-    assert body["enseignement"]["subject_ids"] == [str(matiere_enseignee)]
-    assert body["apprentissage"]["education_level_ids"] == [str(niveau_appris)]
-    assert body["apprentissage"]["subject_ids"] == [str(matiere_apprise)]
+    assert body["teaching"]["education_level_ids"] == [str(taught_level)]
+    assert body["teaching"]["subject_ids"] == [str(taught_subject)]
+    assert body["learning"]["education_level_ids"] == [str(learned_level)]
+    assert body["learning"]["subject_ids"] == [str(learned_subject)]
 
 
-def _bloc(niveaux=None, matieres=None):
+def _block(levels=None, subjects=None):
     return {
-        "education_level_ids": [str(i) for i in (niveaux or [uuid.uuid4()])],
-        "subject_ids": [str(i) for i in (matieres or [uuid.uuid4()])],
+        "education_level_ids": [str(i) for i in (levels or [uuid.uuid4()])],
+        "subject_ids": [str(i) for i in (subjects or [uuid.uuid4()])],
     }
 
 
@@ -198,229 +198,229 @@ def _bloc(niveaux=None, matieres=None):
     "payload",
     [
         # Aucun rôle coché
-        {"est_prof": False, "est_eleve": False, "systeme_scolaire": "fr",
-         "enseignement": None, "apprentissage": None},
+        {"is_teacher": False, "is_student": False, "school_system": "fr",
+         "teaching": None, "learning": None},
         # Rôle coché sans son bloc
-        {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr"},
+        {"is_teacher": True, "is_student": False, "school_system": "fr"},
         # Bloc fourni sans le rôle correspondant
-        {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
-         "enseignement": _bloc(), "apprentissage": _bloc()},
+        {"is_teacher": True, "is_student": False, "school_system": "fr",
+         "teaching": _block(), "learning": _block()},
         # Listes vides
-        {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
-         "enseignement": {"education_level_ids": [], "subject_ids": []}},
+        {"is_teacher": True, "is_student": False, "school_system": "fr",
+         "teaching": {"education_level_ids": [], "subject_ids": []}},
     ],
 )
-def test_onboarding_payload_invalide_sans_acces_bdd(payload):
+def test_onboarding_invalid_payload_without_db_access(payload):
     session = _FakeSession()
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert session.executed == []
 
 
-def test_onboarding_systeme_inconnu():
+def test_onboarding_unknown_system():
     user = _user_row()
     session = _FakeSession([[user], ["fr", "uk"]])
-    payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "xx",
-               "enseignement": _bloc()}
+    payload = {"is_teacher": True, "is_student": False, "school_system": "xx",
+               "teaching": _block()}
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "Système scolaire inconnu" in response.json()["detail"]
 
 
-def test_onboarding_niveau_inconnu():
+def test_onboarding_unknown_level():
     user = _user_row()
     session = _FakeSession([[user], ["fr"], []])  # lookup niveaux vide
-    payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
-               "enseignement": _bloc()}
+    payload = {"is_teacher": True, "is_student": False, "school_system": "fr",
+               "teaching": _block()}
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "Niveaux d'étude inconnus" in response.json()["detail"]
 
 
-def test_onboarding_niveau_hors_systeme():
+def test_onboarding_level_outside_system():
     user = _user_row()
-    niveau_uk = uuid.uuid4()
-    session = _FakeSession([[user], ["fr", "uk"], [(niveau_uk, "uk")]])
-    payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
-               "enseignement": _bloc(niveaux=[niveau_uk])}
+    uk_level = uuid.uuid4()
+    session = _FakeSession([[user], ["fr", "uk"], [(uk_level, "uk")]])
+    payload = {"is_teacher": True, "is_student": False, "school_system": "fr",
+               "teaching": _block(levels=[uk_level])}
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "hors du système scolaire 'fr'" in response.json()["detail"]
 
 
-def test_onboarding_matiere_inconnue():
+def test_onboarding_unknown_subject():
     user = _user_row()
-    niveau = uuid.uuid4()
-    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], []])  # lookup matières vide
-    payload = {"est_prof": True, "est_eleve": False, "systeme_scolaire": "fr",
-               "enseignement": _bloc(niveaux=[niveau])}
+    level = uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(level, "fr")], []])  # lookup matières vide
+    payload = {"is_teacher": True, "is_student": False, "school_system": "fr",
+               "teaching": _block(levels=[level])}
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
     assert response.status_code == 422
     assert "Matières inconnues" in response.json()["detail"]
 
 
-def test_onboarding_happy_path_double_role():
+def test_onboarding_happy_path_dual_role():
     user = _user_row()
-    niveau_e, niveau_a = uuid.uuid4(), uuid.uuid4()
-    matiere_e, matiere_a = uuid.uuid4(), uuid.uuid4()
+    taught_level, learned_level = uuid.uuid4(), uuid.uuid4()
+    taught_subject, learned_subject = uuid.uuid4(), uuid.uuid4()
     session = _FakeSession(
         [
             [user],
             ["fr"],
-            [(niveau_e, "fr"), (niveau_a, "fr")],
-            [matiere_e, matiere_a],
+            [(taught_level, "fr"), (learned_level, "fr")],
+            [taught_subject, learned_subject],
         ]
     )
     payload = {
-        "est_prof": True,
-        "est_eleve": True,
-        "systeme_scolaire": "fr",
-        "enseignement": _bloc(niveaux=[niveau_e], matieres=[matiere_e]),
-        "apprentissage": _bloc(niveaux=[niveau_a], matieres=[matiere_a]),
+        "is_teacher": True,
+        "is_student": True,
+        "school_system": "fr",
+        "teaching": _block(levels=[taught_level], subjects=[taught_subject]),
+        "learning": _block(levels=[learned_level], subjects=[learned_subject]),
     }
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
     body = response.json()
     assert body["onboarding_complete"] is True
-    assert body["est_prof"] is True and body["est_eleve"] is True
-    assert body["systeme_scolaire"] == "fr"
-    assert body["enseignement"]["education_level_ids"] == [str(niveau_e)]
-    assert body["apprentissage"]["subject_ids"] == [str(matiere_a)]
+    assert body["is_teacher"] is True and body["is_student"] is True
+    assert body["school_system"] == "fr"
+    assert body["teaching"]["education_level_ids"] == [str(taught_level)]
+    assert body["learning"]["subject_ids"] == [str(learned_subject)]
 
     # L'état du user est mis à jour et daté.
-    assert user.est_prof is True and user.est_eleve is True
-    assert user.systeme_scolaire == "fr"
+    assert user.is_teacher is True and user.is_student is True
+    assert user.school_system == "fr"
     assert user.onboarded_at is not None
 
     # Les associations sont remplacées (delete) puis écrites avec le contexte.
     assert sum(isinstance(stmt, Delete) for stmt, _ in session.executed) == 2
-    [(_, params_niveaux)] = _inserts(session, "user_education_levels")
-    assert {p["contexte"] for p in params_niveaux} == {"enseigne", "apprend"}
-    [(_, params_matieres)] = _inserts(session, "user_subjects")
-    assert {(p["subject_id"], p["contexte"]) for p in params_matieres} == {
-        (matiere_e, "enseigne"),
-        (matiere_a, "apprend"),
+    [(_, level_params)] = _inserts(session, "user_education_levels")
+    assert {p["context"] for p in level_params} == {"teaching", "learning"}
+    [(_, subject_params)] = _inserts(session, "user_subjects")
+    assert {(p["subject_id"], p["context"]) for p in subject_params} == {
+        (taught_subject, "teaching"),
+        (learned_subject, "learning"),
     }
 
 
-def test_profil_nom_public_enregistre_et_expose():
+def test_profile_public_name_saved_and_exposed():
     # Le nom public (J2) est la seule donnée d'identité montrée sur les
     # pages publiques ; un blanc devient None (catalogue anonyme).
     user = _user_row()
-    niveau, matiere = uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
     payload = {
-        "est_prof": True,
-        "est_eleve": False,
-        "systeme_scolaire": "fr",
-        "nom_public": "  M. Dupont  ",
-        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "public_name": "  M. Dupont  ",
+        "teaching": _block(levels=[level], subjects=[subject]),
     }
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
-    assert response.json()["nom_public"] == "M. Dupont"  # trimé par le schéma
-    assert user.nom_public == "M. Dupont"
+    assert response.json()["public_name"] == "M. Dupont"  # trimé par le schéma
+    assert user.public_name == "M. Dupont"
 
 
-def test_profil_nom_public_blanc_devient_none():
-    user = _user_row(nom_public="Ancien nom")
-    niveau, matiere = uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+def test_profile_blank_public_name_becomes_none():
+    user = _user_row(public_name="Ancien nom")
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
     payload = {
-        "est_prof": True,
-        "est_eleve": False,
-        "systeme_scolaire": "fr",
-        "nom_public": "   ",
-        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "public_name": "   ",
+        "teaching": _block(levels=[level], subjects=[subject]),
     }
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
-    assert response.json()["nom_public"] is None
-    assert user.nom_public is None  # remplacement complet : l'ancien nom part
+    assert response.json()["public_name"] is None
+    assert user.public_name is None  # remplacement complet : l'ancien nom part
 
 
-def test_profil_cherchable_enregistre_et_expose():
+def test_profile_searchable_saved_and_exposed():
     # Opt-in à la recherche publique de profs (J3) : porté par le même PUT
     # de remplacement complet que le reste du profil.
     user = _user_row()
-    niveau, matiere = uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
     payload = {
-        "est_prof": True,
-        "est_eleve": False,
-        "systeme_scolaire": "fr",
-        "nom_public": "M. Dupont",
-        "cherchable": True,
-        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "public_name": "M. Dupont",
+        "searchable": True,
+        "teaching": _block(levels=[level], subjects=[subject]),
     }
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
-    assert response.json()["cherchable"] is True
-    assert user.cherchable is True
+    assert response.json()["searchable"] is True
+    assert user.searchable is True
 
 
-def test_profil_cherchable_absent_decoche():
+def test_profile_searchable_absent_unchecks():
     # PUT = remplacement complet : un payload sans le champ retombe sur False
     # (comportement sûr — on ne reste jamais cherchable par accident).
-    user = _user_row(cherchable=True)
-    niveau, matiere = uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    user = _user_row(searchable=True)
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
     payload = {
-        "est_prof": True,
-        "est_eleve": False,
-        "systeme_scolaire": "fr",
-        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "teaching": _block(levels=[level], subjects=[subject]),
     }
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
-    assert response.json()["cherchable"] is False
-    assert user.cherchable is False
+    assert response.json()["searchable"] is False
+    assert user.searchable is False
 
 
-def test_profil_cherchable_sans_nom_public_accepte():
-    # Toléré par le schéma : la règle de visibilité (cherchable AND
-    # nom_public AND ≥1 cours public) vit dans le service de recherche.
+def test_profile_searchable_without_public_name_accepted():
+    # Toléré par le schéma : la règle de visibilité (searchable AND
+    # public_name AND ≥1 cours public) vit dans le service de recherche.
     user = _user_row()
-    niveau, matiere = uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
     payload = {
-        "est_prof": True,
-        "est_eleve": False,
-        "systeme_scolaire": "fr",
-        "cherchable": True,
-        "enseignement": _bloc(niveaux=[niveau], matieres=[matiere]),
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "searchable": True,
+        "teaching": _block(levels=[level], subjects=[subject]),
     }
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
-    assert response.json()["cherchable"] is True
-    assert response.json()["nom_public"] is None
+    assert response.json()["searchable"] is True
+    assert response.json()["public_name"] is None
 
 
-def test_onboarding_dedoublonne_et_conserve_la_date():
-    premiere_date = datetime(2026, 1, 1, tzinfo=UTC)
-    user = _user_row(est_prof=True, systeme_scolaire="fr", onboarded_at=premiere_date)
-    niveau, matiere = uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], ["fr"], [(niveau, "fr")], [matiere]])
+def test_onboarding_deduplicates_and_keeps_date():
+    first_date = datetime(2026, 1, 1, tzinfo=UTC)
+    user = _user_row(is_teacher=True, school_system="fr", onboarded_at=first_date)
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = _FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
     payload = {
-        "est_prof": True,
-        "est_eleve": False,
-        "systeme_scolaire": "fr",
-        "enseignement": _bloc(niveaux=[niveau, niveau], matieres=[matiere, matiere]),
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "teaching": _block(levels=[level, level], subjects=[subject, subject]),
     }
     response = _client(session).put("/api/v1/users/me/profile", json=payload)
 
     assert response.status_code == 200
-    assert response.json()["enseignement"]["education_level_ids"] == [str(niveau)]
-    [(_, params_niveaux)] = _inserts(session, "user_education_levels")
-    assert len(params_niveaux) == 1
+    assert response.json()["teaching"]["education_level_ids"] == [str(level)]
+    [(_, level_params)] = _inserts(session, "user_education_levels")
+    assert len(level_params) == 1
     # La date de première complétion n'est pas écrasée par la re-soumission.
-    assert user.onboarded_at == premiere_date
+    assert user.onboarded_at == first_date
 
 
 # --- Avatar (photo de profil) -------------------------------------------------
@@ -429,7 +429,7 @@ def test_onboarding_dedoublonne_et_conserve_la_date():
 @pytest.mark.parametrize(
     ("method", "path", "body"),
     [
-        ("POST", "/api/v1/users/me/avatar", {"mime": "image/jpeg", "taille": 10}),
+        ("POST", "/api/v1/users/me/avatar", {"mime": "image/jpeg", "size": 10}),
         ("POST", "/api/v1/users/me/avatar/confirm", None),
         ("DELETE", "/api/v1/users/me/avatar", None),
     ],
@@ -440,11 +440,11 @@ def test_avatar_requires_auth(client: TestClient, method, path, body):
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_me_expose_avatar_url_si_disponible():
+def test_me_exposes_avatar_url_when_available():
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="disponible",
+        avatar_status="available",
     )
     session = _FakeSession([[user], [], []])
     storage = _FakeStorage()
@@ -459,12 +459,12 @@ def test_me_expose_avatar_url_si_disponible():
     assert storage.get_calls == [("users/u/avatar/x/avatar.jpg", "avatar.jpg")]
 
 
-def test_me_avatar_en_attente_url_nulle():
+def test_me_pending_avatar_null_url():
     # Un upload jamais confirmé ne sert rien : avatar_url reste None.
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="en_attente",
+        avatar_status="pending",
     )
     session = _FakeSession([[user], [], []])
     response = _client(session).get("/api/v1/users/me")
@@ -477,7 +477,7 @@ def test_avatar_presign_happy_path():
     session = _FakeSession([[user]])
     storage = _FakeStorage()
     response = _client(session, storage=storage).post(
-        "/api/v1/users/me/avatar", json={"mime": "image/jpeg", "taille": 1024}
+        "/api/v1/users/me/avatar", json={"mime": "image/jpeg", "size": 1024}
     )
 
     assert response.status_code == 201
@@ -493,44 +493,44 @@ def test_avatar_presign_happy_path():
     assert content_type == "image/jpeg"
     assert user.avatar_s3_key == s3_key
     assert user.avatar_mime == "image/jpeg"
-    assert user.avatar_statut == "en_attente"
+    assert user.avatar_status == "pending"
     assert storage.deleted == []  # pas d'ancien avatar à purger
     assert session.commits >= 2  # get_or_create + presign
 
 
-def test_avatar_presign_ecrase_et_purge_l_ancien():
-    ancienne = "users/u/avatar/vieux/avatar.png"
+def test_avatar_presign_overwrites_and_purges_old():
+    old_key = "users/u/avatar/vieux/avatar.png"
     user = _user_row(
-        avatar_s3_key=ancienne, avatar_mime="image/png", avatar_statut="disponible"
+        avatar_s3_key=old_key, avatar_mime="image/png", avatar_status="available"
     )
     session = _FakeSession([[user]])
     storage = _FakeStorage()
     response = _client(session, storage=storage).post(
-        "/api/v1/users/me/avatar", json={"mime": "image/webp", "taille": 2048}
+        "/api/v1/users/me/avatar", json={"mime": "image/webp", "size": 2048}
     )
 
     assert response.status_code == 201
     # L'ancien objet est purgé (après commit) ; la nouvelle clé porte la
-    # nouvelle extension et repart en_attente.
-    assert storage.deleted == [ancienne]
+    # nouvelle extension et repart en statut pending.
+    assert storage.deleted == [old_key]
     assert user.avatar_s3_key.endswith("/avatar.webp")
-    assert user.avatar_statut == "en_attente"
+    assert user.avatar_status == "pending"
 
 
-def test_avatar_presign_mime_hors_whitelist_422():
+def test_avatar_presign_mime_outside_whitelist_422():
     session = _FakeSession()
     response = _client(session).post(
-        "/api/v1/users/me/avatar", json={"mime": "image/gif", "taille": 1024}
+        "/api/v1/users/me/avatar", json={"mime": "image/gif", "size": 1024}
     )
     assert response.status_code == 422
     assert session.executed == []
 
 
-def test_avatar_presign_taille_au_dessus_du_plafond_422():
+def test_avatar_presign_size_above_cap_422():
     session = _FakeSession()
     response = _client(session).post(
         "/api/v1/users/me/avatar",
-        json={"mime": "image/jpeg", "taille": 5_242_881},
+        json={"mime": "image/jpeg", "size": 5_242_881},
     )
     assert response.status_code == 422
     assert session.executed == []
@@ -540,7 +540,7 @@ def test_avatar_confirm_happy_path():
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="en_attente",
+        avatar_status="pending",
     )
     # SELECTs : user, puis read_profile (niveaux, matières).
     session = _FakeSession([[user], [], []])
@@ -550,7 +550,7 @@ def test_avatar_confirm_happy_path():
     response = _client(session, storage=storage).post("/api/v1/users/me/avatar/confirm")
 
     assert response.status_code == 200
-    assert user.avatar_statut == "disponible"
+    assert user.avatar_status == "available"
     assert response.json()["avatar_url"] == (
         "https://s3.test/get/users/u/avatar/x/avatar.jpg"
     )
@@ -558,7 +558,7 @@ def test_avatar_confirm_happy_path():
     assert storage.deleted == []
 
 
-def test_avatar_confirm_sans_upload_409():
+def test_avatar_confirm_without_upload_409():
     user = _user_row()  # aucun avatar déclaré
     session = _FakeSession([[user]])
     response = _client(session).post("/api/v1/users/me/avatar/confirm")
@@ -566,38 +566,38 @@ def test_avatar_confirm_sans_upload_409():
     assert "Aucun upload" in response.json()["detail"]
 
 
-def test_avatar_confirm_deja_confirme_409():
+def test_avatar_confirm_already_confirmed_409():
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="disponible",
+        avatar_status="available",
     )
     session = _FakeSession([[user]])
     response = _client(session).post("/api/v1/users/me/avatar/confirm")
     assert response.status_code == 409
 
 
-def test_avatar_confirm_objet_absent_409():
+def test_avatar_confirm_missing_object_409():
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="en_attente",
+        avatar_status="pending",
     )
     session = _FakeSession([[user]])
     storage = _FakeStorage(head_result=None)
     response = _client(session, storage=storage).post("/api/v1/users/me/avatar/confirm")
     assert response.status_code == 409
     assert "upload non abouti" in response.json()["detail"]
-    assert user.avatar_statut == "en_attente"
+    assert user.avatar_status == "pending"
 
 
-def test_avatar_confirm_hors_gabarit_409_et_purge():
+def test_avatar_confirm_out_of_spec_409_and_purges():
     # Une URL présignée PUT ne borne pas la taille : l'objet hors plafond est
-    # refusé ET purgé (best-effort) ; la ligne reste en_attente.
+    # refusé ET purgé (best-effort) ; la ligne reste en statut pending.
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="en_attente",
+        avatar_status="pending",
     )
     session = _FakeSession([[user]])
     storage = _FakeStorage(
@@ -606,14 +606,14 @@ def test_avatar_confirm_hors_gabarit_409_et_purge():
     response = _client(session, storage=storage).post("/api/v1/users/me/avatar/confirm")
     assert response.status_code == 409
     assert storage.deleted == ["users/u/avatar/x/avatar.jpg"]
-    assert user.avatar_statut == "en_attente"
+    assert user.avatar_status == "pending"
 
 
-def test_avatar_confirm_mauvais_content_type_409():
+def test_avatar_confirm_wrong_content_type_409():
     user = _user_row(
         avatar_s3_key="users/u/avatar/x/avatar.jpg",
         avatar_mime="image/jpeg",
-        avatar_statut="en_attente",
+        avatar_status="pending",
     )
     session = _FakeSession([[user]])
     storage = _FakeStorage(
@@ -627,7 +627,7 @@ def test_avatar_confirm_mauvais_content_type_409():
 def test_avatar_delete():
     s3_key = "users/u/avatar/x/avatar.jpg"
     user = _user_row(
-        avatar_s3_key=s3_key, avatar_mime="image/jpeg", avatar_statut="disponible"
+        avatar_s3_key=s3_key, avatar_mime="image/jpeg", avatar_status="available"
     )
     # SELECTs : user, puis read_profile (niveaux, matières).
     session = _FakeSession([[user], [], []])
@@ -638,11 +638,11 @@ def test_avatar_delete():
     assert response.json()["avatar_url"] is None
     assert user.avatar_s3_key is None
     assert user.avatar_mime is None
-    assert user.avatar_statut is None
+    assert user.avatar_status is None
     assert storage.deleted == [s3_key]
 
 
-def test_avatar_delete_sans_avatar_idempotent():
+def test_avatar_delete_without_avatar_idempotent():
     user = _user_row()
     session = _FakeSession([[user], [], []])
     storage = _FakeStorage()

@@ -36,10 +36,10 @@ def _course_row(**overrides):
     defaults = dict(
         id=uuid.uuid4(),
         owner_id=None,
-        titre="Mon cours",
+        title="Mon cours",
         description=None,
         preview_settings={},
-        visibilite="en_cours",
+        visibility="draft",
         created_at=_NOW,
         updated_at=_NOW,
     )
@@ -52,8 +52,8 @@ def _block_row(**overrides):
         id=uuid.uuid4(),
         course_id=None,
         position=0,
-        type="texte",
-        titre=None,
+        type="text",
+        title=None,
         description=None,
         content={"markdown": ""},
         resource_id=None,
@@ -69,10 +69,10 @@ def _resource_row(**overrides):
         course_id=None,
         type="document",
         s3_key="courses/c/resources/r/schema.pdf",
-        nom_original="schema.pdf",
-        taille=1024,
+        original_name="schema.pdf",
+        size=1024,
         mime="application/pdf",
-        statut="disponible",
+        status="available",
         created_at=_NOW,
         updated_at=_NOW,
     )
@@ -84,7 +84,7 @@ def _module_row(**overrides):
     defaults = dict(
         id=uuid.uuid4(),
         course_id=None,
-        titre="Grapheur",
+        title="Grapheur",
         html="<canvas></canvas>",
         css="canvas{width:100%}",
         js="console.log('ok')",
@@ -191,10 +191,10 @@ def _manifest(**overrides):
     """Manifest minimal valide ; surcharges par clé de premier niveau."""
     manifest = {
         "format": "opencartable-course",
-        "format_version": 1,
+        "format_version": 2,
         "exported_at": "2026-07-07T12:00:00Z",
         "course": {
-            "titre": "Cours importé",
+            "title": "Cours importé",
             "description": None,
             "preview_settings": {},
             "subject_codes": [],
@@ -213,16 +213,16 @@ def _zip_bytes(manifest, binaries=()):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("manifest.json", json.dumps(manifest))
-        for entry_id, contenu in binaries:
+        for entry_id, content in binaries:
             with zf.open(f"resources/{entry_id}", mode="w") as stream:
-                stream.write(contenu)
+                stream.write(content)
     return buf.getvalue()
 
 
-def _post_import(client, contenu: bytes):
+def _post_import(client, content: bytes):
     return client.post(
         "/api/v1/courses/import",
-        files={"file": ("cours.zip", contenu, "application/zip")},
+        files={"file": ("course.zip", content, "application/zip")},
     )
 
 
@@ -232,16 +232,16 @@ _COURSE_ID = uuid.uuid4()
 # --- Auth requise -------------------------------------------------------------
 
 
-def test_auth_requise_export():
+def test_auth_required_export():
     response = TestClient(create_app()).get(f"/api/v1/courses/{_COURSE_ID}/export")
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_auth_requise_import():
+def test_auth_required_import():
     response = TestClient(create_app()).post(
         "/api/v1/courses/import",
-        files={"file": ("cours.zip", b"x", "application/zip")},
+        files={"file": ("course.zip", b"x", "application/zip")},
     )
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
@@ -253,10 +253,10 @@ def test_auth_requise_import():
 def test_export_nominal():
     user = _user_row()
     course = _course_row(
-        titre="Fractions", description="Cours de 6e", preview_settings={"font": "serif"}
+        title="Fractions", description="Cours de 6e", preview_settings={"font": "serif"}
     )
     resource = _resource_row(s3_key="courses/c/resources/r/img.png",
-                             nom_original="img.png", type="image", mime="image/png")
+                             original_name="img.png", type="image", mime="image/png")
     module = _module_row()
     question_id = str(uuid.uuid4())
     blocks = [
@@ -266,15 +266,15 @@ def test_export_nominal():
         ),
         _block_row(
             position=1,
-            type="exercice",
+            type="exercise",
             content={
-                "enonce": "Sujet",
+                "statement": "Sujet",
                 "questions": [
                     {
                         "id": question_id,
-                        "enonce": "Q1",
-                        "type": "texte_libre",
-                        "reponse_attendue": "42",
+                        "statement": "Q1",
+                        "type": "free_text",
+                        "expected_answer": "42",
                     }
                 ],
             },
@@ -282,8 +282,8 @@ def test_export_nominal():
         _block_row(
             position=2,
             type="document",
-            titre="Schéma",
-            content={"legende": None, "affichage": "inline"},
+            title="Schéma",
+            content={"caption": None, "display": "inline"},
             resource_id=resource.id,
         ),
         _block_row(position=3, type="module", content={}, module_id=module.id),
@@ -305,7 +305,7 @@ def test_export_nominal():
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
     disposition = response.headers["content-disposition"]
-    assert disposition.startswith('attachment; filename="cours-Fractions-')
+    assert disposition.startswith('attachment; filename="course-Fractions-')
     assert disposition.endswith('.zip"')
     assert response.headers["content-length"] == str(len(response.content))
 
@@ -319,53 +319,53 @@ def test_export_nominal():
         manifest = json.loads(zf.read("manifest.json"))
 
     assert manifest["format"] == "opencartable-course"
-    assert manifest["format_version"] == 1
+    assert manifest["format_version"] == 2
     assert manifest["course"] == {
-        "titre": "Fractions",
+        "title": "Fractions",
         "description": "Cours de 6e",
         "preview_settings": {"font": "serif"},
         "subject_codes": ["mathematiques.fractions"],
         "education_level_codes": ["fr.college.6e"],
     }
     assert [b["type"] for b in manifest["blocks"]] == [
-        "texte", "exercice", "document", "module",
+        "text", "exercise", "document", "module",
     ]
     # Contenus verbatim : refs oc-* et ids de questions inchangés à l'export.
     assert manifest["blocks"][0]["content"]["markdown"] == (
         f"![i](oc-resource:{resource.id})"
     )
     assert manifest["blocks"][1]["content"]["questions"][0]["id"] == question_id
-    assert manifest["blocks"][1]["content"]["questions"][0]["reponse_attendue"] == "42"
+    assert manifest["blocks"][1]["content"]["questions"][0]["expected_answer"] == "42"
     assert manifest["blocks"][2]["resource_ref"] == str(resource.id)
     assert manifest["blocks"][3]["module_ref"] == str(module.id)
     assert manifest["resources"] == [
         {
             "id": str(resource.id),
             "type": "image",
-            "nom_original": "img.png",
-            "taille": 1024,
+            "original_name": "img.png",
+            "size": 1024,
             "mime": "image/png",
         }
     ]
-    assert manifest["modules"][0]["titre"] == "Grapheur"
+    assert manifest["modules"][0]["title"] == "Grapheur"
     assert manifest["modules"][0]["html"] == "<canvas></canvas>"
 
     assert storage.read_keys == [resource.s3_key]
     # Lecture seule : seul le commit de get_or_create_by_sub.
     assert session.commits == 1
-    # Le select des ressources exclut les « en_attente » en SQL.
+    # Le select des ressources exclut les « pending » en SQL.
     selects = [str(stmt) for stmt, _ in session.executed if not isinstance(stmt, Insert)]
-    assert any("resources.statut" in s for s in selects)
+    assert any("resources.status" in s for s in selects)
 
 
-def test_export_cours_autrui_404():
+def test_export_foreign_course_404():
     user = _user_row()
     session = _FakeSession([[user], []])  # select cours scopé owner → vide
     response = _client(session).get(f"/api/v1/courses/{uuid.uuid4()}/export")
     assert response.status_code == 404
 
 
-def test_export_cours_vide():
+def test_export_empty_course():
     user = _user_row()
     course = _course_row()
     session = _FakeSession([[user], [course], [], [], [], [], []])
@@ -380,12 +380,12 @@ def test_export_cours_vide():
     assert manifest["modules"] == []
 
 
-def test_export_detache_le_bloc_document_dune_ressource_non_exportee():
+def test_export_detaches_document_block_of_unexported_resource():
     # Ne peut pas arriver par l'API (un bloc ne pointe qu'une ressource
     # disponible) ; la garde défensive détache plutôt que d'échouer.
     user = _user_row()
     course = _course_row()
-    block = _block_row(type="document", content={"legende": None, "affichage": "inline"},
+    block = _block_row(type="document", content={"caption": None, "display": "inline"},
                        resource_id=uuid.uuid4())
     session = _FakeSession([[user], [course], [], [], [block], [], []])
     response = _client(session).get(f"/api/v1/courses/{course.id}/export")
@@ -405,7 +405,7 @@ def test_import_nominal():
     question_id = str(uuid.uuid4())
     manifest = _manifest(
         course={
-            "titre": "Cours importé",
+            "title": "Cours importé",
             "description": "desc",
             "preview_settings": {"font": "serif"},
             "subject_codes": ["mathematiques.fractions"],
@@ -414,20 +414,20 @@ def test_import_nominal():
         blocks=[
             {
                 "position": 0,
-                "type": "texte",
+                "type": "text",
                 "content": {"markdown": f"![i](oc-resource:{old_resource_id})"},
             },
             {
                 "position": 1,
-                "type": "exercice",
+                "type": "exercise",
                 "content": {
-                    "enonce": f"Sujet oc-module:{old_module_id}",
+                    "statement": f"Sujet oc-module:{old_module_id}",
                     "questions": [
                         {
                             "id": question_id,
-                            "enonce": f"Q oc-resource:{old_resource_id}",
-                            "type": "texte_libre",
-                            "reponse_attendue": f"oc-resource:{old_resource_id}",
+                            "statement": f"Q oc-resource:{old_resource_id}",
+                            "type": "free_text",
+                            "expected_answer": f"oc-resource:{old_resource_id}",
                         }
                     ],
                 },
@@ -435,8 +435,8 @@ def test_import_nominal():
             {
                 "position": 2,
                 "type": "document",
-                "titre": "Schéma",
-                "content": {"legende": "l", "affichage": "telechargement"},
+                "title": "Schéma",
+                "content": {"caption": "l", "display": "download"},
                 "resource_ref": old_resource_id,
             },
             {"position": 3, "type": "module", "content": {}, "module_ref": old_module_id},
@@ -445,81 +445,81 @@ def test_import_nominal():
             {
                 "id": old_resource_id,
                 "type": "image",
-                "nom_original": "img.png",
-                "taille": 5,
+                "original_name": "img.png",
+                "size": 5,
                 "mime": "image/png",
             }
         ],
         modules=[
-            {"id": old_module_id, "titre": "Grapheur", "html": "<b>x</b>", "css": "", "js": ""}
+            {"id": old_module_id, "title": "Grapheur", "html": "<b>x</b>", "css": "", "js": ""}
         ],
     )
-    contenu = _zip_bytes(manifest, binaries=[(old_resource_id, b"12345")])
+    content = _zip_bytes(manifest, binaries=[(old_resource_id, b"12345")])
 
     user = _user_row()
     subject_id = uuid.uuid4()
     level_id = uuid.uuid4()
     session = _FakeSession([[user], [subject_id], [level_id], [(_NOW, _NOW)]])
     storage = _FakeStorage(session=session)
-    response = _post_import(_client(session, storage), contenu)
+    response = _post_import(_client(session, storage), content)
 
     assert response.status_code == 201
     body = response.json()
-    assert body["titre"] == "Cours importé"
+    assert body["title"] == "Cours importé"
     assert body["block_count"] == 4
-    assert body["visibilite"] == "en_cours"
+    assert body["visibility"] == "draft"
     assert body["preview_settings"] == {"font": "serif"}
     assert body["subject_ids"] == [str(subject_id)]
     assert body["education_level_ids"] == [str(level_id)]
 
     # Classement remappé par code.
-    [(_, m2m_matieres)] = _inserts(session, "course_subjects")
-    assert m2m_matieres == [{"course_id": uuid.UUID(body["id"]), "subject_id": subject_id}]
-    [(_, m2m_niveaux)] = _inserts(session, "course_education_levels")
-    assert m2m_niveaux[0]["education_level_id"] == level_id
+    [(_, subject_m2m)] = _inserts(session, "course_subjects")
+    assert subject_m2m == [{"course_id": uuid.UUID(body["id"]), "subject_id": subject_id}]
+    [(_, level_m2m)] = _inserts(session, "course_education_levels")
+    assert level_m2m[0]["education_level_id"] == level_id
 
-    # Modules et ressources : nouveaux uuid, statut disponible, clé S3 neuve.
+    # Modules et ressources : nouveaux uuid, statut available, clé S3 neuve.
     [(_, modules)] = _inserts(session, "modules")
-    assert modules[0]["titre"] == "Grapheur"
+    assert modules[0]["title"] == "Grapheur"
     new_module_id = modules[0]["id"]
     assert str(new_module_id) != old_module_id
     [(_, resources)] = _inserts(session, "resources")
     new_resource_id = resources[0]["id"]
     assert str(new_resource_id) != old_resource_id
-    assert resources[0]["statut"] == "disponible"
+    assert resources[0]["status"] == "available"
     assert resources[0]["s3_key"] == (
         f"courses/{body['id']}/resources/{new_resource_id}/img.png"
     )
 
     # Blocs : positions réécrites, colonnes remappées, refs oc-* réécrites
-    # dans markdown/enonce/questions[].enonce — reponse_attendue intacte,
+    # dans markdown/statement/questions[].statement — expected_answer intacte,
     # questions[].id verbatim.
     [(_, blocks)] = _inserts(session, "blocks")
     assert [b["position"] for b in blocks] == [0, 1, 2, 3]
     assert blocks[0]["content"]["markdown"] == f"![i](oc-resource:{new_resource_id})"
-    exercice = blocks[1]["content"]
-    assert exercice["enonce"] == f"Sujet oc-module:{new_module_id}"
-    assert exercice["questions"][0]["id"] == question_id
-    assert exercice["questions"][0]["enonce"] == f"Q oc-resource:{new_resource_id}"
-    assert exercice["questions"][0]["reponse_attendue"] == f"oc-resource:{old_resource_id}"
+    exercise = blocks[1]["content"]
+    assert exercise["statement"] == f"Sujet oc-module:{new_module_id}"
+    assert exercise["questions"][0]["id"] == question_id
+    assert exercise["questions"][0]["statement"] == f"Q oc-resource:{new_resource_id}"
+    assert exercise["questions"][0]["expected_answer"] == f"oc-resource:{old_resource_id}"
     assert blocks[2]["resource_id"] == new_resource_id
-    assert blocks[2]["titre"] == "Schéma"
+    assert blocks[2]["title"] == "Schéma"
     assert blocks[3]["module_id"] == new_module_id
 
     # Binaire poussé sur la nouvelle clé, AVANT le commit final.
-    [(s3_key, content_type, pushed, commits_au_put)] = storage.put_objects
+    [(s3_key, content_type, pushed, commits_at_put)] = storage.put_objects
     assert s3_key == resources[0]["s3_key"]
     assert content_type == "image/png"
     assert pushed == b"12345"
-    assert commits_au_put == 1  # seul le commit de get_or_create_by_sub
+    assert commits_at_put == 1  # seul le commit de get_or_create_by_sub
     assert session.commits == 2
     assert session.rollbacks == 0
 
 
-def test_import_codes_inconnus_ignores():
+def test_import_unknown_codes_ignored():
     manifest = _manifest(
         course={
-            "titre": "T",
+            "title": "T",
             "description": None,
             "preview_settings": {},
             "subject_codes": ["inconnu.code"],
@@ -536,10 +536,10 @@ def test_import_codes_inconnus_ignores():
     assert _inserts(session, "course_education_levels") == []
 
 
-def test_import_ref_inconnue_laissee_verbatim():
+def test_import_unknown_ref_left_verbatim():
     ref = f"oc-resource:{uuid.uuid4()}"
     manifest = _manifest(
-        blocks=[{"position": 0, "type": "texte", "content": {"markdown": ref}}]
+        blocks=[{"position": 0, "type": "text", "content": {"markdown": ref}}]
     )
     user = _user_row()
     session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
@@ -550,13 +550,13 @@ def test_import_ref_inconnue_laissee_verbatim():
     assert blocks[0]["content"]["markdown"] == ref
 
 
-def test_import_question_sans_id_en_recoit_un():
+def test_import_question_without_id_receives_one():
     manifest = _manifest(
         blocks=[
             {
                 "position": 0,
-                "type": "exercice",
-                "content": {"enonce": "S", "questions": [{"enonce": "Q"}]},
+                "type": "exercise",
+                "content": {"statement": "S", "questions": [{"statement": "Q"}]},
             }
         ]
     )
@@ -568,27 +568,115 @@ def test_import_question_sans_id_en_recoit_un():
     [(_, blocks)] = _inserts(session, "blocks")
     question = blocks[0]["content"]["questions"][0]
     assert uuid.UUID(question["id"])  # id frais, jamais None en base
-    assert question["type"] == "texte_libre"
-    assert question["reponse_attendue"] == ""
+    assert question["type"] == "free_text"
+    assert question["expected_answer"] == ""
+
+
+def test_import_v1_archive_normalized_to_english():
+    """Compat descendante : une archive v1 (clés/valeurs françaises) reste
+    importable — normalisée en v2 anglais avant validation, contenu identique."""
+    old_resource_id = str(uuid.uuid4())
+    old_module_id = str(uuid.uuid4())
+    question_id = str(uuid.uuid4())
+    manifest_v1 = {
+        "format": "opencartable-course",
+        "format_version": 1,
+        "exported_at": "2026-07-07T12:00:00Z",
+        "course": {
+            "titre": "Cours hérité",
+            "description": "desc",
+            "preview_settings": {},
+            "subject_codes": [],
+            "education_level_codes": [],
+        },
+        "blocks": [
+            {"position": 0, "type": "texte", "content": {"markdown": "# Ancien"}},
+            {
+                "position": 1,
+                "type": "exercice",
+                "titre": "Exo",
+                "content": {
+                    "enonce": "Sujet global",
+                    "questions": [
+                        {
+                            "id": question_id,
+                            "enonce": "Montrer que $u_n$ converge.",
+                            "type": "texte_libre",
+                            "reponse_attendue": "Par récurrence.",
+                        }
+                    ],
+                },
+            },
+            {
+                "position": 2,
+                "type": "document",
+                "content": {"legende": "Schéma", "affichage": "telechargement"},
+                "resource_ref": old_resource_id,
+            },
+            {"position": 3, "type": "module", "content": {}, "module_ref": old_module_id},
+        ],
+        "resources": [
+            {
+                "id": old_resource_id,
+                "type": "image",
+                "nom_original": "img.png",
+                "taille": 5,
+                "mime": "image/png",
+            }
+        ],
+        "modules": [
+            {"id": old_module_id, "titre": "Grapheur", "html": "<b>x</b>", "css": "", "js": ""}
+        ],
+    }
+    content = _zip_bytes(manifest_v1, binaries=[(old_resource_id, b"12345")])
+
+    user = _user_row()
+    session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
+    storage = _FakeStorage(session=session)
+    response = _post_import(_client(session, storage), content)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["title"] == "Cours hérité"
+    assert body["block_count"] == 4
+
+    [(_, blocks)] = _inserts(session, "blocks")
+    assert [b["type"] for b in blocks] == ["text", "exercise", "document", "module"]
+    assert blocks[1]["title"] == "Exo"
+    exercise = blocks[1]["content"]
+    assert set(exercise) == {"statement", "questions"}
+    assert exercise["statement"] == "Sujet global"
+    question = exercise["questions"][0]
+    assert question["id"] == question_id
+    assert question["statement"] == "Montrer que $u_n$ converge."
+    assert question["type"] == "free_text"
+    assert question["expected_answer"] == "Par récurrence."
+    assert blocks[2]["content"] == {"caption": "Schéma", "display": "download"}
+
+    [(_, resources)] = _inserts(session, "resources")
+    assert resources[0]["original_name"] == "img.png"
+    assert resources[0]["size"] == 5
+    [(_, modules)] = _inserts(session, "modules")
+    assert modules[0]["title"] == "Grapheur"
 
 
 @pytest.mark.parametrize(
-    ("nom", "contenu"),
+    ("name", "content"),
     [
-        ("pas-un-zip", b"definitivement pas un zip"),
-        ("manifest-absent", None),  # zip valide sans manifest.json
-        ("version-inconnue", _zip_bytes(_manifest(format_version=2))),
-        ("champ-inconnu", _zip_bytes(_manifest(champ_pirate=True))),
+        ("not-a-zip", b"definitivement pas un zip"),
+        ("manifest-missing", None),  # zip valide sans manifest.json
+        ("unknown-version", _zip_bytes(_manifest(format_version=3))),
+        ("unknown-field", _zip_bytes(_manifest(champ_pirate=True))),
         (
-            "entree-binaire-absente",
+            "binary-entry-missing",
             _zip_bytes(
                 _manifest(
                     resources=[
                         {
                             "id": str(uuid.uuid4()),
                             "type": "image",
-                            "nom_original": "i.png",
-                            "taille": 5,
+                            "original_name": "i.png",
+                            "size": 5,
                             "mime": "image/png",
                         }
                     ]
@@ -596,15 +684,15 @@ def test_import_question_sans_id_en_recoit_un():
             ),
         ),
         (
-            "taille-incoherente",
+            "inconsistent-size",
             (lambda rid: _zip_bytes(
                 _manifest(
                     resources=[
                         {
                             "id": rid,
                             "type": "image",
-                            "nom_original": "i.png",
-                            "taille": 10,  # l'entrée fait 5 octets
+                            "original_name": "i.png",
+                            "size": 10,  # l'entrée fait 5 octets
                             "mime": "image/png",
                         }
                     ]
@@ -613,18 +701,18 @@ def test_import_question_sans_id_en_recoit_un():
             ))(str(uuid.uuid4())),
         ),
         (
-            "trop-de-blocs",
+            "too-many-blocks",
             _zip_bytes(
                 _manifest(
                     blocks=[
-                        {"position": i, "type": "texte", "content": {"markdown": ""}}
+                        {"position": i, "type": "text", "content": {"markdown": ""}}
                         for i in range(501)
                     ]
                 )
             ),
         ),
         (
-            "ref-hors-manifest",
+            "ref-outside-manifest",
             _zip_bytes(
                 _manifest(
                     blocks=[
@@ -639,13 +727,13 @@ def test_import_question_sans_id_en_recoit_un():
             ),
         ),
         (
-            "ref-sur-mauvais-type",
+            "ref-on-wrong-type",
             _zip_bytes(
                 _manifest(
                     blocks=[
                         {
                             "position": 0,
-                            "type": "texte",
+                            "type": "text",
                             "content": {"markdown": ""},
                             "module_ref": str(uuid.uuid4()),
                         }
@@ -654,7 +742,7 @@ def test_import_question_sans_id_en_recoit_un():
             ),
         ),
         (
-            "content-module-non-vide",
+            "non-empty-module-content",
             _zip_bytes(
                 _manifest(
                     blocks=[{"position": 0, "type": "module", "content": {"x": 1}}]
@@ -663,15 +751,15 @@ def test_import_question_sans_id_en_recoit_un():
         ),
     ],
 )
-def test_import_archive_invalide_422(nom, contenu):
-    if contenu is None:  # zip valide sans manifest.json
+def test_import_invalid_archive_422(name, content):
+    if content is None:  # zip valide sans manifest.json
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("autre.json", b"{}")
-        contenu = buf.getvalue()
+        content = buf.getvalue()
     user = _user_row()
     session = _FakeSession([[user]])
-    response = _post_import(_client(session), contenu)
+    response = _post_import(_client(session), content)
 
     assert response.status_code == 422
     # Rien d'écrit : la validation précède tout execute du service.
@@ -679,7 +767,7 @@ def test_import_archive_invalide_422(nom, contenu):
     assert session.commits == 1  # get_or_create_by_sub uniquement
 
 
-def test_import_archive_trop_grosse_413(monkeypatch):
+def test_import_archive_too_large_413(monkeypatch):
     monkeypatch.setattr(settings, "TRANSFER_MAX_ZIP_BYTES", 10)
     user = _user_row()
     session = _FakeSession([[user]])
@@ -689,22 +777,22 @@ def test_import_archive_trop_grosse_413(monkeypatch):
     assert _inserts(session, "courses") == []
 
 
-def test_import_echec_s3_503():
+def test_import_s3_failure_503():
     rid_a, rid_b = str(uuid.uuid4()), str(uuid.uuid4())
     manifest = _manifest(
         resources=[
-            {"id": rid_a, "type": "image", "nom_original": "a.png",
-             "taille": 3, "mime": "image/png"},
-            {"id": rid_b, "type": "image", "nom_original": "b.png",
-             "taille": 3, "mime": "image/png"},
+            {"id": rid_a, "type": "image", "original_name": "a.png",
+             "size": 3, "mime": "image/png"},
+            {"id": rid_b, "type": "image", "original_name": "b.png",
+             "size": 3, "mime": "image/png"},
         ]
     )
-    contenu = _zip_bytes(manifest, binaries=[(rid_a, b"aaa"), (rid_b, b"bbb")])
+    content = _zip_bytes(manifest, binaries=[(rid_a, b"aaa"), (rid_b, b"bbb")])
     user = _user_row()
     session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
     # Le premier put passe, le second lève.
     storage = _FakeStorage(session=session, put_raises_from=1)
-    response = _post_import(_client(session, storage), contenu)
+    response = _post_import(_client(session, storage), content)
 
     assert response.status_code == 503
     assert session.rollbacks == 1
@@ -717,26 +805,26 @@ def test_import_echec_s3_503():
 # --- Helpers purs (archive.py) ------------------------------------------------
 
 
-def test_rewrite_refs_remplace_et_normalise_la_casse():
+def test_rewrite_refs_replaces_and_normalizes_case():
     old = str(uuid.uuid4())
     text = f"a oc-resource:{old.upper()} b oc-module:{old} c"
     out = rewrite_refs(text, {old: "NEW-R"}, {old: "NEW-M"})
     assert out == "a oc-resource:NEW-R b oc-module:NEW-M c"
 
 
-def test_rewrite_refs_ref_inconnue_verbatim():
+def test_rewrite_refs_unknown_ref_verbatim():
     old = str(uuid.uuid4())
     text = f"voir oc-resource:{old}"
     assert rewrite_refs(text, {}, {}) == text
 
 
-def test_rewrite_refs_respecte_les_bornes_de_mots():
+def test_rewrite_refs_respects_word_boundaries():
     old = str(uuid.uuid4())
     # Préfixe collé : « xoc-resource: » n'est pas une référence.
     text = f"xoc-resource:{old}"
     assert rewrite_refs(text, {old: "NEW"}, {}) == text
 
 
-def test_rewrite_refs_uuid_invalide_ignore():
+def test_rewrite_refs_invalid_uuid_ignored():
     text = "oc-resource:pas-un-uuid"
     assert rewrite_refs(text, {"pas-un-uuid": "NEW"}, {}) == text

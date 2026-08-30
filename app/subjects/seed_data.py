@@ -20,8 +20,8 @@ SEED_NAMESPACE = uuid.UUID("6b7a9f2e-0000-4000-8000-6f70656e6361")
 Node = str | tuple[str, list["Node"]]
 
 
-def _slugify(nom: str) -> str:
-    ascii_ = unicodedata.normalize("NFKD", nom).encode("ascii", "ignore").decode()
+def _slugify(name: str) -> str:
+    ascii_ = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     slug = "".join(c if c.isalnum() else "-" for c in ascii_.lower())
     while "--" in slug:
         slug = slug.replace("--", "-")
@@ -33,7 +33,7 @@ def subject_id(code: str) -> uuid.UUID:
     return uuid.uuid5(SEED_NAMESPACE, code)
 
 
-TAXONOMIE: list[Node] = [
+TAXONOMY: list[Node] = [
     ("Mathématiques", [
         ("Analyse", [
             ("Suites numériques", [
@@ -657,33 +657,36 @@ TAXONOMIE: list[Node] = [
 
 
 def iter_rows() -> Iterator[dict]:
-    """Aplatit ``TAXONOMIE`` en lignes prêtes pour la table ``subjects``.
+    """Aplatit ``TAXONOMY`` en lignes prêtes pour la table ``subjects``.
 
     Yield des dicts ``{id, parent_id, nom, code, profondeur, position}``,
     parents toujours AVANT leurs enfants (ordre FK garanti pour l'insert).
     C'est la seule API consommée par la migration de seed et les tests.
+    Les clés des dicts restent les noms de colonnes FRANÇAIS d'origine :
+    la migration de seed (immuable, antérieure au renommage des colonnes)
+    lie ses paramètres par ces clés — ne pas les angliciser.
     """
 
     def walk(
         node: Node,
         parent_code: str | None,
         parent_id: uuid.UUID | None,
-        profondeur: int,
+        depth: int,
         position: int,
     ) -> Iterator[dict]:
-        nom, enfants = node if isinstance(node, tuple) else (node, [])
-        code = f"{parent_code}.{_slugify(nom)}" if parent_code else _slugify(nom)
+        name, children = node if isinstance(node, tuple) else (node, [])
+        code = f"{parent_code}.{_slugify(name)}" if parent_code else _slugify(name)
         sid = subject_id(code)
         yield {
             "id": sid,
             "parent_id": parent_id,
-            "nom": nom,
+            "nom": name,
             "code": code,
-            "profondeur": profondeur,
+            "profondeur": depth,
             "position": position,
         }
-        for i, enfant in enumerate(enfants):
-            yield from walk(enfant, code, sid, profondeur + 1, i)
+        for i, child in enumerate(children):
+            yield from walk(child, code, sid, depth + 1, i)
 
-    for i, discipline in enumerate(TAXONOMIE):
+    for i, discipline in enumerate(TAXONOMY):
         yield from walk(discipline, None, None, 0, i)

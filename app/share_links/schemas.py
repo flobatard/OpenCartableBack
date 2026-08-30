@@ -14,11 +14,11 @@ from pydantic import BaseModel, Field, field_validator
 
 class ShareLinkCreate(BaseModel):
     # Aide-mémoire facultatif pour distinguer ses liens (« 6eB 2026 »).
-    libelle: str | None = Field(default=None, max_length=200)
+    label: str | None = Field(default=None, max_length=200)
 
-    @field_validator("libelle")
+    @field_validator("label")
     @classmethod
-    def _libelle_blanc_devient_none(cls, v: str | None) -> str | None:
+    def _blank_label_becomes_none(cls, v: str | None) -> str | None:
         if v is None:
             return None
         v = v.strip()
@@ -28,7 +28,7 @@ class ShareLinkCreate(BaseModel):
 class ShareLinkRead(BaseModel):
     id: uuid.UUID
     token: str
-    libelle: str | None
+    label: str | None
     expires_at: datetime
     revoked: bool
     created_at: datetime

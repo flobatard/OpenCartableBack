@@ -422,15 +422,18 @@ def iter_rows(systemes: Iterable[str] | None = None) -> Iterator[dict]:
     dicts ``{id, parent_id, nom, code, systeme, cite, age_min, age_max,
     profondeur, position}``, parents toujours AVANT leurs enfants (ordre FK
     garanti pour l'insert). C'est la seule API consommée par la migration
-    de seed et les tests.
+    de seed et les tests. Les clés des dicts restent les noms de colonnes
+    FRANÇAIS d'origine : la migration de seed (immuable, antérieure au
+    renommage des colonnes) lie ses paramètres par ces clés — ne pas les
+    angliciser.
     """
 
     def walk(
         node: Node,
-        systeme: str,
+        system: str,
         parent_code: str,
         parent_id: uuid.UUID | None,
-        profondeur: int,
+        depth: int,
         position: int,
     ) -> Iterator[dict]:
         code = f"{parent_code}.{node.slug}"
@@ -440,17 +443,17 @@ def iter_rows(systemes: Iterable[str] | None = None) -> Iterator[dict]:
             "parent_id": parent_id,
             "nom": node.nom,
             "code": code,
-            "systeme": systeme,
+            "systeme": system,
             "cite": node.cite,
             "age_min": node.age_min,
             "age_max": node.age_max,
-            "profondeur": profondeur,
+            "profondeur": depth,
             "position": position,
         }
-        for i, enfant in enumerate(node.enfants):
-            yield from walk(enfant, systeme, code, nid, profondeur + 1, i)
+        for i, child in enumerate(node.enfants):
+            yield from walk(child, system, code, nid, depth + 1, i)
 
-    retenus = SYSTEMES if systemes is None else {s: SYSTEMES[s] for s in systemes}
-    for systeme, cycles in retenus.items():
+    selected = SYSTEMES if systemes is None else {s: SYSTEMES[s] for s in systemes}
+    for system, cycles in selected.items():
         for i, cycle in enumerate(cycles):
-            yield from walk(cycle, systeme, systeme, None, 0, i)
+            yield from walk(cycle, system, system, None, 0, i)

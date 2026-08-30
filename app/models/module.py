@@ -13,7 +13,7 @@ Les modules forment la **bibliothèque de modules du cours**, indépendante des
 blocs (motif ``resources``) : un bloc ``module`` peut en pointer un
 (``blocks.module_id``, FK ``CASCADE`` : supprimer le module supprime ses
 blocs pointeurs), mais un module existe sans bloc et peut aussi être intégré
-dans le markdown d'un bloc texte (``oc-module:<id>``).
+dans le markdown d'un bloc ``text`` (``oc-module:<id>``).
 """
 
 import uuid
@@ -35,7 +35,7 @@ class Module(Base):
     course_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), index=True
     )
-    titre: Mapped[str] = mapped_column(String(255))
+    title: Mapped[str] = mapped_column(String(255))
     html: Mapped[str] = mapped_column(Text, default="", server_default="")
     css: Mapped[str] = mapped_column(Text, default="", server_default="")
     js: Mapped[str] = mapped_column(Text, default="", server_default="")

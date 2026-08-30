@@ -2,7 +2,7 @@
 
 Règle d'or (motif avatar_s3_key) : la clé API — chiffrée ou en clair — ne
 figure dans AUCUN schéma de réponse ; seule sort la projection
-``api_key_definie: bool``. Pas de masque type ``sk-…abc`` : il faudrait
+``api_key_set: bool``. Pas de masque type ``sk-…abc`` : il faudrait
 persister un fragment de clé en clair, affaiblissement refusé.
 """
 
@@ -12,23 +12,23 @@ from app.core.ai import AIProvider
 
 # Providers dont la clé API est facultative : ollama n'en a pas ;
 # openai_compatible reçoit un placeholder côté client si absente.
-PROVIDERS_CLE_OPTIONNELLE = frozenset({AIProvider.OLLAMA, AIProvider.OPENAI_COMPATIBLE})
+PROVIDERS_WITH_OPTIONAL_KEY = frozenset({AIProvider.OLLAMA, AIProvider.OPENAI_COMPATIBLE})
 # Providers acceptant une base_url ; openai_compatible l'exige.
-PROVIDERS_AVEC_BASE_URL = frozenset({AIProvider.OLLAMA, AIProvider.OPENAI_COMPATIBLE})
+PROVIDERS_WITH_BASE_URL = frozenset({AIProvider.OLLAMA, AIProvider.OPENAI_COMPATIBLE})
 
 
 class AICredentialsRead(BaseModel):
     provider: str | None = None
     model: str | None = None
     base_url: str | None = None
-    api_key_definie: bool = False
+    api_key_set: bool = False
     # IA par défaut (fallback serveur AI_*) : proposée ou non par ce serveur,
     # et où en est l'utilisateur dans son quota QUOTIDIEN (jour UTC).
-    # ``quota_quotidien`` = plafond effectif résolu (users.ai_quota_appels
+    # ``daily_quota`` = plafond effectif résolu (users.ai_daily_call_quota
     # sinon AI_DEFAULT_DAILY_QUOTA), 0 = illimité.
-    ia_defaut_disponible: bool = False
-    quota_quotidien: int = 0
-    appels_aujourdhui: int = 0
+    default_ai_available: bool = False
+    daily_quota: int = 0
+    calls_today: int = 0
 
 
 class AICredentialsUpdate(BaseModel):
@@ -43,7 +43,7 @@ class AICredentialsUpdate(BaseModel):
 
     @field_validator("api_key")
     @classmethod
-    def _cle_non_blanche(cls, v: SecretStr | None) -> SecretStr | None:
+    def _key_not_blank(cls, v: SecretStr | None) -> SecretStr | None:
         if v is not None and not v.get_secret_value().strip():
             raise ValueError(
                 "api_key ne peut pas être vide ; omettre le champ pour conserver la clé enregistrée"
@@ -51,9 +51,9 @@ class AICredentialsUpdate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _base_url_selon_provider(self) -> "AICredentialsUpdate":
+    def _base_url_per_provider(self) -> "AICredentialsUpdate":
         if self.provider == AIProvider.OPENAI_COMPATIBLE and not self.base_url:
             raise ValueError("base_url est requise pour le provider openai_compatible")
-        if self.base_url and self.provider not in PROVIDERS_AVEC_BASE_URL:
+        if self.base_url and self.provider not in PROVIDERS_WITH_BASE_URL:
             raise ValueError("base_url ne s'applique qu'aux providers ollama et openai_compatible")
         return self

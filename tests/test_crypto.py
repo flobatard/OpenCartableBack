@@ -7,55 +7,55 @@ import pytest
 
 from app.core import crypto
 
-CLE_MAITRE = os.urandom(32)
-CLE_MAITRE_B64 = base64.urlsafe_b64encode(CLE_MAITRE).decode()
+MASTER_KEY = os.urandom(32)
+MASTER_KEY_B64 = base64.urlsafe_b64encode(MASTER_KEY).decode()
 
 
-def test_aller_retour():
-    sel = crypto.nouveau_sel()
-    blob = crypto.chiffrer_secret("sk-très-secrète-é✓", CLE_MAITRE, sel)
+def test_round_trip():
+    salt = crypto.new_salt()
+    blob = crypto.encrypt_secret("sk-très-secrète-é✓", MASTER_KEY, salt)
     assert blob[0] == crypto.FORMAT_V1
-    assert crypto.dechiffrer_secret(blob, CLE_MAITRE, sel) == "sk-très-secrète-é✓"
+    assert crypto.decrypt_secret(blob, MASTER_KEY, salt) == "sk-très-secrète-é✓"
 
 
-def test_deux_chiffrements_different():
+def test_two_encryptions_differ():
     """Nonce aléatoire : le même clair ne produit jamais deux fois le même blob."""
-    sel = crypto.nouveau_sel()
-    assert crypto.chiffrer_secret("x", CLE_MAITRE, sel) != crypto.chiffrer_secret(
-        "x", CLE_MAITRE, sel
+    salt = crypto.new_salt()
+    assert crypto.encrypt_secret("x", MASTER_KEY, salt) != crypto.encrypt_secret(
+        "x", MASTER_KEY, salt
     )
 
 
-def test_le_clair_n_apparait_pas_dans_le_blob():
-    sel = crypto.nouveau_sel()
-    blob = crypto.chiffrer_secret("sk-ma-cle-api", CLE_MAITRE, sel)
+def test_plaintext_absent_from_blob():
+    salt = crypto.new_salt()
+    blob = crypto.encrypt_secret("sk-ma-cle-api", MASTER_KEY, salt)
     assert b"sk-ma-cle-api" not in blob
 
 
-def test_mauvais_sel_ou_mauvaise_cle():
-    sel = crypto.nouveau_sel()
-    blob = crypto.chiffrer_secret("x", CLE_MAITRE, sel)
-    with pytest.raises(crypto.ErreurDechiffrement):
-        crypto.dechiffrer_secret(blob, CLE_MAITRE, crypto.nouveau_sel())
-    with pytest.raises(crypto.ErreurDechiffrement):
-        crypto.dechiffrer_secret(blob, os.urandom(32), sel)
+def test_wrong_salt_or_wrong_key():
+    salt = crypto.new_salt()
+    blob = crypto.encrypt_secret("x", MASTER_KEY, salt)
+    with pytest.raises(crypto.DecryptionError):
+        crypto.decrypt_secret(blob, MASTER_KEY, crypto.new_salt())
+    with pytest.raises(crypto.DecryptionError):
+        crypto.decrypt_secret(blob, os.urandom(32), salt)
 
 
-def test_version_inconnue_ou_blob_tronque():
-    sel = crypto.nouveau_sel()
-    blob = crypto.chiffrer_secret("x", CLE_MAITRE, sel)
-    with pytest.raises(crypto.ErreurDechiffrement):
-        crypto.dechiffrer_secret(bytes([0x02]) + blob[1:], CLE_MAITRE, sel)
-    with pytest.raises(crypto.ErreurDechiffrement):
-        crypto.dechiffrer_secret(blob[:10], CLE_MAITRE, sel)
+def test_unknown_version_or_truncated_blob():
+    salt = crypto.new_salt()
+    blob = crypto.encrypt_secret("x", MASTER_KEY, salt)
+    with pytest.raises(crypto.DecryptionError):
+        crypto.decrypt_secret(bytes([0x02]) + blob[1:], MASTER_KEY, salt)
+    with pytest.raises(crypto.DecryptionError):
+        crypto.decrypt_secret(blob[:10], MASTER_KEY, salt)
 
 
-def test_decoder_cle_maitre():
-    assert crypto.decoder_cle_maitre(CLE_MAITRE_B64) == CLE_MAITRE
-    with pytest.raises(crypto.CleMaitreAbsente):
-        crypto.decoder_cle_maitre("")
-    with pytest.raises(crypto.CleMaitreAbsente):
-        crypto.decoder_cle_maitre("pas-du-base64-!!")
+def test_decode_master_key():
+    assert crypto.decode_master_key(MASTER_KEY_B64) == MASTER_KEY
+    with pytest.raises(crypto.MasterKeyMissing):
+        crypto.decode_master_key("")
+    with pytest.raises(crypto.MasterKeyMissing):
+        crypto.decode_master_key("pas-du-base64-!!")
     # Base64 valide mais pas 32 octets décodés.
-    with pytest.raises(crypto.CleMaitreAbsente):
-        crypto.decoder_cle_maitre(base64.urlsafe_b64encode(b"court").decode())
+    with pytest.raises(crypto.MasterKeyMissing):
+        crypto.decode_master_key(base64.urlsafe_b64encode(b"court").decode())

@@ -1,17 +1,17 @@
 """Recherche publique (J3) : FTS Postgres sur les cours publics et les profs.
 
-Règle d'or : seuls les cours ``visibilite = 'public'`` remontent, et un prof
-ne remonte que si ``cherchable`` (opt-in explicite) AND ``nom_public`` non NULL
-AND au moins un cours public. Tout est en lecture seule, sans identité — même
-régime que ``app/public/`` (aucun JWT, aucun oracle : une facette inconnue
-renvoie une page vide, jamais une erreur — une URL partagée avec un id périmé
-doit rester servable).
+Règle d'or : seuls les cours ``visibility = 'public'`` remontent, et un prof
+ne remonte que si ``searchable`` (opt-in explicite) AND ``public_name`` non
+NULL AND au moins un cours public. Tout est en lecture seule, sans identité —
+même régime que ``app/public/`` (aucun JWT, aucun oracle : une facette
+inconnue renvoie une page vide, jamais une erreur — une URL partagée avec un
+id périmé doit rester servable).
 
 FTS : config ``french_unaccent`` (extension ``unaccent``, migration J3),
 ``websearch_to_tsquery`` (syntaxe utilisateur libre, injection-safe par
 construction). Les vecteurs sont **stockés** (``courses.search_vector`` poids
 titre A / description B ; ``blocks.search_vector`` poids titre B / contenu C,
-sans jamais ``reponse_attendue``) et maintenus par triggers — voir les
+sans jamais ``expected_answer``) et maintenus par triggers — voir les
 docstrings de ``app/models/{course,block}.py``. Les deux vecteurs sont
 combinés à la requête (cours OU un de ses blocs), pas consolidés. Le vecteur
 des profs est calculé à la volée (table minuscule, texte dépendant des M2M).
@@ -35,11 +35,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.storage import Storage
 from app.models.block import Block
-from app.models.course import VISIBILITE_PUBLIC, Course, course_education_levels, course_subjects
+from app.models.course import VISIBILITY_PUBLIC, Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
 from app.models.subject import Subject
 from app.models.user import (
-    CONTEXTE_ENSEIGNE,
+    CONTEXT_TEACHING,
     User,
     user_education_levels,
     user_subjects,
@@ -68,7 +68,7 @@ def _tsquery(q: str):
 
 
 def _courses_filters(tsq, subject_ids, level_ids) -> list:
-    filters: list = [Course.visibilite == VISIBILITE_PUBLIC]
+    filters: list = [Course.visibility == VISIBILITY_PUBLIC]
     if subject_ids is not None:
         filters.append(
             exists(
@@ -137,30 +137,30 @@ def _courses_page_stmt(tsq, subject_ids, level_ids, limit: int, offset: int) -> 
 
 def _teachers_vector():
     """tsvector du prof, calculé à la volée : nom public + noms des matières
-    qu'il déclare enseigner (profil « enseigne »)."""
+    qu'il déclare enseigner (profil « teaching »)."""
     subjects_agg = (
-        select(func.string_agg(Subject.nom, " "))
+        select(func.string_agg(Subject.name, " "))
         .select_from(
             user_subjects.join(Subject, Subject.id == user_subjects.c.subject_id)
         )
         .where(
             user_subjects.c.user_id == User.id,
-            user_subjects.c.contexte == CONTEXTE_ENSEIGNE,
+            user_subjects.c.context == CONTEXT_TEACHING,
         )
         .scalar_subquery()
     )
-    return func.to_tsvector(FTS_CONFIG, func.concat_ws(" ", User.nom_public, subjects_agg))
+    return func.to_tsvector(FTS_CONFIG, func.concat_ws(" ", User.public_name, subjects_agg))
 
 
 def _teachers_filters(tsq, subject_ids, level_ids) -> list:
     filters: list = [
-        User.cherchable.is_(True),
-        User.nom_public.is_not(None),
+        User.searchable.is_(True),
+        User.public_name.is_not(None),
         # Jamais de profil sans contenu : au moins un cours public.
         exists(
             select(1).where(
                 Course.owner_id == User.id,
-                Course.visibilite == VISIBILITE_PUBLIC,
+                Course.visibility == VISIBILITY_PUBLIC,
             )
         ),
     ]
@@ -169,7 +169,7 @@ def _teachers_filters(tsq, subject_ids, level_ids) -> list:
             exists(
                 select(1).where(
                     user_subjects.c.user_id == User.id,
-                    user_subjects.c.contexte == CONTEXTE_ENSEIGNE,
+                    user_subjects.c.context == CONTEXT_TEACHING,
                     user_subjects.c.subject_id.in_(subject_ids),
                 )
             )
@@ -179,7 +179,7 @@ def _teachers_filters(tsq, subject_ids, level_ids) -> list:
             exists(
                 select(1).where(
                     user_education_levels.c.user_id == User.id,
-                    user_education_levels.c.contexte == CONTEXTE_ENSEIGNE,
+                    user_education_levels.c.context == CONTEXT_TEACHING,
                     user_education_levels.c.education_level_id.in_(level_ids),
                 )
             )
@@ -198,17 +198,17 @@ def _teachers_count_stmt(tsq, subject_ids, level_ids) -> Select:
 
 
 def _teachers_page_stmt(tsq, subject_ids, level_ids, limit: int, offset: int) -> Select:
-    # avatar_s3_key/avatar_statut ne sortent jamais de l'API : ils servent à
+    # avatar_s3_key/avatar_status ne sortent jamais de l'API : ils servent à
     # minter l'avatar_url présignée (le mime est inutile au presign GET).
     stmt = select(
-        User.id, User.nom_public, User.avatar_s3_key, User.avatar_statut
+        User.id, User.public_name, User.avatar_s3_key, User.avatar_status
     ).where(*_teachers_filters(tsq, subject_ids, level_ids))
     if tsq is not None:
         stmt = stmt.order_by(
-            func.ts_rank(_teachers_vector(), tsq).desc(), User.nom_public, User.id
+            func.ts_rank(_teachers_vector(), tsq).desc(), User.public_name, User.id
         )
     else:
-        stmt = stmt.order_by(User.nom_public, User.id)
+        stmt = stmt.order_by(User.public_name, User.id)
     return stmt.limit(limit).offset(offset)
 
 
@@ -317,24 +317,24 @@ async def search_courses(
         return SearchCoursesPage(items=[], total=total, limit=limit, offset=offset)
 
     course_ids = [c.id for c in courses]
-    matieres: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
-    lignes_matieres = (
+    subjects: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
+    subject_rows = (
         await db.execute(
-            select(course_subjects.c.course_id, Subject.nom)
+            select(course_subjects.c.course_id, Subject.name)
             .select_from(
                 course_subjects.join(Subject, Subject.id == course_subjects.c.subject_id)
             )
             .where(course_subjects.c.course_id.in_(course_ids))
-            .order_by(course_subjects.c.course_id, Subject.nom)
+            .order_by(course_subjects.c.course_id, Subject.name)
         )
     ).all()
-    for course_id, nom in lignes_matieres:
-        matieres[course_id].append(nom)
+    for course_id, name in subject_rows:
+        subjects[course_id].append(name)
 
-    niveaux: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
-    lignes_niveaux = (
+    levels: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
+    level_rows = (
         await db.execute(
-            select(course_education_levels.c.course_id, EducationLevel.nom)
+            select(course_education_levels.c.course_id, EducationLevel.name)
             .select_from(
                 course_education_levels.join(
                     EducationLevel,
@@ -342,13 +342,13 @@ async def search_courses(
                 )
             )
             .where(course_education_levels.c.course_id.in_(course_ids))
-            .order_by(course_education_levels.c.course_id, EducationLevel.nom)
+            .order_by(course_education_levels.c.course_id, EducationLevel.name)
         )
     ).all()
-    for course_id, nom in lignes_niveaux:
-        niveaux[course_id].append(nom)
+    for course_id, name in level_rows:
+        levels[course_id].append(name)
 
-    comptes = dict(
+    counts = dict(
         (
             await db.execute(
                 select(Block.course_id, func.count())
@@ -359,7 +359,7 @@ async def search_courses(
     )
     return SearchCoursesPage(
         items=[
-            _course_read(c, matieres[c.id], niveaux[c.id], comptes.get(c.id, 0))
+            _course_read(c, subjects[c.id], levels[c.id], counts.get(c.id, 0))
             for c in courses
         ],
         total=total,
@@ -381,7 +381,7 @@ async def search_teachers(
     """Page de profs cherchables (voir critères en tête de module).
 
     Ordre des execute : résolution des facettes comme ``search_courses``
-    (inconnue ⇒ page vide immédiate) ; puis count, page (id + nom_public +
+    (inconnue ⇒ page vide immédiate) ; puis count, page (id + public_name +
     colonnes avatar, tri rank/nom) ; et si items : noms des matières
     enseignées, comptes de cours publics. L'``avatar_url`` est présignée
     localement par item (aucune I/O).
@@ -409,30 +409,30 @@ async def search_teachers(
         return SearchTeachersPage(items=[], total=total, limit=limit, offset=offset)
 
     user_ids = [row[0] for row in rows]
-    matieres: dict[uuid.UUID, list[str]] = {uid: [] for uid in user_ids}
-    lignes_matieres = (
+    subjects: dict[uuid.UUID, list[str]] = {uid: [] for uid in user_ids}
+    subject_rows = (
         await db.execute(
-            select(user_subjects.c.user_id, Subject.nom)
+            select(user_subjects.c.user_id, Subject.name)
             .select_from(
                 user_subjects.join(Subject, Subject.id == user_subjects.c.subject_id)
             )
             .where(
                 user_subjects.c.user_id.in_(user_ids),
-                user_subjects.c.contexte == CONTEXTE_ENSEIGNE,
+                user_subjects.c.context == CONTEXT_TEACHING,
             )
-            .order_by(user_subjects.c.user_id, Subject.nom)
+            .order_by(user_subjects.c.user_id, Subject.name)
         )
     ).all()
-    for user_id, nom in lignes_matieres:
-        matieres[user_id].append(nom)
+    for user_id, name in subject_rows:
+        subjects[user_id].append(name)
 
-    comptes = dict(
+    counts = dict(
         (
             await db.execute(
                 select(Course.owner_id, func.count())
                 .where(
                     Course.owner_id.in_(user_ids),
-                    Course.visibilite == VISIBILITE_PUBLIC,
+                    Course.visibility == VISIBILITY_PUBLIC,
                 )
                 .group_by(Course.owner_id)
             )
@@ -442,12 +442,12 @@ async def search_teachers(
         items=[
             PublicTeacherRead(
                 id=user_id,
-                nom_public=nom_public,
-                avatar_url=avatar_url_for(avatar_s3_key, avatar_statut, storage),
-                subjects=matieres[user_id],
-                public_course_count=comptes.get(user_id, 0),
+                public_name=public_name,
+                avatar_url=avatar_url_for(avatar_s3_key, avatar_status, storage),
+                subjects=subjects[user_id],
+                public_course_count=counts.get(user_id, 0),
             )
-            for user_id, nom_public, avatar_s3_key, avatar_statut in rows
+            for user_id, public_name, avatar_s3_key, avatar_status in rows
         ],
         total=total,
         limit=limit,

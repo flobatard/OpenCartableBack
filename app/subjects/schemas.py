@@ -6,9 +6,9 @@ from pydantic import BaseModel
 class SubjectRead(BaseModel):
     id: uuid.UUID
     parent_id: uuid.UUID | None
-    nom: str
+    name: str
     code: str
-    profondeur: int
+    depth: int
     position: int
     children: list["SubjectRead"] = []
 

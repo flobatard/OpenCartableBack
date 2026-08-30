@@ -39,7 +39,7 @@ def _module_row(**overrides):
     defaults = dict(
         id=uuid.uuid4(),
         course_id=None,
-        titre="Quiz interactif",
+        title="Quiz interactif",
         html="<p>Salut</p>",
         css="p { color: red; }",
         js="console.log('ok')",
@@ -123,15 +123,15 @@ _MODULE_ID = uuid.uuid4()
     ("method", "path", "body"),
     [
         ("GET", f"/api/v1/courses/{_COURSE_ID}/modules", None),
-        ("POST", f"/api/v1/courses/{_COURSE_ID}/modules", {"titre": "Quiz"}),
+        ("POST", f"/api/v1/courses/{_COURSE_ID}/modules", {"title": "Quiz"}),
         ("GET", f"/api/v1/courses/{_COURSE_ID}/modules/{_MODULE_ID}", None),
         ("PATCH", f"/api/v1/courses/{_COURSE_ID}/modules/{_MODULE_ID}", {
-            "titre": "Quiz 2",
+            "title": "Quiz 2",
         }),
         ("DELETE", f"/api/v1/courses/{_COURSE_ID}/modules/{_MODULE_ID}", None),
     ],
 )
-def test_auth_requise(method, path, body):
+def test_auth_required(method, path, body):
     response = TestClient(create_app()).request(method, path, json=body)
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
@@ -144,13 +144,13 @@ def test_auth_requise(method, path, body):
     ("method", "path_suffix", "body"),
     [
         ("GET", "", None),
-        ("POST", "", {"titre": "Quiz"}),
+        ("POST", "", {"title": "Quiz"}),
         ("GET", f"/{_MODULE_ID}", None),
-        ("PATCH", f"/{_MODULE_ID}", {"titre": "Quiz 2"}),
+        ("PATCH", f"/{_MODULE_ID}", {"title": "Quiz 2"}),
         ("DELETE", f"/{_MODULE_ID}", None),
     ],
 )
-def test_cours_autrui_introuvable(method, path_suffix, body):
+def test_foreign_course_not_found(method, path_suffix, body):
     # Le select scopé owner_id ne retourne rien : 404, jamais 403.
     user = _user_row()
     session = _FakeSession([[user], []])
@@ -166,11 +166,11 @@ def test_cours_autrui_introuvable(method, path_suffix, body):
 # --- Liste --------------------------------------------------------------------
 
 
-def test_liste_modules_sans_code():
+def test_list_modules_without_code():
     user = _user_row()
     course = _course_row()
     m1 = _module_row(course_id=course.id)
-    m2 = _module_row(course_id=course.id, titre="Simulation")
+    m2 = _module_row(course_id=course.id, title="Simulation")
     # FIFO : cours (contrôle de propriété), puis modules (tri côté SQL).
     session = _FakeSession([[user], [course], [m1, m2]])
     response = _client(session).get(f"/api/v1/courses/{course.id}/modules")
@@ -181,7 +181,7 @@ def test_liste_modules_sans_code():
     # ModuleSummary : jamais le code dans la liste (payload léger).
     assert body[0] == {
         "id": str(m1.id),
-        "titre": "Quiz interactif",
+        "title": "Quiz interactif",
         "created_at": _NOW_JSON,
         "updated_at": _NOW_JSON,
     }
@@ -191,12 +191,12 @@ def test_liste_modules_sans_code():
 # --- Création -----------------------------------------------------------------
 
 
-def test_creation_module_ok():
+def test_create_module_ok():
     user = _user_row()
     course = _course_row()
     # FIFO : cours, puis timestamps servis par l'insert RETURNING.
     session = _FakeSession([[user], [course], [(_NOW, _NOW)]])
-    payload = {"titre": "Quiz", "html": "<p>Q1</p>", "css": "", "js": "let a = 1"}
+    payload = {"title": "Quiz", "html": "<p>Q1</p>", "css": "", "js": "let a = 1"}
     response = _client(session).post(
         f"/api/v1/courses/{course.id}/modules", json=payload
     )
@@ -204,25 +204,25 @@ def test_creation_module_ok():
     assert response.status_code == 201
     body = response.json()
     assert body["id"]
-    assert body["titre"] == "Quiz"
+    assert body["title"] == "Quiz"
     assert body["html"] == "<p>Q1</p>"
     assert body["css"] == ""
     assert body["js"] == "let a = 1"
 
     [(stmt, _)] = _inserts(session, "modules")
-    valeurs = stmt.compile().params
-    assert valeurs["titre"] == "Quiz"
-    assert valeurs["html"] == "<p>Q1</p>"
+    values = stmt.compile().params
+    assert values["title"] == "Quiz"
+    assert values["html"] == "<p>Q1</p>"
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
 
 
-def test_creation_module_code_vide_par_defaut():
+def test_create_module_empty_code_by_default():
     user = _user_row()
     course = _course_row()
     session = _FakeSession([[user], [course], [(_NOW, _NOW)]])
     response = _client(session).post(
-        f"/api/v1/courses/{course.id}/modules", json={"titre": "Quiz"}
+        f"/api/v1/courses/{course.id}/modules", json={"title": "Quiz"}
     )
 
     assert response.status_code == 201
@@ -235,13 +235,13 @@ def test_creation_module_code_vide_par_defaut():
 @pytest.mark.parametrize(
     "payload",
     [
-        {},  # titre requis
-        {"titre": "   "},  # titre blanc
-        {"titre": "Quiz", "entrypoint": "index.html"},  # clé en trop (extra=forbid)
-        {"titre": "Quiz", "js": "x" * (MAX_CODE_LENGTH + 1)},  # code trop long
+        {},  # title requis
+        {"title": "   "},  # titre blanc
+        {"title": "Quiz", "entrypoint": "index.html"},  # clé en trop (extra=forbid)
+        {"title": "Quiz", "js": "x" * (MAX_CODE_LENGTH + 1)},  # code trop long
     ],
 )
-def test_creation_module_payload_invalide_sans_acces_bdd(payload):
+def test_create_module_invalid_payload_without_db_access(payload):
     session = _FakeSession()
     response = _client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/modules", json=payload
@@ -253,7 +253,7 @@ def test_creation_module_payload_invalide_sans_acces_bdd(payload):
 # --- Détail -------------------------------------------------------------------
 
 
-def test_detail_module_avec_code():
+def test_module_detail_with_code():
     user = _user_row()
     course = _course_row()
     module = _module_row(course_id=course.id)
@@ -266,7 +266,7 @@ def test_detail_module_avec_code():
     assert response.status_code == 200
     assert response.json() == {
         "id": str(module.id),
-        "titre": "Quiz interactif",
+        "title": "Quiz interactif",
         "html": "<p>Salut</p>",
         "css": "p { color: red; }",
         "js": "console.log('ok')",
@@ -276,7 +276,7 @@ def test_detail_module_avec_code():
     assert session.commits == 1  # lecture seule
 
 
-def test_detail_module_inconnu_ou_autre_cours():
+def test_module_detail_unknown_or_other_course():
     user = _user_row()
     course = _course_row()
     session = _FakeSession([[user], [course], []])
@@ -291,29 +291,29 @@ def test_detail_module_inconnu_ou_autre_cours():
 # --- Édition partielle --------------------------------------------------------
 
 
-def test_patch_titre_seul():
+def test_patch_title_only():
     user = _user_row()
     course = _course_row()
     module = _module_row(course_id=course.id)
     session = _FakeSession([[user], [course], [module]])
     response = _client(session).patch(
         f"/api/v1/courses/{course.id}/modules/{module.id}",
-        json={"titre": "Quiz renommé"},
+        json={"title": "Quiz renommé"},
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["titre"] == "Quiz renommé"
+    assert body["title"] == "Quiz renommé"
     assert body["html"] == "<p>Salut</p>"  # intact
     # Écriture via l'unité de travail ORM (mutation d'attribut), pas d'Update Core.
-    assert module.titre == "Quiz renommé"
+    assert module.title == "Quiz renommé"
     assert module.html == "<p>Salut</p>"
     assert not any(isinstance(stmt, Update) for stmt, _ in session.executed)
     assert course.updated_at != _NOW
     assert session.commits >= 1
 
 
-def test_patch_code_seul():
+def test_patch_code_only():
     # L'autosave de l'éditeur envoie html/css/js sans le titre.
     user = _user_row()
     course = _course_row()
@@ -329,9 +329,9 @@ def test_patch_code_seul():
     assert body["html"] == "<p>V2</p>"
     assert body["css"] == ""
     assert body["js"] == "let b = 2"
-    assert body["titre"] == "Quiz interactif"  # intact
+    assert body["title"] == "Quiz interactif"  # intact
     assert module.html == "<p>V2</p>"
-    assert module.titre == "Quiz interactif"
+    assert module.title == "Quiz interactif"
     # updated_at posé côté Python : la réponse du PATCH est fraîche (le
     # onupdate SQL ne tirerait qu'au flush, après construction du read).
     assert body["updated_at"] != _NOW_JSON
@@ -343,15 +343,15 @@ def test_patch_code_seul():
     "payload",
     [
         {},  # au moins un champ requis
-        {"titre": None},  # un module a toujours un titre
-        {"titre": "   "},  # titre blanc
+        {"title": None},  # un module a toujours un titre
+        {"title": "   "},  # titre blanc
         {"html": None},  # null n'efface pas un code (vider = envoyer "")
         {"js": None},  # idem pour chaque champ de code
         {"entrypoint": "index.html"},  # clé en trop (extra=forbid)
         {"html": "x" * (MAX_CODE_LENGTH + 1)},  # code trop long
     ],
 )
-def test_patch_payload_invalide_sans_acces_bdd(payload):
+def test_patch_invalid_payload_without_db_access(payload):
     session = _FakeSession()
     response = _client(session).patch(
         f"/api/v1/courses/{uuid.uuid4()}/modules/{uuid.uuid4()}", json=payload
@@ -360,13 +360,13 @@ def test_patch_payload_invalide_sans_acces_bdd(payload):
     assert session.executed == []
 
 
-def test_patch_module_inconnu_ou_autre_cours():
+def test_patch_unknown_or_other_course_module():
     user = _user_row()
     course = _course_row()
     session = _FakeSession([[user], [course], []])
     response = _client(session).patch(
         f"/api/v1/courses/{course.id}/modules/{uuid.uuid4()}",
-        json={"titre": "Quiz"},
+        json={"title": "Quiz"},
     )
 
     assert response.status_code == 404
@@ -377,7 +377,7 @@ def test_patch_module_inconnu_ou_autre_cours():
 # --- Suppression --------------------------------------------------------------
 
 
-def test_suppression_module():
+def test_delete_module():
     user = _user_row()
     course = _course_row()
     module = _module_row(course_id=course.id)
@@ -395,7 +395,7 @@ def test_suppression_module():
     assert session.commits >= 2  # upsert auth + delete
 
 
-def test_suppression_module_inconnu():
+def test_delete_unknown_module():
     user = _user_row()
     course = _course_row()
     session = _FakeSession([[user], [course], []])

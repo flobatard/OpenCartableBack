@@ -63,7 +63,7 @@ async def test_stream_nominal(fake_build) -> None:
 
 
 @pytest.mark.anyio
-async def test_fallback_serveur(fake_build, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_server_fallback(fake_build, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
     monkeypatch.setattr(settings, "AI_MODEL", "llama3.2")
     result = await AIClient().complete(MESSAGES, config=None)
@@ -71,13 +71,13 @@ async def test_fallback_serveur(fake_build, monkeypatch: pytest.MonkeyPatch) -> 
     assert result.model == "llama3.2"
 
 
-def test_sans_config_ni_fallback() -> None:
+def test_without_config_or_fallback() -> None:
     with pytest.raises(HTTPException) as exc:
         AIClient().resolve_config(None)
     assert exc.value.status_code == 422
 
 
-def test_fallback_provider_inconnu(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fallback_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "AI_PROVIDER", "skynet")
     monkeypatch.setattr(settings, "AI_MODEL", "t-1000")
     with pytest.raises(HTTPException) as exc:
@@ -88,7 +88,7 @@ def test_fallback_provider_inconnu(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------- validation locale
 
 
-def test_openai_compatible_sans_base_url() -> None:
+def test_openai_compatible_without_base_url() -> None:
     cfg = AIRequestConfig(provider=AIProvider.OPENAI_COMPATIBLE, model="x")
     with pytest.raises(HTTPException) as exc:
         build_chat_model(cfg)
@@ -96,7 +96,7 @@ def test_openai_compatible_sans_base_url() -> None:
     assert "base_url" in exc.value.detail
 
 
-def test_anthropic_sans_cle() -> None:
+def test_anthropic_without_key() -> None:
     cfg = AIRequestConfig(provider=AIProvider.ANTHROPIC, model="claude-opus-5")
     with pytest.raises(HTTPException) as exc:
         build_chat_model(cfg)
@@ -137,9 +137,9 @@ def test_translate_provider_error(exc: Exception, expected: int) -> None:
 class _ExplodingModel:
     """Faux chat model dont ainvoke/astream lèvent une exception provider."""
 
-    def __init__(self, exc: Exception, tokens_avant: int = 0) -> None:
+    def __init__(self, exc: Exception, tokens_before: int = 0) -> None:
         self._exc = exc
-        self._tokens_avant = tokens_avant
+        self._tokens_before = tokens_before
 
     async def ainvoke(self, messages, config=None):
         raise self._exc
@@ -147,13 +147,13 @@ class _ExplodingModel:
     async def astream(self, messages, config=None):
         from langchain_core.messages import AIMessageChunk
 
-        for _ in range(self._tokens_avant):
+        for _ in range(self._tokens_before):
             yield AIMessageChunk(content="tok")
         raise self._exc
 
 
 @pytest.mark.anyio
-async def test_complete_erreur_provider(fake_build) -> None:
+async def test_complete_provider_error(fake_build) -> None:
     fake_build["model"] = _ExplodingModel(_ProviderError(401))
     with pytest.raises(HTTPException) as exc:
         await AIClient().complete(MESSAGES, CONFIG)
@@ -161,9 +161,9 @@ async def test_complete_erreur_provider(fake_build) -> None:
 
 
 @pytest.mark.anyio
-async def test_stream_erreur_en_cours(fake_build) -> None:
+async def test_stream_mid_stream_error(fake_build) -> None:
     """L'erreur mid-stream sort du generator APRÈS les premiers tokens."""
-    fake_build["model"] = _ExplodingModel(httpx.ConnectError("down"), tokens_avant=2)
+    fake_build["model"] = _ExplodingModel(httpx.ConnectError("down"), tokens_before=2)
     events = []
     with pytest.raises(HTTPException) as exc:
         async for event in AIClient().stream(MESSAGES, CONFIG):
@@ -175,7 +175,7 @@ async def test_stream_erreur_en_cours(fake_build) -> None:
 # ---------------------------------------------------------------- Langfuse opt-in
 
 
-def test_langfuse_desactive_par_defaut() -> None:
+def test_langfuse_disabled_by_default() -> None:
     assert observability.build_callbacks() == []
     config = observability.build_run_config(trace_name="t", user_id="prof-123")
     assert config["callbacks"] == []
@@ -183,7 +183,7 @@ def test_langfuse_desactive_par_defaut() -> None:
     assert config["metadata"] == {"langfuse_user_id": "prof-123"}
 
 
-def test_langfuse_active(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_langfuse_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setattr(settings, "LANGFUSE_SECRET_KEY", "sk-test")
     monkeypatch.setattr(settings, "LANGFUSE_HOST", "https://langfuse.test")

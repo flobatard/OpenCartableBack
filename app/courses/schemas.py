@@ -1,10 +1,10 @@
 """Schémas des cours et de la structure de leurs blocs.
 
 ``BlockCreate`` ne porte que le ``type`` (et les métadonnées
-``titre``/``description``, communes à tous les types), le service pose un
+``title``/``description``, communes à tous les types), le service pose un
 ``content`` par défaut conforme au contrat de :mod:`app.models.block`.
 Le contenu s'édite ensuite via ``BlockUpdate.content`` (une forme par type
-de bloc : ``TexteContent``, ``ExerciceContent``, ``DocumentContent`` ;
+de bloc : ``TextContent``, ``ExerciseContent``, ``DocumentContent`` ;
 ``module`` n'a pas de forme éditable avant le J4) ; le lien d'un bloc
 ``document`` vers sa ressource s'édite via ``BlockUpdate.resource_id``.
 """
@@ -18,14 +18,14 @@ from pydantic.alias_generators import to_camel
 
 
 class CourseCreate(BaseModel):
-    titre: str = Field(min_length=1, max_length=300)
+    title: str = Field(min_length=1, max_length=300)
     description: str | None = Field(default=None, max_length=2000)
     subject_ids: list[uuid.UUID] = []
     education_level_ids: list[uuid.UUID] = []
 
-    @field_validator("titre")
+    @field_validator("title")
     @classmethod
-    def _titre_non_blanc(cls, v: str) -> str:
+    def _title_not_blank(cls, v: str) -> str:
         v = v.strip()
         if not v:
             raise ValueError("Le titre ne peut pas être vide")
@@ -35,7 +35,7 @@ class CourseCreate(BaseModel):
 class CourseRead(BaseModel):
     # Pas d'owner_id : les routes ne servent que les cours de l'appelant.
     id: uuid.UUID
-    titre: str
+    title: str
     description: str | None
     subject_ids: list[uuid.UUID]
     education_level_ids: list[uuid.UUID]
@@ -43,8 +43,8 @@ class CourseRead(BaseModel):
     # Écho brut du JSONB stocké (comme BlockRead.content) : {} tant que non
     # personnalisé — le front y applique alors ses défauts.
     preview_settings: dict[str, Any]
-    # Régime d'accès élève (J2) : public | prive | en_cours.
-    visibilite: str
+    # Régime d'accès élève (J2) : public | private | draft.
+    visibility: str
     created_at: datetime
     updated_at: datetime
 
@@ -53,7 +53,7 @@ class BlockRead(BaseModel):
     id: uuid.UUID
     position: int
     type: str
-    titre: str | None
+    title: str | None
     description: str | None
     content: dict[str, Any]
     resource_id: uuid.UUID | None
@@ -86,28 +86,28 @@ class PreviewSettings(BaseModel):
     font: Literal["sans", "serif"]
 
 
-class VisibiliteUpdate(BaseModel):
+class VisibilityUpdate(BaseModel):
     """Changement du régime d'accès élève d'un cours (J2).
 
-    Littéraux = constantes VISIBILITE_* de app/models/course.py. Passer un
-    cours en ``en_cours`` suspend ses liens de partage sans les supprimer
+    Littéraux = constantes VISIBILITY_* de app/models/course.py. Passer un
+    cours en ``draft`` suspend ses liens de partage sans les supprimer
     (la vérification se fait à chaque accès public).
     """
 
-    visibilite: Literal["public", "prive", "en_cours"]
+    visibility: Literal["public", "private", "draft"]
 
 
 class BlockCreate(BaseModel):
     # Littéraux = constantes TYPE_* de app/models/block.py. Un bloc
     # « document » naît vide (resource_id NULL) et se remplit dans
     # l'éditeur via BlockUpdate.resource_id.
-    type: Literal["texte", "exercice", "document", "module"]
+    type: Literal["text", "exercise", "document", "module"]
     # Métadonnées facultatives, communes à tous les types (cf. app/models/block.py).
-    titre: str | None = Field(default=None, max_length=300)
+    title: str | None = Field(default=None, max_length=300)
     description: str | None = Field(default=None, max_length=500)
 
 
-class TexteContent(BaseModel):
+class TextContent(BaseModel):
     # Contrat de app/models/block.py : markdown simple, jamais de HTML brut ;
     # formules LaTeX admises dans la chaîne ($…$ en ligne, $$…$$ centrée).
     # Pas de trim ni min_length : le blanc est signifiant en markdown et
@@ -117,7 +117,7 @@ class TexteContent(BaseModel):
     markdown: str = Field(max_length=100_000)
 
 
-class ExerciceQuestion(BaseModel):
+class ExerciseQuestion(BaseModel):
     """Question à réponse libre d'un bloc exercice.
 
     ``id`` absent/``None`` = nouvelle question (uuid4 généré par le
@@ -128,26 +128,26 @@ class ExerciceQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: uuid.UUID | None = None
-    enonce: str = Field(max_length=20_000)
-    type: Literal["texte_libre"] = "texte_libre"
+    statement: str = Field(max_length=20_000)
+    type: Literal["free_text"] = "free_text"
     # Corrigé du prof, texte simple (pas de markdown) — jamais servi aux
     # élèves (le J2 filtrera le content des liens publics).
-    reponse_attendue: str = Field(default="", max_length=20_000)
+    expected_answer: str = Field(default="", max_length=20_000)
 
 
-class ExerciceContent(BaseModel):
+class ExerciseContent(BaseModel):
     # Contrat de app/models/block.py : sujet markdown + questions ordonnées.
     # Sémantique REMPLACEMENT : une question absente du payload est
     # supprimée. ``questions`` requis sans défaut, exprès : la forme reste
-    # disjointe de TexteContent (smart union sans discriminant) et un payload
+    # disjointe de TextContent (smart union sans discriminant) et un payload
     # partiel ne peut pas effacer les questions en validant à moitié.
     model_config = ConfigDict(extra="forbid")
 
-    enonce: str = Field(max_length=100_000)
-    questions: list[ExerciceQuestion] = Field(max_length=50)
+    statement: str = Field(max_length=100_000)
+    questions: list[ExerciseQuestion] = Field(max_length=50)
 
     @model_validator(mode="after")
-    def _ids_sans_doublons(self) -> "ExerciceContent":
+    def _ids_without_duplicates(self) -> "ExerciseContent":
         ids = [q.id for q in self.questions if q.id is not None]
         if len(set(ids)) != len(ids):
             raise ValueError("questions contient des ids dupliqués")
@@ -163,38 +163,38 @@ class DocumentContent(BaseModel):
     # et les formes restent disjointes (extra="forbid" partout).
     model_config = ConfigDict(extra="forbid")
 
-    legende: str | None = Field(default=None, max_length=500)
-    affichage: Literal["inline", "telechargement"] = "inline"
+    caption: str | None = Field(default=None, max_length=500)
+    display: Literal["inline", "download"] = "inline"
 
 
 class BlockUpdate(BaseModel):
     """Édition partielle d'un bloc.
 
-    ``titre``/``description`` s'appliquent à tous les types de bloc ;
+    ``title``/``description`` s'appliquent à tous les types de bloc ;
     ``content`` est une union de formes disjointes (``extra="forbid"`` des
     deux côtés) — le service vérifie que la forme reçue correspond au type
     du bloc. ``resource_id`` ne s'applique qu'aux blocs ``document`` :
     ``null`` explicite détache la ressource, un uuid pointe une ressource
-    du même cours au statut ``disponible`` (validé côté service).
+    du même cours au statut ``available`` (validé côté service).
     ``module_id`` est son miroir pour les blocs ``module`` : ``null``
     détache, un uuid pointe un module du même cours (validé côté service —
     pas de statut à vérifier, le code vit en base). Seuls
-    les champs effectivement fournis sont modifiés — un ``titre``/
+    les champs effectivement fournis sont modifiés — un ``title``/
     ``description``/``resource_id``/``module_id`` explicitement à ``null``
     l'efface, un champ absent le laisse inchangé (``model_fields_set``).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    titre: str | None = Field(default=None, max_length=300)
+    title: str | None = Field(default=None, max_length=300)
     description: str | None = Field(default=None, max_length=500)
     # DocumentContent en dernier : forme la plus permissive de l'union.
-    content: TexteContent | ExerciceContent | DocumentContent | None = None
+    content: TextContent | ExerciseContent | DocumentContent | None = None
     resource_id: uuid.UUID | None = None
     module_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
-    def _au_moins_un_champ(self) -> "BlockUpdate":
+    def _at_least_one_field(self) -> "BlockUpdate":
         if not self.model_fields_set:
             raise ValueError("Fournir au moins un champ à modifier")
         return self
@@ -204,7 +204,7 @@ class BlockOrderUpdate(BaseModel):
     block_ids: list[uuid.UUID]
 
     @model_validator(mode="after")
-    def _sans_doublons(self) -> "BlockOrderUpdate":
+    def _without_duplicates(self) -> "BlockOrderUpdate":
         if len(set(self.block_ids)) != len(self.block_ids):
             raise ValueError("block_ids contient des doublons")
         return self

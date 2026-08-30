@@ -9,7 +9,7 @@ from app.models.education_level import EducationLevel
 
 async def list_education_levels(db: AsyncSession) -> Sequence[EducationLevel]:
     stmt = select(EducationLevel).order_by(
-        EducationLevel.profondeur, EducationLevel.position, EducationLevel.nom
+        EducationLevel.depth, EducationLevel.position, EducationLevel.name
     )
     return (await db.execute(stmt)).scalars().all()
 
@@ -27,13 +27,13 @@ def build_tree(levels: Sequence[EducationLevel]) -> list[EducationLevelRead]:
         node = EducationLevelRead(
             id=lvl.id,
             parent_id=lvl.parent_id,
-            nom=lvl.nom,
+            name=lvl.name,
             code=lvl.code,
-            systeme=lvl.systeme,
+            system=lvl.system,
             cite=lvl.cite,
             age_min=lvl.age_min,
             age_max=lvl.age_max,
-            profondeur=lvl.profondeur,
+            depth=lvl.depth,
             position=lvl.position,
             children=[],
         )

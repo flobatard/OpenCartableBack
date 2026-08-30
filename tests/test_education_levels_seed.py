@@ -1,4 +1,10 @@
-"""Intégrité du seed des niveaux d'étude — aucun accès DB, on valide la donnée pure."""
+"""Intégrité du seed des niveaux d'étude — aucun accès DB, on valide la donnée pure.
+
+NB : la surface de données du module seed reste volontairement en FRANÇAIS
+(clés ``nom``/``profondeur``/``systeme``, constante ``SYSTEMES``, kwarg
+``iter_rows(systemes=...)`` — contrat APPEND-ONLY : les migrations de seed
+immuables rejouent ces dicts contre les noms de colonnes d'origine).
+"""
 
 import uuid
 from collections import Counter
@@ -9,60 +15,60 @@ from app.education_levels.seed_data import (
     education_level_id,
     iter_rows,
 )
-from app.models.education_level import CITE_MAX, PROFONDEUR_MAX
+from app.models.education_level import CITE_MAX, MAX_DEPTH
 from app.subjects.seed_data import SEED_NAMESPACE as SUBJECTS_SEED_NAMESPACE
 
 ROWS = list(iter_rows())
 BY_ID = {r["id"]: r for r in ROWS}
 
 
-def test_codes_et_ids_uniques():
+def test_codes_and_ids_unique():
     codes = [r["code"] for r in ROWS]
     assert len(set(codes)) == len(codes)
     assert len(BY_ID) == len(ROWS)
 
 
-def test_unicite_systeme_parent_nom_racines_comprises():
-    # Miroir de la contrainte UNIQUE NULLS NOT DISTINCT (systeme, parent_id, nom)
-    doublons = [
+def test_system_parent_name_unique_including_roots():
+    # Miroir de la contrainte UNIQUE NULLS NOT DISTINCT (system, parent_id, name)
+    duplicates = [
         k
         for k, v in Counter((r["systeme"], r["parent_id"], r["nom"]) for r in ROWS).items()
         if v > 1
     ]
-    assert doublons == []
+    assert duplicates == []
 
 
-def test_profondeurs_coherentes():
+def test_depths_consistent():
     for r in ROWS:
-        assert 0 <= r["profondeur"] <= PROFONDEUR_MAX
+        assert 0 <= r["profondeur"] <= MAX_DEPTH
         if r["parent_id"] is None:
             assert r["profondeur"] == 0
         else:
             assert r["profondeur"] == BY_ID[r["parent_id"]]["profondeur"] + 1
 
 
-def test_parents_avant_enfants_et_pas_d_orphelin():
+def test_parents_before_children_and_no_orphan():
     # La migration de seed insère dans l'ordre d'itération : chaque parent
     # doit avoir été yieldé avant ses enfants.
-    vus: set[uuid.UUID] = set()
+    seen: set[uuid.UUID] = set()
     for r in ROWS:
         if r["parent_id"] is not None:
-            assert r["parent_id"] in vus, f"orphelin ou parent tardif : {r['code']}"
-        vus.add(r["id"])
+            assert r["parent_id"] in seen, f"orphelin ou parent tardif : {r['code']}"
+        seen.add(r["id"])
 
 
-def test_volumetrie_attendue():
+def test_expected_volume():
     # Voie générale par système, hors préélémentaire. À faire évoluer avec
     # les appends (maternelle, voie pro, BTS/BUT/CPGE, autres systèmes...).
-    attendu = {
+    expected = {
         "fr": 22, "de": 20, "uk": 20, "es": 19, "it": 20, "be": 18,
         "ch": 20, "nl": 18, "pt": 18, "us": 19, "ca": 19, "ca-qc": 20,
     }
-    assert Counter(r["systeme"] for r in ROWS) == attendu
+    assert Counter(r["systeme"] for r in ROWS) == expected
     assert len(ROWS) == 233
 
 
-def test_systemes_declares_et_codes_prefixes():
+def test_systems_declared_and_codes_prefixed():
     assert {r["systeme"] for r in ROWS} == set(SYSTEMES)
     for r in ROWS:
         assert r["code"].startswith(f"{r['systeme']}.")
@@ -72,28 +78,28 @@ def test_systemes_declares_et_codes_prefixes():
             assert r["code"].startswith(f"{parent['code']}.")
 
 
-def test_filtre_systemes():
+def test_systems_filter():
     # Point d'entrée des futures data migrations d'append : ne yield que
     # les systèmes demandés, sans toucher aux IDs.
-    partiel = list(iter_rows(systemes=["de", "us"]))
-    assert {r["systeme"] for r in partiel} == {"de", "us"}
-    assert [r["id"] for r in partiel] == [
+    partial = list(iter_rows(systemes=["de", "us"]))
+    assert {r["systeme"] for r in partial} == {"de", "us"}
+    assert [r["id"] for r in partial] == [
         r["id"] for r in ROWS if r["systeme"] in ("de", "us")
     ]
 
 
-def test_cite_valides():
+def test_cite_values_valid():
     # Pivot international : toute classe porte un CITE ; seuls des cycles
     # multi-CITE (supérieur, secondaires à cheval 2/3...) restent à None.
     for r in ROWS:
         assert r["cite"] is None or 0 <= r["cite"] <= CITE_MAX
-        if r["profondeur"] == PROFONDEUR_MAX:
+        if r["profondeur"] == MAX_DEPTH:
             assert r["cite"] is not None, f"classe sans CITE : {r['code']}"
         if r["cite"] is None:
             assert r["profondeur"] == 0, f"classe multi-CITE impossible : {r['code']}"
 
 
-def test_ages_coherents():
+def test_ages_consistent():
     for r in ROWS:
         if r["age_min"] is not None and r["age_max"] is not None:
             assert r["age_min"] <= r["age_max"], r["code"]
@@ -109,7 +115,7 @@ def test_ages_coherents():
             assert parent["age_max"] is None, r["code"]
 
 
-def test_namespace_fige():
+def test_namespace_frozen():
     # Garde-fou : si SEED_NAMESPACE ou un slug change, les IDs seedés changent
     # et la migration de seed n'est plus idempotente.
     assert education_level_id("fr.college") == uuid.UUID("256c64c8-4f62-525b-90cc-794975df5bb9")

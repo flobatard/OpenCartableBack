@@ -2,7 +2,7 @@
 
 Même règle d'or que ``app/public/schemas.py`` : ne JAMAIS exposer une donnée
 réservée au prof. Les cartes de cours réutilisent ``PublicCourseRead`` (contrat
-J2 inchangé, même carte côté front) ; un prof n'expose que ``nom_public`` et
+J2 inchangé, même carte côté front) ; un prof n'expose que ``public_name`` et
 ses matières enseignées (noms dénormalisés).
 
 Première enveloppe paginée de l'API (précédent J3) : ``{items, total, limit,
@@ -25,15 +25,15 @@ class SearchCoursesPage(BaseModel):
 
 
 class PublicTeacherRead(BaseModel):
-    """Prof cherchable : opt-in ``cherchable`` + ``nom_public`` + au moins un
+    """Prof cherchable : opt-in ``searchable`` + ``public_name`` + au moins un
     cours public (règle du service). Jamais d'email ni de ``sub``."""
 
     id: uuid.UUID
-    nom_public: str
+    public_name: str
     # URL présignée inline de la photo de profil (TTL court), None si le prof
     # n'en a pas — jamais la clé S3 (règle d'or ci-dessus).
     avatar_url: str | None
-    # Matières que le prof déclare enseigner (profil « enseigne »),
+    # Matières que le prof déclare enseigner (profil « teaching »),
     # noms dénormalisés triés — motif J2.
     subjects: list[str]
     public_course_count: int
