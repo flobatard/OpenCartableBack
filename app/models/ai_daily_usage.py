@@ -31,4 +31,5 @@ class AIDailyUsage(Base):
     appels: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Pas de relation ORM (lazy-load async interdit) ni de purge automatique :
-    # une ligne par utilisateur actif et par jour, volume négligeable.
+    # une ligne par utilisateur actif et par jour, volume négligeable à court
+    # terme — stratégie de purge à prévoir, suivie dans le TODO.md racine.
