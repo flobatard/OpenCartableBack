@@ -1,24 +1,81 @@
-"""Tests des routes de smoke-test IA (app/ai/) — aucun réseau.
+"""Tests des routes de smoke-test IA (app/ai/) — aucun réseau ni Postgres.
 
 Motif ``_FakeStorage`` : un ``_FakeAIClient`` duck-typé est injecté via
-``app.dependency_overrides[get_ai_client]`` (+ ``get_current_user``).
-Le SSE est lu via ``client.stream(...)`` du TestClient.
+``app.dependency_overrides[get_ai_client]`` (+ ``get_current_user`` et
+``get_db`` — la cascade ``config_effective`` lit le credential utilisateur
+quand la requête ne porte pas de config). Le SSE est lu via
+``client.stream(...)`` du TestClient.
 """
 
+import base64
+import os
+import uuid
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.sql.dml import Delete, Insert
 
+from app.core import crypto
 from app.core.ai import AICompletion, AIStreamEvent, AIUsage, get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
+from app.core.config import settings
+from app.core.database import get_db
 from app.main import create_app
 
 CHAT_PAYLOAD = {
     "messages": [{"role": "user", "content": "Bonjour"}],
     "config": {"provider": "ollama", "model": "llama3.2"},
 }
+SANS_CONFIG_PAYLOAD = {"messages": [{"role": "user", "content": "Salut"}]}
+CLE_MAITRE = os.urandom(32)
+
+
+def _user_row(**overrides):
+    defaults = dict(
+        id=uuid.uuid4(),
+        sub="prof-123",
+        email=None,
+        ai_provider=None,
+        ai_model=None,
+        ai_base_url=None,
+        ai_api_key_chiffree=None,
+        ai_chiffrement_sel=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def one(self):
+        [row] = self._rows
+        return row
+
+
+class _FakeSession:
+    """FIFO des SELECT (motif test_users_api.py), INSERT/DELETE tracés."""
+
+    def __init__(self, select_results=()):
+        self._select_results = list(select_results)
+        self.executed = []
+        self.commits = 0
+
+    async def execute(self, stmt, params=None):
+        self.executed.append((stmt, params))
+        if isinstance(stmt, (Insert, Delete)):
+            return _FakeResult([])
+        return _FakeResult(self._select_results.pop(0))
+
+    async def commit(self):
+        self.commits += 1
 
 
 class _FakeAIClient:
@@ -62,12 +119,18 @@ class _FakeAIClient:
             yield event
 
 
-def _client(ai_client: _FakeAIClient | None = None) -> tuple[TestClient, _FakeAIClient]:
+def _client(
+    ai_client: _FakeAIClient | None = None, session: _FakeSession | None = None
+) -> tuple[TestClient, _FakeAIClient]:
     app = create_app()
     fake = ai_client or _FakeAIClient()
+    # Par défaut : un user sans credential IA (consommé seulement si la
+    # requête ne porte pas de config — la cascade fait insert + select).
+    fake_session = session or _FakeSession([[_user_row()]])
     app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
         sub="prof-123", email=None, roles=frozenset(), claims={}
     )
+    app.dependency_overrides[get_db] = lambda: fake_session
     app.dependency_overrides[get_ai_client] = lambda: fake
     return TestClient(app), fake
 
@@ -110,13 +173,77 @@ def test_chat_nominal() -> None:
     assert fake.calls[0]["config"].provider.value == "ollama"
 
 
-def test_chat_sans_config_utilise_le_fallback() -> None:
+def test_chat_sans_config_ni_credential_utilise_le_fallback() -> None:
     client, fake = _client()
-    response = client.post(
-        "/api/v1/ai/chat", json={"messages": [{"role": "user", "content": "Salut"}]}
-    )
+    response = client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD)
     assert response.status_code == 200
     assert fake.calls[0]["config"] is None  # la résolution du fallback vit dans AIClient
+
+
+# ------------------------------------------------- cascade credential utilisateur
+
+
+def test_config_explicite_ne_lit_pas_le_credential() -> None:
+    session = _FakeSession()  # file vide : tout execute ferait sauter le test
+    client, fake = _client(session=session)
+    assert client.post("/api/v1/ai/chat", json=CHAT_PAYLOAD).status_code == 200
+    assert session.executed == []
+    assert fake.calls[0]["config"].provider.value == "ollama"
+
+
+def test_chat_sans_config_utilise_le_credential_dechiffre(monkeypatch) -> None:
+    monkeypatch.setattr(
+        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(CLE_MAITRE).decode()
+    )
+    sel = crypto.nouveau_sel()
+    user = _user_row(
+        ai_provider="anthropic",
+        ai_model="claude-sonnet-5",
+        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
+        ai_chiffrement_sel=sel,
+    )
+    client, fake = _client(session=_FakeSession([[user]]))
+    assert client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD).status_code == 200
+    config = fake.calls[0]["config"]
+    assert config.provider.value == "anthropic"
+    assert config.model == "claude-sonnet-5"
+    assert config.api_key.get_secret_value() == "sk-user"
+
+
+def test_chat_credential_illisible_422(monkeypatch) -> None:
+    """Clé maître changée depuis l'enregistrement → 422 explicite, pas de fallback."""
+    monkeypatch.setattr(
+        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode()
+    )
+    sel = crypto.nouveau_sel()
+    user = _user_row(
+        ai_provider="anthropic",
+        ai_model="claude-sonnet-5",
+        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
+        ai_chiffrement_sel=sel,
+    )
+    client, fake = _client(session=_FakeSession([[user]]))
+    response = client.post("/api/v1/ai/chat", json=SANS_CONFIG_PAYLOAD)
+    assert response.status_code == 422
+    assert "ré-enregistrez" in response.json()["detail"]
+    assert fake.calls == []
+
+
+def test_stream_sans_config_credential_illisible_422_eager(monkeypatch) -> None:
+    """La cascade se résout AVANT le flux : vrai status HTTP, pas un event SSE."""
+    monkeypatch.setattr(
+        settings, "AI_CREDENTIALS_MASTER_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode()
+    )
+    sel = crypto.nouveau_sel()
+    user = _user_row(
+        ai_provider="anthropic",
+        ai_model="claude-sonnet-5",
+        ai_api_key_chiffree=crypto.chiffrer_secret("sk-user", CLE_MAITRE, sel),
+        ai_chiffrement_sel=sel,
+    )
+    client, _ = _client(session=_FakeSession([[user]]))
+    response = client.post("/api/v1/ai/chat/stream", json=SANS_CONFIG_PAYLOAD)
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(

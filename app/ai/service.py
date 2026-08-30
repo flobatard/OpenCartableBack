@@ -26,9 +26,12 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.schemas import AIConfigIn, ChatRequest, ChatResponse, ChatUsageRead
+from app.ai_credentials.service import config_effective
 from app.core.ai import AIClient, AIRequestConfig, ChatMessage
+from app.core.auth import AuthenticatedUser
 
 _TRACE_NAME = "smoke-chat"
 
@@ -47,13 +50,19 @@ def _sse_event(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-async def chat(client: AIClient, payload: ChatRequest, user_sub: str) -> ChatResponse:
-    """Appel classique — ``user_sub`` (jamais l'e-mail) part en trace Langfuse."""
+async def chat(
+    client: AIClient, db: AsyncSession, payload: ChatRequest, auth: AuthenticatedUser
+) -> ChatResponse:
+    """Appel classique — ``auth.sub`` (jamais l'e-mail) part en trace Langfuse.
+
+    La config passe par la cascade ``config_effective`` (config explicite >
+    credential utilisateur chiffré > None → fallback serveur d'AIClient).
+    """
     completion = await client.complete(
         _to_core_messages(payload),
-        _to_core_config(payload.config),
+        await config_effective(db, auth, _to_core_config(payload.config)),
         trace_name=_TRACE_NAME,
-        user_id=user_sub,
+        user_id=auth.sub,
     )
     usage = ChatUsageRead(**completion.usage.model_dump()) if completion.usage else None
     return ChatResponse(
@@ -64,18 +73,21 @@ async def chat(client: AIClient, payload: ChatRequest, user_sub: str) -> ChatRes
     )
 
 
-def sse_stream(client: AIClient, payload: ChatRequest, user_sub: str) -> AsyncIterator[str]:
+async def sse_stream(
+    client: AIClient, db: AsyncSession, payload: ChatRequest, auth: AuthenticatedUser
+) -> AsyncIterator[str]:
     """Prépare le flux SSE.
 
-    ``client.stream(...)`` est appelé ICI, hors du generator : ses erreurs de
-    validation (config absente/invalide) remontent en vraies HTTPException 4xx
-    avant que la route ne retourne la ``StreamingResponse``.
+    La cascade ``config_effective`` est résolue puis ``client.stream(...)``
+    appelé ICI, hors du generator : leurs erreurs (credential illisible,
+    config absente/invalide) remontent en vraies HTTPException 4xx/503 avant
+    que la route ne retourne la ``StreamingResponse``.
     """
     events = client.stream(
         _to_core_messages(payload),
-        _to_core_config(payload.config),
+        await config_effective(db, auth, _to_core_config(payload.config)),
         trace_name=_TRACE_NAME,
-        user_id=user_sub,
+        user_id=auth.sub,
     )
 
     async def _encode() -> AsyncIterator[str]:

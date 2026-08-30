@@ -177,6 +177,12 @@ class Settings(BaseSettings):
     # retries bas (ne pas empiler les latences).
     AI_TIMEOUT_SECONDS: float = 60.0
     AI_MAX_RETRIES: int = 1
+    # SECRET (.env) — clé maître du chiffrement des clés API IA par utilisateur
+    # (app/core/crypto.py, AES-256-GCM + HKDF avec sel par utilisateur) :
+    # 32 octets encodés base64 urlsafe. Vide = feature indisponible (503 à
+    # l'enregistrement d'un credential) ; le reste de l'API vit sans.
+    # ⚠ La changer rend illisibles les clés déjà stockées (422 « ré-enregistrez »).
+    AI_CREDENTIALS_MASTER_KEY: str = ""
 
     # Langfuse (observabilité LLM, opt-in) — actif ssi les 3 sont renseignés ;
     # sinon no-op total (le SDK n'est même pas importé).

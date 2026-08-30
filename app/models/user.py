@@ -18,6 +18,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    LargeBinary,
     String,
     Table,
     UniqueConstraint,
@@ -46,6 +47,20 @@ class User(Base):
             "AND avatar_statut IN ('en_attente', 'disponible'))",
             name="ck_users_avatar_coherence",
         ),
+        # Cohérence structurelle du credential IA : tout-NULL (pas de config)
+        # ou au moins provider+model. Les règles PAR provider (clé requise ou
+        # non, base_url requise/interdite) sont métier → 422 en service,
+        # jamais en CHECK (ajouter un provider ne doit pas exiger de migration).
+        CheckConstraint(
+            "(ai_provider IS NULL AND ai_model IS NULL AND ai_base_url IS NULL "
+            "AND ai_api_key_chiffree IS NULL AND ai_chiffrement_sel IS NULL) "
+            "OR (ai_provider IS NOT NULL AND ai_model IS NOT NULL)",
+            name="ck_users_ai_coherence",
+        ),
+        CheckConstraint(
+            "(ai_api_key_chiffree IS NULL) = (ai_chiffrement_sel IS NULL)",
+            name="ck_users_ai_cle_sel",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -71,6 +86,17 @@ class User(Base):
     avatar_s3_key: Mapped[str | None] = mapped_column(String(1024))
     avatar_mime: Mapped[str | None] = mapped_column(String(255))
     avatar_statut: Mapped[str | None] = mapped_column(String(20))
+    # Credential IA de l'utilisateur (une seule config, app/ai_credentials/) :
+    # provider ∈ AIProvider (validé Pydantic), clé API chiffrée par
+    # app/core/crypto.py (AES-256-GCM, blob versionné) avec un sel par
+    # utilisateur régénéré à chaque écriture de clé. Comme avatar_s3_key,
+    # la clé (chiffrée ou non) ne figure dans AUCUN schéma de réponse — seule
+    # sort la projection api_key_definie: bool.
+    ai_provider: Mapped[str | None] = mapped_column(String(50))
+    ai_model: Mapped[str | None] = mapped_column(String(200))
+    ai_base_url: Mapped[str | None] = mapped_column(String(2000))
+    ai_api_key_chiffree: Mapped[bytes | None] = mapped_column(LargeBinary)
+    ai_chiffrement_sel: Mapped[bytes | None] = mapped_column(LargeBinary)
     est_prof: Mapped[bool] = mapped_column(default=False, server_default="false")
     est_eleve: Mapped[bool] = mapped_column(default=False, server_default="false")
     # Même dimension que education_levels.systeme ; validé en service

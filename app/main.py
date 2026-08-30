@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.ai.router import router as ai_router
+from app.ai_credentials.router import router as ai_credentials_router
 from app.auth.router import router as auth_router
 from app.core.ai import shutdown_langfuse
 from app.core.config import settings
@@ -52,6 +53,8 @@ def create_app() -> FastAPI:
     app.include_router(subjects_router, prefix=settings.API_V1_PREFIX)
     app.include_router(education_levels_router, prefix=settings.API_V1_PREFIX)
     app.include_router(users_router, prefix=settings.API_V1_PREFIX)
+    # Credential IA chiffré de l'utilisateur (/users/me/ai-credentials).
+    app.include_router(ai_credentials_router, prefix=settings.API_V1_PREFIX)
     # Avant courses_router : POST /courses/import doit matcher le segment
     # littéral avant un futur POST /courses/{course_id}.
     app.include_router(course_transfer_router, prefix=settings.API_V1_PREFIX)
