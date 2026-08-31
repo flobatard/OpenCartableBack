@@ -170,8 +170,8 @@ def _client(session, storage=None) -> TestClient:
     return TestClient(app)
 
 
-# Sélections vides du détail (matières, niveaux, blocs, ressources).
-_EMPTY_DETAIL = [[], [], [], []]
+# Sélections vides du détail (matières, niveaux, blocs, ressources, modules).
+_EMPTY_DETAIL = [[], [], [], [], []]
 
 
 # --- Aucune route publique n'exige de Bearer ----------------------------------
@@ -269,8 +269,8 @@ def test_shared_valid_link_returns_detail():
     link = _link_row(course.id)
     block = _block_row(course.id)
     # FIFO : lien (par token), cours, puis détail (matières, niveaux,
-    # blocs, ressources).
-    session = _FakeSession([[link], [course], [], [], [block], []])
+    # blocs, ressources, modules).
+    session = _FakeSession([[link], [course], [], [], [block], [], []])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
 
     assert response.status_code == 200
@@ -323,7 +323,7 @@ def test_exercise_content_without_expected_answer():
             ],
         },
     )
-    session = _FakeSession([[course], [], [], [block], []])
+    session = _FakeSession([[course], [], [], [block], [], []])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
 
     assert response.status_code == 200
@@ -347,7 +347,7 @@ def test_full_detail_denormalized_names_and_available_resources():
     block = _block_row(course.id)
     resource = _resource_row(course.id)
     session = _FakeSession(
-        [[course], ["Mathématiques"], ["6e"], [block], [resource]]
+        [[course], ["Mathématiques"], ["6e"], [block], [resource], []]
     )
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
 
@@ -367,6 +367,21 @@ def test_full_detail_denormalized_names_and_available_resources():
     ]
     # Jamais de s3_key dans une réponse publique.
     assert "s3_key" not in str(body)
+
+
+def test_full_detail_lists_modules_without_code():
+    course = _course_row()
+    block = _block_row(course.id)
+    module = _module_row(course.id)
+    session = _FakeSession([[course], [], [], [block], [], [module]])
+    response = _client(session).get(f"/api/v1/public/courses/{course.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    # La bibliothèque de modules alimente l'onglet Modules de la vue élève…
+    assert body["modules"] == [{"id": str(module.id), "title": "Quiz"}]
+    # …mais le code n'y figure jamais : il passe par /modules/{id}.
+    assert "console.log" not in str(body)
 
 
 # --- Presign ressource -----------------------------------------------------------

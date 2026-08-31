@@ -53,6 +53,7 @@ from app.public.schemas import (
     PublicCourseRead,
     PublicDownloadRead,
     PublicModuleRead,
+    PublicModuleSummary,
     PublicProfessorRead,
     PublicResourceRead,
 )
@@ -202,7 +203,9 @@ async def course_detail_public(db: AsyncSession, course: Course) -> PublicCourse
 
     Ordre des execute : 1) noms de matières, 2) noms de niveaux, 3) blocs
     (tri stable ``position, id``), 4) ressources ``available`` (tri
-    ``created_at desc, id``, miroir de la liste prof).
+    ``created_at desc, id``, miroir de la liste prof), 5) modules (même tri
+    que la liste prof — titres seuls, le code reste servi par
+    ``get_public_module``).
     """
     subjects = list(
         (
@@ -263,11 +266,23 @@ async def course_detail_public(db: AsyncSession, course: Course) -> PublicCourse
         .scalars()
         .all()
     )
+    modules = (
+        (
+            await db.execute(
+                select(Module)
+                .where(Module.course_id == course.id)
+                .order_by(Module.created_at.desc(), Module.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     base = _course_read(course, subjects, education_levels, len(blocks))
     return PublicCourseDetailRead(
         **base.model_dump(),
         blocks=[_block_read(b) for b in blocks],
         resources=[_resource_read(r) for r in resources],
+        modules=[PublicModuleSummary(id=m.id, title=m.title) for m in modules],
     )
 
 

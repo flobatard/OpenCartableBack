@@ -54,6 +54,20 @@ class PublicResourceRead(BaseModel):
     mime: str
 
 
+class PublicModuleSummary(BaseModel):
+    """Module interactif du cours — titre seul, JAMAIS le code.
+
+    Embarqué dans le détail public (motif ``PublicResourceRead``) pour que
+    l'onglet Modules de la vue élève liste la bibliothèque sans requête
+    supplémentaire ; le code est servi à la demande, module par module, par
+    ``/public/courses/{id}/modules/{mid}``. Miroir public de ``ModuleSummary``
+    sans les timestamps : aucun consommateur côté rendu.
+    """
+
+    id: uuid.UUID
+    title: str
+
+
 class PublicCourseRead(BaseModel):
     id: uuid.UUID
     title: str
@@ -70,6 +84,7 @@ class PublicCourseRead(BaseModel):
 class PublicCourseDetailRead(PublicCourseRead):
     blocks: list[PublicBlockRead]
     resources: list[PublicResourceRead]
+    modules: list[PublicModuleSummary]
 
 
 class PublicModuleRead(BaseModel):
