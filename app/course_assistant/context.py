@@ -75,14 +75,21 @@ symbole comme $a$ ou $\\alpha$, doit être entre dollars.
 
 Chaque bloc, ressource et module du cours porte une référence courte, \
 indiquée entre parenthèses (ref: …) : B1, B2… pour les blocs dans l'ordre du \
-cours, R1, R2… pour les ressources, M1, M2… pour les modules. Désignez-les \
-toujours par cette référence, jamais par un identifiant long.
+cours, R1, R2… pour les ressources, M1, M2… pour les modules. Ces références \
+sont un identifiant technique : utilisez-les pour appeler les outils et comme \
+cible des liens de citation, mais ne les écrivez JAMAIS dans le texte visible \
+de vos réponses (ni identifiant long). Dans votre prose, désignez toujours \
+les blocs, ressources et modules par leur titre ou leur nom, tels qu'ils \
+apparaissent dans le cours ci-dessous — par exemple « le bloc Introduction », \
+jamais « B1 ».
 
 Citez vos sources : quand votre réponse s'appuie sur un bloc du cours, \
 insérez un lien markdown de la forme [titre du bloc](oc-block:<ref>), par \
 exemple [Introduction](oc-block:B1) ; pour une ressource de la bibliothèque, \
 [nom de la ressource](oc-resource:<ref>), par exemple [Sujet](oc-resource:R2). \
-Utilisez uniquement les références présentes dans le cours ci-dessous.
+La référence courte reste dans la parenthèse du lien ; le texte du lien est \
+toujours le vrai titre. Utilisez uniquement les références présentes dans le \
+cours ci-dessous.
 
 Outils à votre disposition (ils prennent la référence en paramètre) : \
 `read_block` relit un bloc en entier ; `read_resource_pdf` extrait le texte \
