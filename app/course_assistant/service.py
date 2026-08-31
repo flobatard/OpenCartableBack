@@ -52,9 +52,11 @@ from app.core.storage import Storage
 from app.course_assistant.context import (
     TRUNCATED_HISTORY_NOTICE,
     build_course_context,
+    build_refs,
     extract_sources,
     replay_messages,
 )
+from app.course_assistant.refs import CitationRewriter
 from app.course_assistant.schemas import (
     ConversationCreate,
     ConversationDetailRead,
@@ -63,7 +65,7 @@ from app.course_assistant.schemas import (
     MessageCreate,
     MessageRead,
 )
-from app.course_assistant.tools import TOOL_SPECS, build_tool_executor
+from app.course_assistant.tools import build_tool_executor, build_tool_specs
 from app.models.ai_conversation import AIConversation
 from app.models.ai_message import ROLE_ASSISTANT, ROLE_TOOL, ROLE_USER, AIMessage
 from app.models.block import Block
@@ -363,7 +365,10 @@ async def sse_stream(
         .all()
     )
 
-    system_content = build_course_context(course, blocks, resources, modules)
+    # Instantané du cours en références courtes (B1/R1/M1) : le modèle ne
+    # manipule jamais d'UUID — cf. app/course_assistant/refs.py.
+    refs = build_refs(blocks, resources, modules)
+    system_content = build_course_context(course, refs)
     history, truncated = replay_messages(existing, provider)
     if truncated:
         system_content += TRUNCATED_HISTORY_NOTICE
@@ -373,13 +378,7 @@ async def sse_stream(
         ChatMessage(role="user", content=payload.content),
     ]
 
-    executor = build_tool_executor(
-        storage,
-        blocks_by_id={b.id: b for b in blocks},
-        resources_by_id={r.id: r for r in resources},
-        positions_by_id={b.id: i for i, b in enumerate(blocks, start=1)},
-        modules_by_id={m.id: m for m in modules},
-    )
+    executor = build_tool_executor(storage, refs)
 
     # Message user durable AVANT l'appel provider (le front garde sa saisie de
     # toute façon ; un échec provider ne perd pas la question).
@@ -404,7 +403,7 @@ async def sse_stream(
         events = client.stream_agent(
             model_messages,
             config,
-            tools=TOOL_SPECS,
+            tools=build_tool_specs(refs),
             tool_executor=executor,
             max_tool_rounds=MAX_TOOL_ROUNDS,
             trace_name=_TRACE_NAME,
@@ -415,8 +414,8 @@ async def sse_stream(
             await refund_default_quota(db, ticket)
         raise
 
-    block_ids = {b.id for b in blocks}
-    resource_ids = {r.id for r in resources}
+    block_ids = refs.ids("block")
+    resource_ids = refs.ids("resource")
     base_position = len(existing) + 1
 
     async def _encode() -> AsyncIterator[str]:
@@ -427,8 +426,23 @@ async def sse_stream(
         turn_rows: list[dict[str, Any]] = []
         segment_text: list[str] = []
         segment_tool_calls: list[dict[str, Any]] = []
+        # Citations oc-block:B3 / oc-resource:R2 réécrites en UUID au fil du
+        # flux : le texte streamé est celui persisté (et celui des sources).
+        rewriter = CitationRewriter(refs)
 
-        def _flush_segment() -> None:
+        def _emit_text(text: str) -> str | None:
+            """Texte prêt à partir (citations résolues) : accumulé, ou None."""
+            if not text:
+                return None
+            segment_text.append(text)
+            all_text.append(text)
+            return _sse_event("token", {"delta": text})
+
+        def _flush_segment() -> str | None:
+            """Clôt le segment assistant courant ; retourne l'éventuel
+            événement ``token`` du texte retenu par le rewriter (à yield
+            AVANT tout événement suivant)."""
+            sse = _emit_text(rewriter.flush())
             if segment_text or segment_tool_calls:
                 turn_rows.append(
                     {
@@ -440,6 +454,7 @@ async def sse_stream(
                 )
                 segment_text.clear()
                 segment_tool_calls.clear()
+            return sse
 
         async def _persist_turn(
             sources: dict[str, Any] | None, usage: dict[str, Any] | None
@@ -483,12 +498,17 @@ async def sse_stream(
             async for event in events:
                 if event.type == "token":
                     tokens_emitted = True
-                    segment_text.append(event.delta)
-                    all_text.append(event.delta)
-                    yield _sse_event("token", {"delta": event.delta})
+                    sse = _emit_text(rewriter.feed(event.delta))
+                    if sse is not None:
+                        yield sse
                 elif event.type == "thinking":
                     yield _sse_event("thinking", {"delta": event.delta})
                 elif event.type == "tool_call":
+                    # Le texte retenu par le rewriter part avant l'appel d'outil
+                    # (ordre d'affichage côté front).
+                    held = _emit_text(rewriter.flush())
+                    if held is not None:
+                        yield held
                     call = event.tool_call
                     segment_tool_calls.append(
                         {"id": call.id, "name": call.name, "arguments": call.arguments}
@@ -500,7 +520,9 @@ async def sse_stream(
                 elif event.type == "tool_result":
                     # Le segment assistant porteur des tool_calls est clos par
                     # l'arrivée du premier résultat.
-                    _flush_segment()
+                    held = _flush_segment()
+                    if held is not None:
+                        yield held
                     turn_rows.append(
                         {
                             "role": ROLE_TOOL,
@@ -520,7 +542,9 @@ async def sse_stream(
                         },
                     )
                 else:  # done
-                    _flush_segment()
+                    held = _flush_segment()
+                    if held is not None:
+                        yield held
                     sources = extract_sources("".join(all_text), block_ids, resource_ids)
                     usage = event.usage.model_dump() if event.usage else None
                     ids = await _persist_turn(sources, usage)
@@ -541,7 +565,9 @@ async def sse_stream(
             # événement error portant le status du mapping app/core/ai/errors.
             if ticket is not None and not tokens_emitted:
                 await refund_default_quota(db, ticket)
-            _flush_segment()
+            held = _flush_segment()
+            if held is not None:
+                yield held
             try:
                 await _persist_turn(None, None)
             except Exception:  # noqa: BLE001 — best-effort assumé

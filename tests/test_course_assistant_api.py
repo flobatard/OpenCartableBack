@@ -434,6 +434,44 @@ def test_stream_nominal() -> None:
     }
 
 
+def test_stream_rewrites_short_ref_citations_across_chunks() -> None:
+    """Le modèle cite par référence courte (oc-block:B1), coupée entre plusieurs
+    tokens : le flux, les sources et le texte persisté portent l'UUID."""
+    events = [
+        AIStreamEvent(type="token", delta="Voir [Intro](oc-"),
+        AIStreamEvent(type="token", delta="block:B"),
+        AIStreamEvent(type="token", delta="1) et [PDF](oc-resource:R1"),
+        AIStreamEvent(type="token", delta=") puis oc-block:B9"),  # ref inconnue : inerte
+        AIStreamEvent(type="done", usage=None),
+    ]
+    session = _stream_session(conversation=_conversation_row(title="T"))
+    client, fake = _client(session, _FakeAssistantAI(events=events))
+    response = client.post(STREAM_PATH, json={"content": "Cite tes sources"})
+    assert response.status_code == 200
+
+    out = _parse_sse(response.text)
+    expected = (
+        f"Voir [Intro](oc-block:{BLOCK_ID}) et [PDF](oc-resource:{RESOURCE_ID}) "
+        "puis oc-block:B9"
+    )
+    assert "".join(d["delta"] for k, d in out if k == "token") == expected
+    assert "B1)" not in response.text  # jamais une référence brute côté front
+    assert out[-1][1]["sources"] == {"blocks": [str(BLOCK_ID)], "resources": [str(RESOURCE_ID)]}
+    rows = _inserted_message_rows(session)
+    assert rows[-1]["content"] == expected
+
+    # Le modèle, lui, ne voit que des références courtes ; les specs des tools
+    # portent l'enum de l'instantané.
+    [call] = fake.calls
+    system = call["messages"][0].content
+    assert "(ref: B1)" in system and "(ref: R1," in system
+    assert str(BLOCK_ID) not in system and str(RESOURCE_ID) not in system
+    specs = {t.name: t for t in call["tools"]}
+    assert specs["read_block"].parameters["properties"]["block_ref"]["enum"] == ["B1"]
+    assert specs["read_resource_pdf"].parameters["properties"]["resource_ref"]["enum"] == ["R1"]
+    assert "enum" not in specs["read_resource_image"].parameters["properties"]["resource_ref"]
+
+
 def test_stream_replays_history() -> None:
     history = [
         _message_row(0, role="user", content="Première question"),

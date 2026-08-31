@@ -3,14 +3,19 @@
 Aucune I/O ici (testable sans DB ni storage) :
 
 - :func:`build_course_context` assemble le system prompt (consignes + cours en
-  markdown, ids inclus pour les citations) ;
+  markdown). Le modèle ne voit **jamais d'UUID** : chaque bloc, ressource et
+  module est désigné par sa référence courte (``B3``, ``R2``, ``M1`` —
+  :class:`~app.course_assistant.refs.CourseRefs`), pour les tools comme pour
+  les citations ;
 - :func:`format_block` produit la représentation textuelle d'un bloc — partagée
   entre le contexte et le tool ``read_block`` ; :func:`format_module` celle
   d'un module interactif (titre + code HTML/CSS/JS plafonné, tool
   ``read_module``) ;
 - :func:`extract_sources` valide les citations ``oc-block:``/``oc-resource:``
-  d'une réponse (ids hallucinés filtrés — le markdown, lui, n'est jamais
-  réécrit : un id inconnu rend simplement un lien inerte côté front) ;
+  d'une réponse **déjà réécrite en UUID** (``CitationRewriter``) ; les ids
+  hallucinés sont filtrés — le markdown, lui, n'est jamais réécrit au-delà de
+  la résolution des références : un id inconnu rend simplement un lien inerte
+  côté front ;
 - :func:`replay_messages` reconstruit l'historique :class:`ChatMessage` à
   rejouer au modèle depuis les lignes persistées (troncature aux frontières de
   round, repli en texte des rounds d'outils issus d'un autre provider — les
@@ -23,6 +28,7 @@ import uuid
 from collections.abc import Sequence
 
 from app.core.ai import AIToolCall, ChatMessage
+from app.course_assistant.refs import CourseRefs
 from app.models.ai_message import ROLE_ASSISTANT, ROLE_TOOL, ROLE_USER
 from app.models.block import TYPE_DOCUMENT, TYPE_EXERCISE, TYPE_MODULE, TYPE_TEXT
 
@@ -58,17 +64,23 @@ cours : structure, clarté, progression pédagogique, exactitude, exercices et \
 corrigés. Vouvoyez toujours votre interlocuteur et répondez en français, en \
 markdown (formules LaTeX entre $…$ ou $$…$$ si utile).
 
-Citez vos sources : quand votre réponse s'appuie sur un bloc du cours, \
-insérez un lien markdown de la forme [titre du bloc](oc-block:<id>) ; pour \
-une ressource de la bibliothèque, [nom de la ressource](oc-resource:<id>). \
-Utilisez uniquement les ids présents dans le cours ci-dessous.
+Chaque bloc, ressource et module du cours porte une référence courte, \
+indiquée entre parenthèses (ref: …) : B1, B2… pour les blocs dans l'ordre du \
+cours, R1, R2… pour les ressources, M1, M2… pour les modules. Désignez-les \
+toujours par cette référence, jamais par un identifiant long.
 
-Outils à votre disposition : `read_block` relit un bloc en entier ; \
-`read_resource_pdf` extrait le texte d'une ressource PDF de la bibliothèque ; \
-`read_resource_image` vous montre une ressource image de la bibliothèque \
-(PNG, JPEG, GIF ou WebP — nécessite un modèle acceptant les images) ; \
-`read_module` lit le code HTML/CSS/JS d'un module interactif. \
-Ne les appelez que si le contexte ci-dessous ne suffit pas.
+Citez vos sources : quand votre réponse s'appuie sur un bloc du cours, \
+insérez un lien markdown de la forme [titre du bloc](oc-block:<ref>), par \
+exemple [Introduction](oc-block:B1) ; pour une ressource de la bibliothèque, \
+[nom de la ressource](oc-resource:<ref>), par exemple [Sujet](oc-resource:R2). \
+Utilisez uniquement les références présentes dans le cours ci-dessous.
+
+Outils à votre disposition (ils prennent la référence en paramètre) : \
+`read_block` relit un bloc en entier ; `read_resource_pdf` extrait le texte \
+d'une ressource PDF de la bibliothèque ; `read_resource_image` vous montre une \
+ressource image de la bibliothèque (PNG, JPEG, GIF ou WebP — nécessite un \
+modèle acceptant les images) ; `read_module` lit le code HTML/CSS/JS d'un \
+module interactif. Ne les appelez que si le contexte ci-dessous ne suffit pas.
 """
 
 _SUMMARY_NOTICE = (
@@ -82,14 +94,18 @@ TRUNCATED_HISTORY_NOTICE = (
 )
 
 
-def format_block(block, index: int, modules_by_id: dict | None = None) -> str:
-    """Représentation markdown complète d'un bloc, ids inclus (citations).
+def block_title(block) -> str:
+    """Titre affiché d'un bloc : le sien, sinon le libellé de son type."""
+    return block.title or _TYPE_LABELS.get(block.type, block.type)
 
-    ``modules_by_id`` (optionnel) donne le titre du module pointé par un bloc
-    ``module`` — le code, lui, se lit avec ``read_module``.
+
+def format_block(block, refs: CourseRefs) -> str:
+    """Représentation markdown complète d'un bloc, références courtes incluses
+    (en-tête ``### Bloc 3 — Titre (ref: B3)`` ; ressource ou module pointé
+    nommé avec sa référence — le code d'un module se lit avec ``read_module``).
     """
-    title = block.title or _TYPE_LABELS.get(block.type, block.type)
-    lines = [f"### Bloc {index} — {title} (id: {block.id})"]
+    ref = refs.ref_of("block", block.id) or "B?"
+    lines = [f"### Bloc {ref[1:]} — {block_title(block)} (ref: {ref})"]
     if block.description:
         lines.append(f"*{block.description}*")
     content = block.content or {}
@@ -110,29 +126,38 @@ def format_block(block, index: int, modules_by_id: dict | None = None) -> str:
         if caption:
             lines.append(caption)
         if block.resource_id:
-            lines.append(f"Ressource pointée : oc-resource:{block.resource_id}")
+            lines.append(_pointed("Ressource pointée", refs, "resource", block.resource_id))
         else:
             lines.append("(bloc document vide — aucune ressource pointée)")
     elif block.type == TYPE_MODULE:
         if block.module_id:
-            module = (modules_by_id or {}).get(block.module_id)
-            named = f" « {module.title} »" if module is not None else ""
             lines.append(
-                f"Module interactif pointé{named} : oc-module:{block.module_id} "
-                "(code lisible avec `read_module`)"
+                _pointed("Module interactif pointé", refs, "module", block.module_id)
+                + " (code lisible avec `read_module`)"
             )
         else:
             lines.append("(bloc module vide — aucun module pointé)")
     return "\n\n".join(line for line in lines if line)
 
 
-def format_module(module, *, max_chars: int = MODULE_MAX_CHARS) -> str:
-    """Représentation markdown d'un module interactif : titre, id, code.
+def _pointed(label: str, refs: CourseRefs, kind, entity_id: uuid.UUID) -> str:
+    """« Ressource pointée : « nom » (ref: R2) » — ou mention d'une cible
+    absente de l'instantané (supprimée, ou ressource pas encore confirmée)."""
+    ref = refs.ref_of(kind, entity_id)
+    if ref is None:
+        return f"{label} : (introuvable dans la bibliothèque du cours)"
+    entry = refs.by_ref(kind, ref)
+    return f"{label} : « {entry.title} » (ref: {ref})"
+
+
+def format_module(module, refs: CourseRefs, *, max_chars: int = MODULE_MAX_CHARS) -> str:
+    """Représentation markdown d'un module interactif : titre, référence, code.
 
     Les trois morceaux (HTML, CSS, JS) sont rendus en blocs de code ; au-delà
     de ``max_chars``, coupe nette avec mention de troncature (motif PDF).
     """
-    lines = [f"### Module interactif — {module.title} (id: {module.id})"]
+    ref = refs.ref_of("module", module.id) or "M?"
+    lines = [f"### Module interactif — {module.title} (ref: {ref})"]
     for label, lang, code in (
         ("HTML", "html", module.html),
         ("CSS", "css", module.css),
@@ -148,9 +173,9 @@ def format_module(module, *, max_chars: int = MODULE_MAX_CHARS) -> str:
     return text
 
 
-def _excerpt_block(block, index: int, modules_by_id: dict | None = None) -> str:
+def _excerpt_block(block, refs: CourseRefs) -> str:
     """En-tête + extrait court, pour le mode sommaire."""
-    full = format_block(block, index, modules_by_id)
+    full = format_block(block, refs)
     header, _, body = full.partition("\n\n")
     body = " ".join(body.split())
     if len(body) > SUMMARY_EXCERPT_CHARS:
@@ -158,49 +183,52 @@ def _excerpt_block(block, index: int, modules_by_id: dict | None = None) -> str:
     return f"{header}\n\n{body}" if body else header
 
 
-def _libraries_section(resources, modules) -> str:
+def _libraries_section(refs: CourseRefs) -> str:
     lines = ["\n## Bibliothèque de ressources du cours"]
-    if resources:
-        for r in resources:
+    if refs.entries["resource"]:
+        for entry in refs.entries["resource"]:
+            r = entry.entity
             lines.append(
-                f"- {r.original_name} (id: {r.id}, type: {r.type}, mime: {r.mime}, "
+                f"- {r.original_name} (ref: {entry.ref}, type: {r.type}, mime: {r.mime}, "
                 f"taille: {r.size} octets, statut: {r.status})"
             )
     else:
         lines.append("(aucune ressource)")
     lines.append("\n## Modules interactifs du cours")
-    if modules:
-        lines.extend(f"- {m.title} (id: {m.id})" for m in modules)
+    if refs.entries["module"]:
+        lines.extend(f"- {e.title} (ref: {e.ref})" for e in refs.entries["module"])
     else:
         lines.append("(aucun module)")
     return "\n".join(lines)
 
 
-def build_course_context(
-    course, blocks, resources, modules, *, max_chars: int = CONTEXT_MAX_CHARS
-) -> str:
+def build_refs(blocks, resources, modules) -> CourseRefs:
+    """Références courtes du tour — blocs déjà triés (``position, id``), le
+    titre affiché d'un bloc sans titre étant son libellé de type."""
+    return CourseRefs.build(
+        blocks, resources, modules, block_titles={b.id: block_title(b) for b in blocks}
+    )
+
+
+def build_course_context(course, refs: CourseRefs, *, max_chars: int = CONTEXT_MAX_CHARS) -> str:
     """System prompt complet : consignes + cours en markdown + bibliothèques.
 
-    Les blocs arrivent déjà triés (``position, id``, contrat des services).
-    Si le rendu complet dépasse ``max_chars``, bascule en **mode sommaire**
-    (extraits + invite à ``read_block``) — jamais de coupe au milieu d'un bloc.
+    ``refs`` porte l'instantané du cours (:func:`build_refs`). Si le rendu
+    complet dépasse ``max_chars``, bascule en **mode sommaire** (extraits +
+    invite à ``read_block``) — jamais de coupe au milieu d'un bloc.
     """
     head = [_SYSTEM_PROMPT, f"\n# Cours : {course.title}"]
     if course.description:
         head.append(course.description)
-    tail = _libraries_section(resources, modules)
-    modules_by_id = {m.id: m for m in modules}
+    tail = _libraries_section(refs)
+    blocks = [entry.entity for entry in refs.entries["block"]]
 
-    full_blocks = "\n\n".join(
-        format_block(b, i, modules_by_id) for i, b in enumerate(blocks, start=1)
-    )
+    full_blocks = "\n\n".join(format_block(b, refs) for b in blocks)
     context = "\n\n".join([*head, "\n## Contenu du cours", full_blocks, tail])
     if len(context) <= max_chars:
         return context
 
-    summary_blocks = "\n\n".join(
-        _excerpt_block(b, i, modules_by_id) for i, b in enumerate(blocks, start=1)
-    )
+    summary_blocks = "\n\n".join(_excerpt_block(b, refs) for b in blocks)
     return "\n\n".join(
         [*head, _SUMMARY_NOTICE, "\n## Contenu du cours (extraits)", summary_blocks, tail]
     )

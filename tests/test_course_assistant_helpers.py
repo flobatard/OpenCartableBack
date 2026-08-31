@@ -12,6 +12,7 @@ from app.core.ai import AIToolCall
 from app.course_assistant import tools as tools_module
 from app.course_assistant.context import (
     build_course_context,
+    build_refs,
     extract_sources,
     format_block,
     format_module,
@@ -22,6 +23,7 @@ from app.course_assistant.tools import (
     PDF_MAX_BYTES,
     PDF_MAX_PAGES,
     build_tool_executor,
+    build_tool_specs,
     read_image_sync,
     read_pdf_sync,
 )
@@ -74,6 +76,14 @@ def _module(**overrides):
 _COURSE = SimpleNamespace(title="Géométrie", description="Cours de 4e")
 
 
+def _refs(blocks=None, resources=None, modules=None):
+    return build_refs(
+        blocks if blocks is not None else [_block()],
+        resources if resources is not None else [_resource()],
+        modules if modules is not None else [_module()],
+    )
+
+
 # ---------------------------------------------------------------- contexte
 
 
@@ -88,65 +98,103 @@ def test_format_block_exercise_includes_expected_answer() -> None:
             ],
         },
     )
-    text = format_block(block, 3)
-    assert f"### Bloc 3 — Exercice (id: {block.id})" in text
+    others = [_block(id=uuid.uuid4()), _block(id=uuid.uuid4())]
+    text = format_block(block, _refs(blocks=[*others, block]))
+    assert "### Bloc 3 — Exercice (ref: B3)" in text
+    assert str(block.id) not in text  # jamais d'UUID côté modèle
     assert "2+2 ?" in text
     assert "Réponse attendue (corrigé du professeur) : 4" in text
 
 
 def test_format_block_module_names_pointed_module() -> None:
     block = _block(type="module", title="Manip", content={}, module_id=MODULE_ID)
-    text = format_block(block, 2, {MODULE_ID: _module()})
-    assert "« Balance interactive »" in text
-    assert f"oc-module:{MODULE_ID}" in text
+    text = format_block(block, _refs(blocks=[block]))
+    assert "Module interactif pointé : « Balance interactive » (ref: M1)" in text
     assert "read_module" in text
-    # Sans dictionnaire de modules (ou module supprimé) : l'id seul, sans plantage.
-    assert "« Balance interactive »" not in format_block(block, 2)
+    assert str(MODULE_ID) not in text
+    # Module absent de l'instantané (supprimé) : mention explicite, sans plantage.
+    orphan = format_block(block, _refs(blocks=[block], modules=[]))
+    assert "introuvable dans la bibliothèque" in orphan
+
+
+def test_format_block_document_names_pointed_resource() -> None:
+    block = _block(type="document", content={"caption": "Le sujet"}, resource_id=RESOURCE_ID)
+    text = format_block(block, _refs(blocks=[block]))
+    assert "Le sujet" in text
+    assert "Ressource pointée : « cours.pdf » (ref: R1)" in text
 
 
 def test_format_module_code_blocks_and_cap() -> None:
-    text = format_module(_module(css=""))
-    assert f"Balance interactive (id: {MODULE_ID})" in text
+    text = format_module(_module(css=""), _refs())
+    assert "Balance interactive (ref: M1)" in text
     assert "```html\n<div id=\"scale\"></div>\n```" in text
     assert "**CSS** : (vide)" in text
     assert "```javascript\nconsole.log('go');\n```" in text
     assert "tronqué" not in text
 
-    capped = format_module(_module(js="x" * 5000), max_chars=500)
+    capped = format_module(_module(js="x" * 5000), _refs(), max_chars=500)
     assert len(capped) < 600
     assert capped.endswith("[Module tronqué : plafond de lecture atteint]")
 
 
 def test_build_course_context_full_mode() -> None:
-    context = build_course_context(_COURSE, [_block()], [_resource()], [])
+    context = build_course_context(_COURSE, _refs(modules=[]))
     assert "# Cours : Géométrie" in context
-    assert f"(id: {BLOCK_ID})" in context
+    assert "### Bloc 1 — Introduction (ref: B1)" in context
     assert "Le théorème de Pythagore." in context
-    assert f"cours.pdf (id: {RESOURCE_ID}" in context
+    assert "cours.pdf (ref: R1" in context
     assert "(aucun module)" in context
-    assert "oc-block:<id>" in context  # consigne de citation
+    assert "oc-block:<ref>" in context  # consigne de citation
+    assert str(BLOCK_ID) not in context and str(RESOURCE_ID) not in context
     for tool in ("read_block", "read_resource_pdf", "read_resource_image", "read_module"):
         assert f"`{tool}`" in context
 
 
 def test_build_course_context_names_modules_of_module_blocks() -> None:
     block = _block(type="module", title=None, content={}, module_id=MODULE_ID)
-    context = build_course_context(_COURSE, [block], [], [_module()])
-    assert "Module interactif pointé « Balance interactive »" in context
-    assert f"- Balance interactive (id: {MODULE_ID})" in context
+    context = build_course_context(_COURSE, _refs(blocks=[block]))
+    assert "Module interactif pointé : « Balance interactive » (ref: M1)" in context
+    assert "- Balance interactive (ref: M1)" in context
 
 
 def test_build_course_context_summary_mode() -> None:
     blocks = [
         _block(id=uuid.uuid4(), content={"markdown": "mot " * 500}) for _ in range(5)
     ]
-    context = build_course_context(_COURSE, blocks, [], [], max_chars=2000)
+    context = build_course_context(_COURSE, _refs(blocks=blocks), max_chars=2000)
     assert "extraits" in context
     assert "read_block" in context
     # Chaque en-tête de bloc reste présent, le corps est tronqué.
-    for block in blocks:
-        assert f"(id: {block.id})" in context
+    for i in range(1, 6):
+        assert f"(ref: B{i})" in context
     assert "mot " * 100 not in context
+
+
+# ------------------------------------------------------------------- specs
+
+
+def test_tool_specs_enum_follows_snapshot() -> None:
+    resources = [
+        _resource(id=uuid.uuid4()),  # R1 : PDF disponible
+        _resource(id=uuid.uuid4(), type="image", mime="image/png"),  # R2 : image
+        _resource(id=uuid.uuid4(), status="pending"),  # R3 : PDF non confirmé
+    ]
+    specs = {s.name: s for s in build_tool_specs(_refs(resources=resources))}
+    assert set(specs) == {"read_block", "read_resource_pdf", "read_resource_image", "read_module"}
+    assert specs["read_block"].parameters["properties"]["block_ref"]["enum"] == ["B1"]
+    assert specs["read_block"].parameters["required"] == ["block_ref"]
+    assert specs["read_resource_pdf"].parameters["properties"]["resource_ref"]["enum"] == ["R1"]
+    assert specs["read_resource_image"].parameters["properties"]["resource_ref"]["enum"] == ["R2"]
+    assert specs["read_module"].parameters["properties"]["module_ref"]["enum"] == ["M1"]
+
+    # Liste vide : pas d'enum (schéma invalide chez certains providers).
+    empty = {s.name: s for s in build_tool_specs(_refs(blocks=[], resources=[], modules=[]))}
+    for name, param in (
+        ("read_block", "block_ref"),
+        ("read_resource_pdf", "resource_ref"),
+        ("read_module", "module_ref"),
+    ):
+        assert "enum" not in empty[name].parameters["properties"][param]
 
 
 # ---------------------------------------------------------------- citations
@@ -289,33 +337,32 @@ def test_read_image_sync_rejects_oversized_object() -> None:
 
 
 def _executor(storage=None, blocks=None, resources=None, modules=None):
-    blocks = blocks if blocks is not None else [_block()]
-    resources = resources if resources is not None else [_resource()]
-    modules = modules if modules is not None else [_module()]
-    return build_tool_executor(
-        storage or _FakeStorage(b""),
-        blocks_by_id={b.id: b for b in blocks},
-        resources_by_id={r.id: r for r in resources},
-        positions_by_id={b.id: i for i, b in enumerate(blocks, start=1)},
-        modules_by_id={m.id: m for m in modules},
-    )
+    return build_tool_executor(storage or _FakeStorage(b""), _refs(blocks, resources, modules))
 
 
 @pytest.mark.anyio
-async def test_executor_read_block_ok() -> None:
-    result = await _executor()(
-        AIToolCall(name="read_block", arguments={"block_id": str(BLOCK_ID)})
-    )
+@pytest.mark.parametrize("raw", ["B1", "1", str(BLOCK_ID), "introduction"])
+async def test_executor_read_block_ok(raw) -> None:
+    result = await _executor()(AIToolCall(name="read_block", arguments={"block_ref": raw}))
     assert not result.is_error
+    assert "### Bloc 1 — Introduction (ref: B1)" in result.content
     assert "Le théorème de Pythagore." in result.content
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("raw", ["pas-un-uuid", str(uuid.uuid4()), None])
-async def test_executor_read_block_not_found(raw) -> None:
-    result = await _executor()(AIToolCall(name="read_block", arguments={"block_id": raw}))
+@pytest.mark.parametrize("raw", ["pas-une-ref", str(uuid.uuid4()), "B7"])
+async def test_executor_read_block_not_found_lists_candidates(raw) -> None:
+    result = await _executor()(AIToolCall(name="read_block", arguments={"block_ref": raw}))
     assert result.is_error
     assert "introuvable" in result.content
+    assert "B1 — Introduction" in result.content  # le modèle peut se corriger
+
+
+@pytest.mark.anyio
+async def test_executor_read_block_missing_argument() -> None:
+    result = await _executor()(AIToolCall(name="read_block", arguments={}))
+    assert result.is_error
+    assert "non précisé" in result.content
 
 
 @pytest.mark.anyio
@@ -328,16 +375,19 @@ async def test_executor_pdf_rejections() -> None:
     executor = _executor(resources=resources)
 
     result = await executor(
-        AIToolCall(name="read_resource_pdf", arguments={"resource_id": str(uuid.uuid4())})
+        AIToolCall(name="read_resource_pdf", arguments={"resource_ref": str(uuid.uuid4())})
     )
     assert result.is_error
     assert "introuvable" in result.content
+    # Seuls les PDF disponibles sont proposés (R2, même trop gros) — ni l'image ni le pending.
+    assert "R2 — cours.pdf" in result.content
+    assert "R1 —" not in result.content and "R3 —" not in result.content
 
-    for resource, needle in zip(
-        resources, ["pas un PDF", "volumineux", "pas encore disponible"], strict=True
+    for ref, needle in zip(
+        ("R1", "R2", "R3"), ["pas un PDF", "volumineux", "pas encore disponible"], strict=True
     ):
         result = await executor(
-            AIToolCall(name="read_resource_pdf", arguments={"resource_id": str(resource.id)})
+            AIToolCall(name="read_resource_pdf", arguments={"resource_ref": ref})
         )
         assert result.is_error
         assert needle in result.content
@@ -347,17 +397,18 @@ async def test_executor_pdf_rejections() -> None:
 async def test_executor_pdf_corrupt_file() -> None:
     executor = _executor(storage=_FakeStorage(b"pas un pdf du tout"))
     result = await executor(
-        AIToolCall(name="read_resource_pdf", arguments={"resource_id": str(RESOURCE_ID)})
+        AIToolCall(name="read_resource_pdf", arguments={"resource_ref": "R1"})
     )
     assert result.is_error
     assert "illisible" in result.content
 
 
 @pytest.mark.anyio
-async def test_executor_pdf_success(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("raw", ["R1", "cours.pdf", str(RESOURCE_ID)])
+async def test_executor_pdf_success(monkeypatch: pytest.MonkeyPatch, raw) -> None:
     monkeypatch.setattr(tools_module, "read_pdf_sync", lambda storage, key: "TEXTE EXTRAIT")
     result = await _executor()(
-        AIToolCall(name="read_resource_pdf", arguments={"resource_id": str(RESOURCE_ID)})
+        AIToolCall(name="read_resource_pdf", arguments={"resource_ref": raw})
     )
     assert not result.is_error
     assert result.content == "TEXTE EXTRAIT"
@@ -367,26 +418,27 @@ async def test_executor_pdf_success(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_executor_read_block_module_shows_title() -> None:
     block = _block(type="module", title="Manip", content={}, module_id=MODULE_ID)
     result = await _executor(blocks=[block])(
-        AIToolCall(name="read_block", arguments={"block_id": str(BLOCK_ID)})
+        AIToolCall(name="read_block", arguments={"block_ref": "B1"})
     )
     assert not result.is_error
-    assert "« Balance interactive »" in result.content
+    assert "« Balance interactive » (ref: M1)" in result.content
 
 
 @pytest.mark.anyio
 async def test_executor_read_module() -> None:
     executor = _executor()
-    result = await executor(AIToolCall(name="read_module", arguments={"module_id": str(MODULE_ID)}))
+    result = await executor(AIToolCall(name="read_module", arguments={"module_ref": "M1"}))
     assert not result.is_error
     assert "```html" in result.content
     assert "console.log('go');" in result.content
     assert result.image is None
 
     missing = await executor(
-        AIToolCall(name="read_module", arguments={"module_id": str(uuid.uuid4())})
+        AIToolCall(name="read_module", arguments={"module_ref": str(uuid.uuid4())})
     )
     assert missing.is_error
     assert "introuvable" in missing.content
+    assert "M1 — Balance interactive" in missing.content
 
 
 @pytest.mark.anyio
@@ -397,11 +449,11 @@ async def test_executor_image_rejections() -> None:
         _resource(id=uuid.uuid4(), type="image", mime="image/png", status="pending"),
     ]
     executor = _executor(resources=resources)
-    for resource, needle in zip(
-        resources, ["pas une image", "volumineuse", "pas encore disponible"], strict=True
+    for ref, needle in zip(
+        ("R1", "R2", "R3"), ["pas une image", "volumineuse", "pas encore disponible"], strict=True
     ):
         result = await executor(
-            AIToolCall(name="read_resource_image", arguments={"resource_id": str(resource.id)})
+            AIToolCall(name="read_resource_image", arguments={"resource_ref": ref})
         )
         assert result.is_error
         assert needle in result.content
@@ -415,7 +467,7 @@ async def test_executor_image_success_attaches_base64() -> None:
     )
     executor = _executor(storage=_FakeStorage(b"\x89PNG"), resources=[resource])
     result = await executor(
-        AIToolCall(name="read_resource_image", arguments={"resource_id": str(RESOURCE_ID)})
+        AIToolCall(name="read_resource_image", arguments={"resource_ref": "figure"})  # titre proche
     )
     assert not result.is_error
     assert "figure.png" in result.content
@@ -423,7 +475,7 @@ async def test_executor_image_success_attaches_base64() -> None:
     assert result.image is not None
     assert result.image.mime_type == "image/png"
     assert result.image.data == "iVBORw=="
-    assert str(RESOURCE_ID) in result.image.caption
+    assert "(ref: R1)" in result.image.caption
 
 
 @pytest.mark.anyio
@@ -434,7 +486,7 @@ async def test_executor_image_storage_failure() -> None:
 
     resource = _resource(type="image", mime="image/jpeg")
     result = await _executor(storage=_BrokenStorage(), resources=[resource])(
-        AIToolCall(name="read_resource_image", arguments={"resource_id": str(RESOURCE_ID)})
+        AIToolCall(name="read_resource_image", arguments={"resource_ref": "R1"})
     )
     assert result.is_error
     assert "impossible" in result.content

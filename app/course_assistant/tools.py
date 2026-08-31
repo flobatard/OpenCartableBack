@@ -19,19 +19,28 @@ Quatre tools (specs neutres :class:`AIToolSpec`, exécuteur async passé à
 - ``read_module`` : lit le code HTML/CSS/JS d'un module interactif (en base,
   aucun accès S3 ; :func:`format_module`, plafonné).
 
+Les tools ciblent une entité par sa **référence courte** (``B3``, ``R2``,
+``M1`` — :mod:`app.course_assistant.refs`, jamais un UUID côté modèle) :
+:func:`build_tool_specs` construit les specs **par tour** avec un ``enum`` des
+références valides (restreint aux ressources éligibles pour les lectures
+PDF/image ; omis quand la liste est vide — un ``enum`` vide est un schéma
+invalide chez certains providers), et l'exécuteur résout l'argument par la
+chaîne tolérante de :meth:`CourseRefs.resolve` (référence, UUID exact ou
+déformé, titre).
+
 L'exécuteur **ne lève jamais** (contrat de ``stream_agent``) : tout échec
-métier (uuid mal formé, cible inconnue ou hors cours, mauvais type, plafond
-dépassé, fichier illisible) devient un :class:`AIToolResult` ``is_error=True``
-au message explicite — le modèle le lit et se corrige, le flux SSE continue.
+métier (cible inconnue ou ambiguë, mauvais type, plafond dépassé, fichier
+illisible) devient un :class:`AIToolResult` ``is_error=True`` au message
+explicite — listant les candidats le cas échéant — que le modèle lit pour se
+corriger, le flux SSE continue.
 
 Aucun accès DB pendant l'exécution : blocs, ressources et modules sont ceux
-chargés au départ du flux (dictionnaires indexés par id) — un tour
-d'assistant travaille sur un instantané du cours, décision assumée.
+chargés au départ du flux (instantané porté par :class:`CourseRefs`) — un
+tour d'assistant travaille sur un instantané du cours, décision assumée.
 """
 
 import base64
 import io
-import uuid
 from collections.abc import Awaitable, Callable
 from tempfile import SpooledTemporaryFile
 
@@ -40,6 +49,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.core.ai import AIToolCall, AIToolImage, AIToolResult, AIToolSpec
 from app.core.storage import Storage
 from app.course_assistant.context import format_block, format_module
+from app.course_assistant.refs import CourseRefs
 from app.models.resource import STATUS_AVAILABLE
 
 PDF_MIME = "application/pdf"
@@ -56,75 +66,77 @@ IMAGE_MAX_BYTES = 3_500_000
 # Bascule RAM → disque du fichier temporaire (motif course_transfer).
 _SPOOL_MAX_BYTES = 8 * 1024 * 1024
 
-READ_BLOCK_SPEC = AIToolSpec(
-    name="read_block",
-    description=(
-        "Lit le contenu complet d'un bloc du cours (texte, exercice avec "
-        "corrigé, document ou module) à partir de son id."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "block_id": {"type": "string", "description": "Id (uuid) du bloc à lire"}
-        },
-        "required": ["block_id"],
-    },
-)
+READ_BLOCK = "read_block"
+READ_RESOURCE_PDF = "read_resource_pdf"
+READ_RESOURCE_IMAGE = "read_resource_image"
+READ_MODULE = "read_module"
 
-READ_RESOURCE_PDF_SPEC = AIToolSpec(
-    name="read_resource_pdf",
-    description=(
-        "Extrait le texte d'une ressource PDF de la bibliothèque du cours à "
-        "partir de son id. Seules les ressources PDF disponibles sont lisibles."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "resource_id": {
-                "type": "string",
-                "description": "Id (uuid) de la ressource PDF à lire",
-            }
-        },
-        "required": ["resource_id"],
-    },
-)
 
-READ_RESOURCE_IMAGE_SPEC = AIToolSpec(
-    name="read_resource_image",
-    description=(
-        "Vous montre une ressource image de la bibliothèque du cours (PNG, JPEG, "
-        "GIF ou WebP, disponible) à partir de son id, pour que vous puissiez la "
-        "regarder. Nécessite un modèle acceptant les images ; l'image n'est "
-        "visible que pour le tour en cours."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "resource_id": {
-                "type": "string",
-                "description": "Id (uuid) de la ressource image à regarder",
-            }
-        },
-        "required": ["resource_id"],
-    },
-)
+def _is_readable_pdf(resource) -> bool:
+    return resource.status == STATUS_AVAILABLE and resource.mime == PDF_MIME
 
-READ_MODULE_SPEC = AIToolSpec(
-    name="read_module",
-    description=(
-        "Lit le code HTML, CSS et JavaScript d'un module interactif du cours à "
-        "partir de son id (un bloc « module » ne donne que l'id du module pointé)."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "module_id": {"type": "string", "description": "Id (uuid) du module à lire"}
-        },
-        "required": ["module_id"],
-    },
-)
 
-TOOL_SPECS = [READ_BLOCK_SPEC, READ_RESOURCE_PDF_SPEC, READ_RESOURCE_IMAGE_SPEC, READ_MODULE_SPEC]
+def _is_readable_image(resource) -> bool:
+    return resource.status == STATUS_AVAILABLE and resource.mime in IMAGE_MIMES
+
+
+def _ref_spec(
+    name: str, description: str, param: str, param_description: str, refs: list[str]
+) -> AIToolSpec:
+    """Spec à un seul paramètre « référence », ``enum`` des valeurs valides
+    (omis si vide)."""
+    schema: dict = {"type": "string", "description": param_description}
+    if refs:
+        schema["enum"] = refs
+    return AIToolSpec(
+        name=name,
+        description=description,
+        parameters={"type": "object", "properties": {param: schema}, "required": [param]},
+    )
+
+
+def build_tool_specs(refs: CourseRefs) -> list[AIToolSpec]:
+    """Les quatre specs du tour, ``enum`` calé sur l'instantané du cours."""
+    return [
+        _ref_spec(
+            READ_BLOCK,
+            "Lit le contenu complet d'un bloc du cours (texte, exercice avec "
+            "corrigé, document ou module) à partir de sa référence (B1, B2…).",
+            "block_ref",
+            "Référence du bloc à lire, telle qu'indiquée dans le cours (ex. B3)",
+            refs.refs("block"),
+        ),
+        _ref_spec(
+            READ_RESOURCE_PDF,
+            "Extrait le texte d'une ressource PDF de la bibliothèque du cours à "
+            "partir de sa référence (R1, R2…). Seules les ressources PDF "
+            "disponibles sont lisibles.",
+            "resource_ref",
+            "Référence de la ressource PDF à lire, telle qu'indiquée dans la "
+            "bibliothèque (ex. R2)",
+            [e.ref for e in refs.entries["resource"] if _is_readable_pdf(e.entity)],
+        ),
+        _ref_spec(
+            READ_RESOURCE_IMAGE,
+            "Vous montre une ressource image de la bibliothèque du cours (PNG, JPEG, "
+            "GIF ou WebP, disponible) à partir de sa référence (R1, R2…), pour que "
+            "vous puissiez la regarder. Nécessite un modèle acceptant les images ; "
+            "l'image n'est visible que pour le tour en cours.",
+            "resource_ref",
+            "Référence de la ressource image à regarder, telle qu'indiquée dans la "
+            "bibliothèque (ex. R2)",
+            [e.ref for e in refs.entries["resource"] if _is_readable_image(e.entity)],
+        ),
+        _ref_spec(
+            READ_MODULE,
+            "Lit le code HTML, CSS et JavaScript d'un module interactif du cours à "
+            "partir de sa référence (M1, M2…) — un bloc « module » ne donne que la "
+            "référence du module pointé.",
+            "module_ref",
+            "Référence du module à lire, telle qu'indiquée dans le cours (ex. M1)",
+            refs.refs("module"),
+        ),
+    ]
 
 
 def read_pdf_sync(storage: Storage, s3_key: str) -> str:
@@ -178,50 +190,31 @@ def read_image_sync(storage: Storage, s3_key: str) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def _parse_uuid(raw: object) -> uuid.UUID | None:
-    try:
-        return uuid.UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 def build_tool_executor(
-    storage: Storage,
-    blocks_by_id: dict[uuid.UUID, object],
-    resources_by_id: dict[uuid.UUID, object],
-    positions_by_id: dict[uuid.UUID, int],
-    modules_by_id: dict[uuid.UUID, object] | None = None,
+    storage: Storage, refs: CourseRefs
 ) -> Callable[[AIToolCall], Awaitable[AIToolResult]]:
     """Fabrique l'exécuteur async passé à ``stream_agent``.
 
     Les tools d'un même round peuvent s'exécuter en concurrence (ToolNode) :
     la lecture S3 est déportée par appel dans le threadpool, ``storage`` est
-    thread-safe en lecture. ``positions_by_id`` donne le numéro d'affichage du
-    bloc (même en-tête que le contexte) ; ``modules_by_id`` sert au titre du
-    module pointé par un bloc ``module`` et à ``read_module``.
+    thread-safe en lecture. ``refs`` porte l'instantané du cours (blocs,
+    ressources, modules et leurs références courtes).
     """
-    modules_by_id = modules_by_id or {}
 
     async def _read_block(arguments: dict) -> AIToolResult:
-        block_id = _parse_uuid(arguments.get("block_id"))
-        block = blocks_by_id.get(block_id) if block_id else None
-        if block is None:
-            return AIToolResult(
-                content="Bloc introuvable dans ce cours (vérifiez l'id).", is_error=True
-            )
-        return AIToolResult(
-            content=format_block(block, positions_by_id[block_id], modules_by_id)
-        )
+        resolution = refs.resolve("block", arguments.get("block_ref"))
+        if resolution.entry is None:
+            return AIToolResult(content=resolution.error, is_error=True)
+        return AIToolResult(content=format_block(resolution.entry.entity, refs))
 
-    def _available_resource(arguments: dict) -> tuple[object | None, AIToolResult | None]:
+    def _available_resource(
+        arguments: dict, eligible
+    ) -> tuple[object | None, AIToolResult | None]:
         """Ressource du cours prête à être lue, ou le résultat d'échec à renvoyer."""
-        resource_id = _parse_uuid(arguments.get("resource_id"))
-        resource = resources_by_id.get(resource_id) if resource_id else None
-        if resource is None:
-            return None, AIToolResult(
-                content="Ressource introuvable dans ce cours (vérifiez l'id).",
-                is_error=True,
-            )
+        resolution = refs.resolve("resource", arguments.get("resource_ref"), eligible=eligible)
+        if resolution.entry is None:
+            return None, AIToolResult(content=resolution.error, is_error=True)
+        resource = resolution.entry.entity
         if resource.status != STATUS_AVAILABLE:
             return None, AIToolResult(
                 content="Ressource pas encore disponible (upload non confirmé).",
@@ -230,7 +223,7 @@ def build_tool_executor(
         return resource, None
 
     async def _read_resource_pdf(arguments: dict) -> AIToolResult:
-        resource, failure = _available_resource(arguments)
+        resource, failure = _available_resource(arguments, _is_readable_pdf)
         if failure is not None:
             return failure
         if resource.mime != PDF_MIME:
@@ -261,7 +254,7 @@ def build_tool_executor(
         return AIToolResult(content=content)
 
     async def _read_resource_image(arguments: dict) -> AIToolResult:
-        resource, failure = _available_resource(arguments)
+        resource, failure = _available_resource(arguments, _is_readable_image)
         if failure is not None:
             return failure
         if resource.mime not in IMAGE_MIMES:
@@ -301,25 +294,23 @@ def build_tool_executor(
                 data=data,
                 caption=(
                     f"Ressource image « {resource.original_name} » du cours "
-                    f"(id: {resource.id}), demandée via read_resource_image."
+                    f"(ref: {refs.ref_of('resource', resource.id)}), demandée via "
+                    "read_resource_image."
                 ),
             ),
         )
 
     async def _read_module(arguments: dict) -> AIToolResult:
-        module_id = _parse_uuid(arguments.get("module_id"))
-        module = modules_by_id.get(module_id) if module_id else None
-        if module is None:
-            return AIToolResult(
-                content="Module introuvable dans ce cours (vérifiez l'id).", is_error=True
-            )
-        return AIToolResult(content=format_module(module))
+        resolution = refs.resolve("module", arguments.get("module_ref"))
+        if resolution.entry is None:
+            return AIToolResult(content=resolution.error, is_error=True)
+        return AIToolResult(content=format_module(resolution.entry.entity, refs))
 
     handlers = {
-        READ_BLOCK_SPEC.name: _read_block,
-        READ_RESOURCE_PDF_SPEC.name: _read_resource_pdf,
-        READ_RESOURCE_IMAGE_SPEC.name: _read_resource_image,
-        READ_MODULE_SPEC.name: _read_module,
+        READ_BLOCK: _read_block,
+        READ_RESOURCE_PDF: _read_resource_pdf,
+        READ_RESOURCE_IMAGE: _read_resource_image,
+        READ_MODULE: _read_module,
     }
 
     async def executor(call: AIToolCall) -> AIToolResult:
