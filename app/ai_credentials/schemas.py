@@ -29,6 +29,11 @@ class AICredentialsRead(BaseModel):
     default_ai_available: bool = False
     daily_quota: int = 0
     calls_today: int = 0
+    # Provider/modèle servis par l'IA par défaut (AI_PROVIDER/AI_MODEL) — le
+    # front les affiche dans le panneau assistant ; null quand le serveur ne
+    # propose pas de fallback. Jamais AI_API_KEY ni AI_BASE_URL (règle d'or).
+    default_provider: str | None = None
+    default_model: str | None = None
 
 
 def _check_key_not_blank(v: SecretStr | None) -> SecretStr | None:

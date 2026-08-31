@@ -90,6 +90,8 @@ def _read(user: User, calls_today: int) -> AICredentialsRead:
         default_ai_available=bool(settings.AI_PROVIDER),
         daily_quota=_effective_quota(user),
         calls_today=calls_today,
+        default_provider=settings.AI_PROVIDER or None,
+        default_model=(settings.AI_MODEL or None) if settings.AI_PROVIDER else None,
     )
 
 

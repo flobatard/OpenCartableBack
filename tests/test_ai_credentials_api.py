@@ -60,6 +60,8 @@ DEFAULT_QUOTA_FIELDS = {
     "default_ai_available": False,
     "daily_quota": 30,
     "calls_today": 0,
+    "default_provider": None,
+    "default_model": None,
 }
 
 
@@ -187,6 +189,7 @@ def test_get_with_credential_never_reemits_key():
 def test_get_exposes_daily_quota(monkeypatch):
     """Fallback serveur configuré + quota individuel + usage du jour servis au front."""
     monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
+    monkeypatch.setattr(settings, "AI_MODEL", "llama3.2:latest")
     user = _user_row(ai_daily_call_quota=5)
     response = _client(_FakeSession([[user], [3]])).get(URL)
     assert response.status_code == 200
@@ -194,6 +197,10 @@ def test_get_exposes_daily_quota(monkeypatch):
     assert body["default_ai_available"] is True
     assert body["daily_quota"] == 5
     assert body["calls_today"] == 3
+    # Le modèle du fallback est affiché par le panneau assistant du front —
+    # jamais AI_API_KEY ni AI_BASE_URL.
+    assert body["default_provider"] == "ollama"
+    assert body["default_model"] == "llama3.2:latest"
 
 
 # ---------------------------------------------------------------- PUT
