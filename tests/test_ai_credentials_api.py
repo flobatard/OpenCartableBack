@@ -12,16 +12,21 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.sql.dml import Delete, Insert
 
+from app.ai_credentials import service as ai_credentials_service
 from app.core import crypto
+from app.core.ai import get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.main import create_app
 
 URL = "/api/v1/users/me/ai-credentials"
+TEST_URL = URL + "/test"
+MODELS_URL = URL + "/models"
 MASTER_KEY = os.urandom(32)
 MASTER_KEY_B64 = base64.urlsafe_b64encode(MASTER_KEY).decode()
 API_KEY = "sk-ant-ma-cle-api-secrete"
@@ -105,12 +110,32 @@ class _FakeSession:
         self.commits += 1
 
 
-def _client(session) -> TestClient:
+class _FakeAIClient:
+    """``complete()`` scriptable — seul mode utilisé par le test de connexion.
+
+    Une erreur scriptée est une HTTPException DÉJÀ traduite : c'est ce que le
+    vrai AIClient laisse sortir (translate_provider_error au bord).
+    """
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+        self.calls = []
+
+    async def complete(self, messages, config=None, **kwargs):
+        self.calls.append((list(messages), config, kwargs))
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(content="ok")
+
+
+def _client(session, ai_client=None) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
         sub="prof-123", email=None, roles=frozenset(), claims={}
     )
     app.dependency_overrides[get_db] = lambda: session
+    if ai_client is not None:
+        app.dependency_overrides[get_ai_client] = lambda: ai_client
     return TestClient(app)
 
 
@@ -118,8 +143,15 @@ def _client(session) -> TestClient:
 
 
 def test_routes_require_token(client: TestClient):
-    for method, kwargs in (("get", {}), ("put", {"json": {}}), ("delete", {})):
-        response = getattr(client, method)(URL, **kwargs)
+    cases = (
+        ("get", URL, {}),
+        ("put", URL, {"json": {}}),
+        ("delete", URL, {}),
+        ("post", TEST_URL, {"json": {}}),
+        ("post", MODELS_URL, {"json": {}}),
+    )
+    for method, url, kwargs in cases:
+        response = getattr(client, method)(url, **kwargs)
         assert response.status_code == 401
         assert response.headers["WWW-Authenticate"] == "Bearer"
 
@@ -275,3 +307,146 @@ def test_delete_clears_everything():
 
 def test_delete_idempotent():
     assert _client(_FakeSession([[_user_row()]])).delete(URL).status_code == 204
+
+
+# ---------------------------------------------------------------- POST /test
+
+
+def test_connection_with_explicit_key():
+    ai = _FakeAIClient()
+    session = _FakeSession([[_user_row()]])
+    response = _client(session, ai).post(
+        TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": API_KEY}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert API_KEY not in response.text
+    [(messages, config, _)] = ai.calls
+    assert [m.role for m in messages] == ["user"]
+    assert config.provider.value == "anthropic" and config.model == "claude-sonnet-5"
+    assert config.api_key.get_secret_value() == API_KEY
+    # BYO token intégral : aucun upsert de quota, seul get_or_create commite.
+    assert session.commits == 1
+
+
+def test_connection_uses_stored_key_when_omitted():
+    ai = _FakeAIClient()
+    response = _client(_FakeSession([[_user_with_key()]]), ai).post(
+        TEST_URL, json={"provider": "anthropic", "model": "claude-opus-5"}
+    )
+    assert response.status_code == 200
+    [(_, config, _)] = ai.calls
+    assert config.api_key.get_secret_value() == API_KEY
+
+
+def test_connection_ollama_without_key():
+    ai = _FakeAIClient()
+    response = _client(_FakeSession([[_user_row()]]), ai).post(
+        TEST_URL, json={"provider": "ollama", "model": "llama3.2", "base_url": "http://pi:11434"}
+    )
+    assert response.status_code == 200
+    [(_, config, _)] = ai.calls
+    assert config.api_key is None and config.base_url == "http://pi:11434"
+
+
+def test_connection_requires_key_when_none_stored():
+    ai = _FakeAIClient()
+    response = _client(_FakeSession([[_user_row()]]), ai).post(
+        TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5"}
+    )
+    assert response.status_code == 422
+    assert ai.calls == []  # 422 AVANT tout appel provider
+
+
+def test_connection_unreadable_credential():
+    """Clé enregistrée illisible (clé maître changée) → 422, jamais d'appel."""
+    user = _user_with_key()
+    user.ai_encryption_salt = crypto.new_salt()  # sel ≠ celui du blob
+    ai = _FakeAIClient()
+    response = _client(_FakeSession([[user]]), ai).post(
+        TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5"}
+    )
+    assert response.status_code == 422
+    assert ai.calls == []
+
+
+def test_connection_provider_error_passthrough():
+    """L'HTTPException traduite par app/core/ai remonte telle quelle (400 clé refusée)."""
+    ai = _FakeAIClient(error=HTTPException(400, detail="Clé API refusée par le fournisseur IA"))
+    response = _client(_FakeSession([[_user_row()]]), ai).post(
+        TEST_URL, json={"provider": "openai", "model": "gpt-4o", "api_key": API_KEY}
+    )
+    assert response.status_code == 400
+    assert API_KEY not in response.text
+
+
+# ---------------------------------------------------------------- POST /models
+
+
+@pytest.fixture
+def fake_list_models(monkeypatch):
+    """Remplace le list_models importé par le service ; enregistre les appels."""
+    calls = []
+
+    async def fake(provider, api_key, base_url):
+        calls.append((provider, api_key, base_url))
+        return ["modele-recent", "modele-ancien"]
+
+    monkeypatch.setattr(ai_credentials_service, "list_models", fake)
+    return calls
+
+
+def test_models_with_explicit_key(fake_list_models):
+    response = _client(_FakeSession([[_user_row()]])).post(
+        MODELS_URL, json={"provider": "openai", "api_key": API_KEY}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"models": ["modele-recent", "modele-ancien"]}
+    assert API_KEY not in response.text
+    [(provider, api_key, base_url)] = fake_list_models
+    assert provider.value == "openai"
+    assert api_key.get_secret_value() == API_KEY
+    assert base_url is None
+
+
+def test_models_uses_stored_key_when_omitted(fake_list_models):
+    response = _client(_FakeSession([[_user_with_key()]])).post(
+        MODELS_URL, json={"provider": "anthropic"}
+    )
+    assert response.status_code == 200
+    [(_, api_key, _)] = fake_list_models
+    assert api_key.get_secret_value() == API_KEY
+
+
+def test_models_ollama_without_key(fake_list_models):
+    response = _client(_FakeSession([[_user_row()]])).post(
+        MODELS_URL, json={"provider": "ollama", "base_url": "http://pi:11434"}
+    )
+    assert response.status_code == 200
+    [(provider, api_key, base_url)] = fake_list_models
+    assert provider.value == "ollama" and api_key is None and base_url == "http://pi:11434"
+
+
+def test_models_requires_key_when_none_stored(fake_list_models):
+    response = _client(_FakeSession([[_user_row()]])).post(MODELS_URL, json={"provider": "google"})
+    assert response.status_code == 422
+    assert fake_list_models == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # base_url requise pour openai_compatible.
+        {"provider": "openai_compatible"},
+        # base_url interdite hors ollama/openai_compatible.
+        {"provider": "anthropic", "api_key": "k", "base_url": "https://x"},
+        # extra=forbid : pas de champ model sur ce payload.
+        {"provider": "anthropic", "api_key": "k", "model": "m"},
+        # Clé blanche interdite (omettre le champ pour la clé enregistrée).
+        {"provider": "anthropic", "api_key": "   "},
+    ],
+)
+def test_models_invalid_payload(fake_list_models, payload: dict):
+    response = _client(_FakeSession([[_user_row()]])).post(MODELS_URL, json=payload)
+    assert response.status_code == 422
+    assert fake_list_models == []

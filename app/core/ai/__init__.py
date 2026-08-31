@@ -28,6 +28,7 @@ Contrats :
 """
 
 from app.core.ai.client import AIClient, get_ai_client
+from app.core.ai.model_catalog import PROVIDERS_WITH_MODEL_LISTING, list_models
 from app.core.ai.observability import shutdown_langfuse
 from app.core.ai.types import (
     AICompletion,
@@ -43,6 +44,7 @@ from app.core.ai.types import (
 )
 
 __all__ = [
+    "PROVIDERS_WITH_MODEL_LISTING",
     "AIClient",
     "AICompletion",
     "AIProvider",
@@ -55,5 +57,6 @@ __all__ = [
     "AIUsage",
     "ChatMessage",
     "get_ai_client",
+    "list_models",
     "shutdown_langfuse",
 ]

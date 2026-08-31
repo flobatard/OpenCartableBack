@@ -30,11 +30,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_credentials.schemas import (
     PROVIDERS_WITH_OPTIONAL_KEY,
+    AIConnectionTestIn,
+    AIConnectionTestRead,
     AICredentialsRead,
     AICredentialsUpdate,
+    AIModelListIn,
+    AIModelListRead,
 )
 from app.core import crypto
-from app.core.ai import AIProvider, AIRequestConfig
+from app.core.ai import AIClient, AIProvider, AIRequestConfig, ChatMessage, list_models
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
 from app.models.ai_daily_usage import AIDailyUsage
@@ -126,6 +130,76 @@ async def update_credentials(
     response = _read(user, await _usage_for_day(db, user))
     await db.commit()
     return response
+
+
+def _decrypt_stored_key(user: User) -> SecretStr | None:
+    """Clé enregistrée déchiffrée (``None`` sans clé) ; credential illisible
+    (clé maître changée) → 422 « ré-enregistrez », JAMAIS un repli silencieux."""
+    if user.ai_api_key_encrypted is None:
+        return None
+    try:
+        return SecretStr(
+            crypto.decrypt_secret(user.ai_api_key_encrypted, _master_key(), user.ai_encryption_salt)
+        )
+    except crypto.DecryptionError:
+        raise _invalid(
+            "Identifiants IA illisibles — ré-enregistrez votre clé API dans les paramètres"
+        ) from None
+
+
+def _probe_api_key(
+    user: User, provider: AIProvider, provided: SecretStr | None
+) -> SecretStr | None:
+    """Clé effective d'un test/listing : fournie, sinon clé enregistrée (même
+    sémantique que le PUT), sinon 422 pour les providers qui l'exigent."""
+    api_key = provided if provided is not None else _decrypt_stored_key(user)
+    if api_key is None and provider not in PROVIDERS_WITH_OPTIONAL_KEY:
+        raise _invalid(f"Clé API requise pour le provider {provider.value}")
+    return api_key
+
+
+# Prompt du test de connexion : réponse d'un mot demandée, coût négligeable.
+# Volontairement SANS max_tokens : un plafond minuscule fait échouer certains
+# modèles « thinking » (le budget de raisonnement compte dans la sortie).
+_TEST_PROMPT = "Réponds uniquement « ok »."
+_TEST_TRACE_NAME = "ai-credentials-test"
+
+
+async def test_connection(
+    user: User, payload: AIConnectionTestIn, ai: AIClient
+) -> AIConnectionTestRead:
+    """Teste la config du formulaire par un mini-appel provider réel.
+
+    Valide exactement ce que le PUT enregistrerait (``api_key`` omise = clé
+    déjà enregistrée). BYO token intégral : jamais le fallback serveur
+    ``AI_*``, donc jamais de quota consommé — et aucune écriture DB. Les
+    échecs remontent en HTTPException déjà traduites par ``app/core/ai``
+    (422 config, 400 clé refusée, 429, 503 injoignable).
+    """
+    config = AIRequestConfig(
+        provider=payload.provider,
+        model=payload.model,
+        api_key=_probe_api_key(user, payload.provider, payload.api_key),
+        base_url=payload.base_url,
+    )
+    await ai.complete(
+        [ChatMessage(role="user", content=_TEST_PROMPT)],
+        config,
+        trace_name=_TEST_TRACE_NAME,
+        user_id=user.sub,
+    )
+    return AIConnectionTestRead()
+
+
+async def list_provider_models(user: User, payload: AIModelListIn) -> AIModelListRead:
+    """Modèles proposés par le provider (auto-complétion du champ modèle).
+
+    Même sémantique de clé que le test ; délégation à
+    :func:`app.core.ai.list_models` (REST direct du provider, erreurs
+    traduites). Aucune écriture DB, jamais de quota.
+    """
+    api_key = _probe_api_key(user, payload.provider, payload.api_key)
+    return AIModelListRead(models=await list_models(payload.provider, api_key, payload.base_url))
 
 
 async def delete_credentials(db: AsyncSession, user: User) -> None:
@@ -233,18 +307,7 @@ async def effective_config(
         if settings.AI_PROVIDER:
             return None, await _consume_default_quota(db, user)
         return None, None
-    api_key: SecretStr | None = None
-    if user.ai_api_key_encrypted is not None:
-        try:
-            api_key = SecretStr(
-                crypto.decrypt_secret(
-                    user.ai_api_key_encrypted, _master_key(), user.ai_encryption_salt
-                )
-            )
-        except crypto.DecryptionError:
-            raise _invalid(
-                "Identifiants IA illisibles — ré-enregistrez votre clé API dans les paramètres"
-            ) from None
+    api_key = _decrypt_stored_key(user)
     return AIRequestConfig(
         provider=AIProvider(user.ai_provider),
         model=user.ai_model,
