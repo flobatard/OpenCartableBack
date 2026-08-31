@@ -8,11 +8,19 @@ features streamées (J5) :
     event: token
     data: {"delta": "…"}
 
+    event: thinking
+    data: {"delta": "…"}
+
     event: done
     data: {"usage": {"input_tokens": 12, "output_tokens": 87}}
 
     event: error
     data: {"status": 503, "detail": "Fournisseur IA injoignable"}
+
+``thinking`` relaie les deltas de raisonnement quand le provider en émet
+(absent sinon — le front doit le tolérer). Les features agent (assistant de
+cours) étendent ce contrat avec ``tool_call``/``tool_result`` — voir
+:mod:`app.course_assistant.service`.
 
 JSON compact ``ensure_ascii=False``, chaque événement terminé par ``\\n\\n``,
 flux clos après ``done`` ou ``error``. Rationale de l'événement ``error`` : une
@@ -116,7 +124,9 @@ async def sse_stream(
                 if event.type == "token":
                     tokens_emitted = True
                     yield _sse_event("token", {"delta": event.delta})
-                else:  # done
+                elif event.type == "thinking":
+                    yield _sse_event("thinking", {"delta": event.delta})
+                elif event.type == "done":
                     usage = event.usage.model_dump() if event.usage else None
                     yield _sse_event("done", {"usage": usage})
         except HTTPException as exc:

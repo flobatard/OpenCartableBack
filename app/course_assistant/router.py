@@ -1,0 +1,115 @@
+"""Routes de l'assistant IA d'un cours (protégées prof).
+
+Préfixe ``/courses/{course_id}/assistant`` — aucun conflit de littéral avec
+``app/courses/`` (segment ``assistant`` dédié). Le streaming est un **POST**
+servi en ``text/event-stream`` (motif ``app/ai/router.py`` : fetch +
+ReadableStream côté front, EventSource ne porte pas de Bearer) ; contrat SSE
+documenté dans :mod:`app.course_assistant.service`.
+"""
+
+import uuid
+
+from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.ai import AIClient, get_ai_client
+from app.core.auth import AuthenticatedUser, get_current_user
+from app.core.database import get_db
+from app.core.storage import Storage, get_storage
+from app.course_assistant import service
+from app.course_assistant.schemas import (
+    ConversationCreate,
+    ConversationDetailRead,
+    ConversationRead,
+    ConversationUpdate,
+    MessageCreate,
+)
+from app.models.ai_conversation import CONTEXT_COURSE
+from app.users import service as users_service
+
+router = APIRouter(prefix="/courses/{course_id}/assistant", tags=["course-assistant"])
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Accel-Buffering": "no",
+}
+
+
+@router.get("/conversations", response_model=list[ConversationRead])
+async def list_conversations(
+    course_id: uuid.UUID,
+    context: str = Query(default=CONTEXT_COURSE),
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ConversationRead]:
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.list_conversations(db, user, course_id, context)
+
+
+@router.post(
+    "/conversations", response_model=ConversationRead, status_code=status.HTTP_201_CREATED
+)
+async def create_conversation(
+    course_id: uuid.UUID,
+    payload: ConversationCreate,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ConversationRead:
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.create_conversation(db, user, course_id, payload)
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationDetailRead)
+async def get_conversation(
+    course_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ConversationDetailRead:
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.get_conversation_detail(db, user, course_id, conversation_id)
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationRead)
+async def rename_conversation(
+    course_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    payload: ConversationUpdate,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ConversationRead:
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.rename_conversation(db, user, course_id, conversation_id, payload)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    course_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    user = await users_service.get_or_create_by_sub(db, auth)
+    await service.delete_conversation(db, user, course_id, conversation_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+async def stream_message(
+    course_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    payload: MessageCreate,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+    client: AIClient = Depends(get_ai_client),
+) -> StreamingResponse:
+    """Tour d'assistant streamé (SSE). Les erreurs « préparables » (404, 422
+    plafond, cascade IA 422/429/503, validation eager) partent en vraies
+    HTTPException AVANT le flux ; le reste devient un événement ``error``."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    events = await service.sse_stream(
+        client, db, storage, auth, user, course_id, conversation_id, payload
+    )
+    return StreamingResponse(events, media_type="text/event-stream", headers=_SSE_HEADERS)

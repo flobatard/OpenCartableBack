@@ -9,6 +9,7 @@ from app.auth.router import router as auth_router
 from app.core.ai import shutdown_langfuse
 from app.core.config import settings
 from app.core.database import engine
+from app.course_assistant.router import router as course_assistant_router
 from app.course_transfer.router import router as course_transfer_router
 from app.courses.router import router as courses_router
 from app.education_levels.router import router as education_levels_router
@@ -61,6 +62,8 @@ def create_app() -> FastAPI:
     app.include_router(courses_router, prefix=settings.API_V1_PREFIX)
     app.include_router(resources_router, prefix=settings.API_V1_PREFIX)
     app.include_router(modules_router, prefix=settings.API_V1_PREFIX)
+    # Assistant IA du cours (J5) : conversations persistées + SSE agent.
+    app.include_router(course_assistant_router, prefix=settings.API_V1_PREFIX)
     app.include_router(share_links_router, prefix=settings.API_V1_PREFIX)
     # Régime élève (J2) : routes publiques par visibilité/token de partage,
     # sans JWT — l'autorisation vit dans app/public/service.py.

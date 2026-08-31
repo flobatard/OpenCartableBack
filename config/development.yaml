@@ -34,9 +34,9 @@ SHARE_LINK_TTL_DAYS: 270
 # Client IA (BYO token) — fallback serveur OPTIONNEL quand l'appelant ne
 # fournit pas sa propre config (provider/clé/modèle voyagent sinon à chaque
 # appel). AI_API_KEY est un secret → .env. Exemple Ollama local :
-# AI_PROVIDER: ollama
-# AI_MODEL: llama3.2
-# AI_BASE_URL: http://localhost:11434
+AI_PROVIDER: mistral
+AI_MODEL: ministral-14b-latest
+AI_BASE_URL: https://api.mistral.ai/v1
 # Quota d'appels à l'IA par défaut (fallback AI_*) par utilisateur et par
 # jour (UTC) — priorité à users.ai_quota_appels s'il est renseigné ;
 # 0 = illimité. Défaut : 30.
