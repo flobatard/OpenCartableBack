@@ -21,6 +21,7 @@ provider n'est vérifiable qu'à l'appel — un provider qui le refuse produit u
 erreur mid-stream, traduite comme les autres.
 """
 
+import contextvars
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from functools import lru_cache
@@ -56,6 +57,17 @@ logger = logging.getLogger(__name__)
 # d'appels) ne doit jamais fuiter en token.
 _MODEL_NODE = "model"
 _TOOLS_NODE = "tools"
+
+# Id de l'appel d'outil EN COURS d'exécution, posé par le middleware
+# (``wrap_tool_call``) et lu par la coroutine des ``StructuredTool`` : nos
+# tools sont déclarés par un args_schema JSON, dans lequel LangChain ne peut
+# pas injecter l'id d'appel — or l'exécuteur doit pouvoir apparier son
+# exécution à l'événement ``tool_call`` émis sur le flux (clé des attentes
+# HITL de l'assistant, notamment). ContextVar : les appels concurrents d'un
+# même round s'exécutent chacun dans leur propre tâche/contexte asyncio.
+_CURRENT_TOOL_CALL_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "oc_current_tool_call_id", default=""
+)
 
 # Injecté en token quand le plafond de rounds coupe la boucle : l'appelant
 # persiste/affiche ainsi une fin de réponse explicite plutôt qu'un silence.
@@ -129,8 +141,50 @@ def _to_usage(usage_metadata: dict[str, Any] | None) -> AIUsage | None:
     )
 
 
+def agent_interrupt(payload: dict[str, Any]) -> Any:
+    """Fige le run agent en attendant une reprise (HITL) — wrapper NEUTRE de
+    ``langgraph.types.interrupt``, seul point d'appel autorisé hors du package.
+
+    À appeler UNIQUEMENT depuis un ``tool_executor`` d'un run à ``thread_id``
+    (checkpointer requis). ``payload`` est relayé à l'appelant du flux dans
+    l'événement ``interrupt`` (l'appelant y met de quoi retrouver la reprise —
+    ex. l'id d'appel d'outil) ; au resume, la fonction RETOURNE la valeur de
+    reprise. ⚠ À la reprise, le nœud (donc le tool) est **ré-exécuté depuis le
+    début** : tout ce qui précède l'appel doit être idempotent.
+    """
+    from langgraph.types import interrupt
+
+    return interrupt(payload)
+
+
 class AIClient:
-    """Client IA stateless : aucune connexion ni clé retenue entre deux appels."""
+    """Client IA stateless sur les appels — la seule mémoire est le
+    **checkpointer agent** (InMemorySaver, process-local) qui porte les runs
+    figés par :func:`agent_interrupt` entre deux requêtes (HITL). Décision
+    actée : passage à un saver Postgres seulement si multi-worker un jour."""
+
+    def __init__(self) -> None:
+        self._checkpointer: Any = None
+
+    def _get_checkpointer(self) -> Any:
+        """InMemorySaver partagé du client (créé paresseusement) : les runs
+        figés ne sont retrouvables que sur l'instance qui les a créés —
+        ``get_ai_client`` étant un singleton, c'est le cas en production."""
+        if self._checkpointer is None:
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            self._checkpointer = InMemorySaver()
+        return self._checkpointer
+
+    def drop_agent_thread(self, thread_id: str) -> None:
+        """Purge l'état checkpointé d'un run (reprise consommée ou abandonnée) —
+        best-effort, la mémoire est de toute façon libérée au redémarrage."""
+        if self._checkpointer is None:
+            return
+        try:
+            self._checkpointer.delete_thread(thread_id)
+        except Exception:  # noqa: BLE001 — nettoyage best-effort assumé
+            logger.warning("Purge du thread agent %s impossible", thread_id)
 
     def resolve_config(self, config: AIRequestConfig | None) -> AIRequestConfig:
         """Config fournie par l'appelant, sinon fallback serveur ``AI_*``.
@@ -226,6 +280,8 @@ class AIClient:
         tools: Sequence[AIToolSpec],
         tool_executor: Callable[[AIToolCall], Awaitable[AIToolResult]],
         max_tool_rounds: int = 5,
+        thread_id: str | None = None,
+        resume: Any = None,
         trace_name: str | None = None,
         user_id: str | None = None,
     ) -> AsyncIterator[AIStreamEvent]:
@@ -234,10 +290,21 @@ class AIClient:
         Méthode SYNC à validation eager (motif :meth:`stream`) : config résolue,
         chat model construit et graphe agent compilé AVANT de retourner le
         generator. ``tool_executor`` reçoit chaque :class:`AIToolCall` (``id``
-        vide à ce stade) et retourne un :class:`AIToolResult` — **il ne lève
-        jamais** : une erreur métier se dit ``is_error=True`` (relayée au modèle
-        en résultat d'outil en échec) ; une exception imprévue est rattrapée et
-        convertie en échec générique, sans fuiter son message.
+        réel de l'appel, propagé par contextvar) et retourne un
+        :class:`AIToolResult` — **il ne lève jamais** : une erreur métier se dit
+        ``is_error=True`` (relayée au modèle en résultat d'outil en échec) ; une
+        exception imprévue est rattrapée et convertie en échec générique, sans
+        fuiter son message.
+
+        **HITL** : avec un ``thread_id``, le run est checkpointé (InMemorySaver
+        du client) — un ``tool_executor`` peut alors appeler
+        :func:`agent_interrupt` pour figer le run : le flux émet un événement
+        ``interrupt`` (portant le payload) et se termine SANS ``done``. La
+        reprise est un nouvel appel avec le même ``thread_id`` et
+        ``resume=<valeur>`` (les ``messages`` sont alors ignorés — l'état vit
+        au checkpoint) : le nœud interrompu se ré-exécute, ``agent_interrupt``
+        retourne la valeur, le flux continue (``tool_result``… ``done``).
+        Le graphe de la reprise doit être bâti avec les MÊMES tools.
 
         ``max_tool_rounds`` borne le nombre d'appels au modèle (rounds de tools
         + réponse finale) ; à la coupure, un token d'avertissement clôt le texte
@@ -249,9 +316,15 @@ class AIClient:
         """
         cfg = self.resolve_config(config)
         model = build_chat_model(cfg)
-        agent = _build_agent(model, tools, tool_executor, max_tool_rounds)
+        checkpointer = self._get_checkpointer() if thread_id is not None else None
+        agent = _build_agent(model, tools, tool_executor, max_tool_rounds, checkpointer)
         run_config = build_run_config(trace_name=trace_name, user_id=user_id)
-        return self._stream_agent(agent, cfg, messages, run_config)
+        if thread_id is not None:
+            run_config["configurable"] = {
+                **run_config.get("configurable", {}),
+                "thread_id": thread_id,
+            }
+        return self._stream_agent(agent, cfg, messages, run_config, resume=resume)
 
     async def _stream_agent(
         self,
@@ -259,13 +332,21 @@ class AIClient:
         cfg: AIRequestConfig,
         messages: Sequence[ChatMessage],
         run_config: dict[str, Any],
+        *,
+        resume: Any = None,
     ) -> AsyncIterator[AIStreamEvent]:
+        agent_input: Any = {"messages": _to_langchain_messages(messages)}
+        if resume is not None:
+            from langgraph.types import Command
+
+            agent_input = Command(resume=resume)
         input_tokens = 0
         output_tokens = 0
         has_usage = False
+        interrupted = False
         try:
             async for mode, payload in agent.astream(
-                {"messages": _to_langchain_messages(messages)},
+                agent_input,
                 config=run_config,
                 stream_mode=["messages", "updates"],
             ):
@@ -302,6 +383,18 @@ class AIClient:
                 # chaque super-step — l'update du nœud modèle arrive AVANT
                 # l'exécution des tools, c'est lui qui porte les tool_calls
                 # complets (les chunks n'en donnent que des fragments).
+                # Un interrupt (agent_interrupt dans un tool) arrive ici sous
+                # la clé "__interrupt__" avec un TUPLE d'Interrupt — traité en
+                # premier (la boucle par nœud attend des dicts).
+                if "__interrupt__" in payload:
+                    for intr in payload["__interrupt__"]:
+                        interrupted = True
+                        yield AIStreamEvent(
+                            type="interrupt",
+                            interrupt_id=getattr(intr, "id", None),
+                            interrupt_value=intr.value if isinstance(intr.value, dict) else {},
+                        )
+                    continue
                 for node, output in payload.items():
                     node_messages = (output or {}).get("messages", [])
                     if node == _MODEL_NODE:
@@ -319,6 +412,10 @@ class AIClient:
                         yield AIStreamEvent(type="token", delta=_TOOL_ROUNDS_EXCEEDED_NOTICE)
         except Exception as exc:
             raise translate_provider_error(exc, cfg.provider.value) from exc
+        if interrupted:
+            # Run figé (HITL) : pas de ``done`` — l'appelant clôt son flux et
+            # attend la reprise (nouvel appel avec resume=).
+            return
         usage = AIUsage(input_tokens=input_tokens, output_tokens=output_tokens)
         yield AIStreamEvent(type="done", usage=usage if has_usage else None)
 
@@ -328,6 +425,7 @@ def _build_agent(
     tools: Sequence[AIToolSpec],
     tool_executor: Callable[[AIToolCall], Awaitable[AIToolResult]],
     max_tool_rounds: int,
+    checkpointer: Any = None,
 ) -> "CompiledStateGraph":
     """Compile le graphe agent LangGraph autour des tools neutres.
 
@@ -349,6 +447,7 @@ def _build_agent(
     from langchain.agents import create_agent
     from langchain.agents.middleware import ModelCallLimitMiddleware
     from langchain_core.tools import StructuredTool, ToolException
+    from langgraph.errors import GraphBubbleUp
 
     lc_tools = []
     for spec in tools:
@@ -356,9 +455,17 @@ def _build_agent(
         async def _run(
             _spec: AIToolSpec = spec, **arguments: Any
         ) -> tuple[str, AIToolImage | None]:
-            call = AIToolCall(name=_spec.name, arguments=arguments)
+            # L'id vient du middleware (contextvar) : celui de l'événement
+            # ``tool_call`` du flux — l'exécuteur peut apparier (HITL).
+            call = AIToolCall(
+                id=_CURRENT_TOOL_CALL_ID.get(), name=_spec.name, arguments=arguments
+            )
             try:
                 result = await tool_executor(call)
+            except GraphBubbleUp:
+                # agent_interrupt (HITL) : signal de contrôle LangGraph, jamais
+                # une erreur — il doit remonter jusqu'au graphe.
+                raise
             except Exception as exc:  # contrat violé : filet sans fuite du message
                 logger.error(
                     "Exécuteur de tool IA en exception (%s) : %s",
@@ -385,7 +492,7 @@ def _build_agent(
         ModelCallLimitMiddleware(run_limit=max_tool_rounds + 1, exit_behavior="end"),
         _tool_image_middleware()(),
     ]
-    return create_agent(model, lc_tools, middleware=middleware)
+    return create_agent(model, lc_tools, middleware=middleware, checkpointer=checkpointer)
 
 
 def _hoist_tool_images(messages: Sequence["BaseMessage"]) -> list["BaseMessage"]:
@@ -459,10 +566,16 @@ def _tool_image_middleware() -> type:
         return Command(update={"messages": [result, attachment]})
 
     class ToolImageMiddleware(AgentMiddleware):
+        # Le wrap pose AUSSI l'id d'appel courant (contextvar lue par la
+        # coroutine des StructuredTool — cf. _CURRENT_TOOL_CALL_ID) : le
+        # handler s'exécute dans la même chaîne d'await, chaque appel
+        # concurrent d'un round vivant dans sa propre tâche/contexte.
         async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ANN202
+            _CURRENT_TOOL_CALL_ID.set(request.tool_call.get("id") or "")
             return _attach(await handler(request), request)
 
         def wrap_tool_call(self, request, handler):  # noqa: ANN001, ANN202
+            _CURRENT_TOOL_CALL_ID.set(request.tool_call.get("id") or "")
             return _attach(handler(request), request)
 
         async def awrap_model_call(self, request, handler):  # noqa: ANN001, ANN202

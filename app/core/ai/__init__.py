@@ -17,9 +17,11 @@ Contrats :
   :meth:`AIClient.stream` (async generator d'événements
   ``token``/``thinking``/``done``, servi en SSE par les routes) et
   :meth:`AIClient.stream_agent` (boucle agent LangGraph avec tools neutres
-  :class:`AIToolSpec`, événements enrichis ``tool_call``/``tool_result``).
-  Validation eager pour les deux flux, cf. docstring de
-  :mod:`app.core.ai.client`.
+  :class:`AIToolSpec`, événements enrichis ``tool_call``/``tool_result`` —
+  et, pour un run à ``thread_id``, le HITL : :func:`agent_interrupt` dans un
+  exécuteur fige le run, événement ``interrupt``, reprise par
+  ``stream_agent(..., thread_id=, resume=)``). Validation eager pour les deux
+  flux, cf. docstring de :mod:`app.core.ai.client`.
 - **Erreurs** (traduites au bord, :mod:`app.core.ai.errors`) : 422 config
   invalide, 400 clé refusée par le provider (jamais 401 — réservé au JWT
   Zitadel), 429 quota provider, 503 provider injoignable ; jamais 500.
@@ -27,7 +29,7 @@ Contrats :
   les settings ``LANGFUSE_*``.
 """
 
-from app.core.ai.client import AIClient, get_ai_client
+from app.core.ai.client import AIClient, agent_interrupt, get_ai_client
 from app.core.ai.model_catalog import PROVIDERS_WITH_MODEL_LISTING, list_models
 from app.core.ai.observability import shutdown_langfuse
 from app.core.ai.types import (
@@ -56,6 +58,7 @@ __all__ = [
     "AIToolSpec",
     "AIUsage",
     "ChatMessage",
+    "agent_interrupt",
     "get_ai_client",
     "list_models",
     "shutdown_langfuse",

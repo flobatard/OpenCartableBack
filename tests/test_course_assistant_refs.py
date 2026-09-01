@@ -193,3 +193,31 @@ def test_rewriter_never_holds_pathological_run() -> None:
     rewriter = CitationRewriter(refs)
     assert rewriter.feed("oc-block:" + "a" * 100) == "oc-block:" + "a" * 100
     assert rewriter.flush() == ""
+
+
+# ------------------------------------------- liens de contenu (propositions)
+
+
+def test_rewrite_content_refs_short_refs_to_uuid() -> None:
+    refs = _refs()
+    text = "Voir [le PDF](oc-resource:R1) et la [balance](oc-module:M1)."
+    assert refs.rewrite_content_refs(text) == (
+        f"Voir [le PDF](oc-resource:{R1}) et la [balance](oc-module:{M1})."
+    )
+
+
+def test_rewrite_content_refs_keeps_uuid_and_unknown_verbatim() -> None:
+    refs = _refs()
+    unknown = uuid.uuid4()
+    text = f"![fig](oc-resource:{R2}) puis oc-resource:R9 et oc-module:{unknown}"
+    # UUID existant conservé, référence hors bornes et UUID inconnu laissés
+    # verbatim (note « indisponible » au rendu, visible au diff).
+    assert refs.rewrite_content_refs(text) == (
+        f"![fig](oc-resource:{R2}) puis oc-resource:R9 et oc-module:{unknown}"
+    )
+
+
+def test_rewrite_content_refs_ignores_block_citations() -> None:
+    # oc-block: n'est pas un lien de CONTENU (réécrit ailleurs, en flux).
+    refs = _refs()
+    assert refs.rewrite_content_refs("Voir oc-block:B1") == "Voir oc-block:B1"

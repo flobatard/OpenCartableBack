@@ -28,6 +28,7 @@ from app.core.ai import (
     AIToolResult,
     AIToolSpec,
     ChatMessage,
+    agent_interrupt,
 )
 from app.core.ai import client as client_module
 from app.core.ai.client import _to_langchain_messages
@@ -141,6 +142,63 @@ async def test_agent_without_tool_call(fake_build) -> None:
     assert events[-1].type == "done"
     assert events[-1].usage.input_tokens == 20
     assert events[-1].usage.output_tokens == 5
+
+
+@pytest.mark.anyio
+async def test_agent_interrupt_and_resume(fake_build) -> None:
+    """HITL : un tool appelle ``agent_interrupt`` → événement ``interrupt``,
+    flux clos SANS ``done`` ; la reprise (même client + thread_id, ``resume=``)
+    ré-exécute le tool — qui reçoit la valeur de reprise — puis le run
+    continue jusqu'au ``done``, sans ré-émettre le ``tool_call``."""
+    model = SeqToolModel(responses=[_tool_call_message(), _final_message()])
+    fake_build["model"] = model
+    client = AIClient()
+
+    async def interrupting_executor(call: AIToolCall) -> AIToolResult:
+        decision = agent_interrupt({"tool_call_id": call.id})
+        return AIToolResult(content=f"décision : {decision['accepted']}")
+
+    def _events(resume=None, messages=MESSAGES):
+        return client.stream_agent(
+            messages,
+            CONFIG,
+            tools=[READ_BLOCK],
+            tool_executor=interrupting_executor,
+            thread_id="t-hitl",
+            resume=resume,
+        )
+
+    first = [e async for e in _events()]
+    assert [e.type for e in first if e.type in ("tool_call", "interrupt", "done")] == [
+        "tool_call",
+        "interrupt",
+    ]
+    assert first[-1].type == "interrupt"
+    assert first[-1].interrupt_value == {"tool_call_id": "call_1"}
+    assert first[-1].interrupt_id
+
+    second = [e async for e in _events(resume={"accepted": True}, messages=[])]
+    kinds = [e.type for e in second]
+    assert "tool_call" not in kinds  # l'appel n'est pas ré-émis à la reprise
+    tool_result = next(e for e in second if e.type == "tool_result")
+    assert tool_result.delta == "décision : True"
+    assert second[-1].type == "done"
+
+
+@pytest.mark.anyio
+async def test_agent_executor_receives_tool_call_id(fake_build) -> None:
+    """L'exécuteur reçoit le VRAI id d'appel du modèle (contextvar posée par
+    le middleware) — celui de l'événement ``tool_call`` du flux : c'est la clé
+    d'appariement des attentes HITL de l'assistant."""
+    fake_build["model"] = SeqToolModel(responses=[_tool_call_message(), _final_message()])
+    seen: list[str] = []
+
+    async def recording_executor(call: AIToolCall) -> AIToolResult:
+        seen.append(call.id)
+        return await _ok_executor(call)
+
+    _ = [e async for e in _agent_events(fake_build, executor=recording_executor)]
+    assert seen == ["call_1"]
 
 
 @pytest.mark.anyio

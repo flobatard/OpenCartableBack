@@ -19,6 +19,19 @@ Quatre tools (specs neutres :class:`AIToolSpec`, exécuteur async passé à
 - ``read_module`` : lit le code HTML/CSS/JS d'un module interactif (en base,
   aucun accès S3 ; :func:`format_module`, plafonné).
 
+S'y ajoute, pour le seul contexte ``block_text`` (``include_propose=True``),
+le tool **HITL** ``propose_block_edit`` : il **ne mute rien** — la proposition
+(markdown complet de remplacement) voyage dans les ``args`` du ``tool_call``
+(relayés en entier sur le flux SSE et persistés dans ``tool_calls``), le front
+l'affiche en diff À LA PLACE de l'éditeur, et l'exécuteur **fige le run**
+(:func:`app.core.ai.agent_interrupt` — interrupt LangGraph, le flux SSE se
+ferme) jusqu'à la décision du professeur : la route de décision **reprend le
+run** dans un nouveau flux, le tool est ré-exécuté (validation idempotente),
+``agent_interrupt`` retourne la décision et le **résultat du tool EST la
+décision** (acceptée — et appliquée dans l'éditeur par le front — ou rejetée,
+avec l'éventuel commentaire), que le modèle lit pour poursuivre (décision
+actée : checkpointer InMemory — cf. CLAUDE.md et ``hitl.py``).
+
 Les tools ciblent une entité par sa **référence courte** (``B3``, ``R2``,
 ``M1`` — :mod:`app.course_assistant.refs`, jamais un UUID côté modèle) :
 :func:`build_tool_specs` construit les specs **par tour** avec un ``enum`` des
@@ -46,7 +59,7 @@ from tempfile import SpooledTemporaryFile
 
 from fastapi.concurrency import run_in_threadpool
 
-from app.core.ai import AIToolCall, AIToolImage, AIToolResult, AIToolSpec
+from app.core.ai import AIToolCall, AIToolImage, AIToolResult, AIToolSpec, agent_interrupt
 from app.core.storage import Storage
 from app.course_assistant.context import format_block, format_module
 from app.course_assistant.refs import CourseRefs
@@ -70,6 +83,12 @@ READ_BLOCK = "read_block"
 READ_RESOURCE_PDF = "read_resource_pdf"
 READ_RESOURCE_IMAGE = "read_resource_image"
 READ_MODULE = "read_module"
+PROPOSE_BLOCK_EDIT = "propose_block_edit"
+
+# Plafond d'une proposition d'édition — miroir de ``TextContent.markdown``
+# (``max_length=100_000``, app/courses/schemas.py) : une proposition plus
+# longue serait de toute façon rejetée à l'enregistrement du bloc.
+PROPOSAL_MAX_CHARS = 100_000
 
 
 def _is_readable_pdf(resource) -> bool:
@@ -95,9 +114,45 @@ def _ref_spec(
     )
 
 
-def build_tool_specs(refs: CourseRefs) -> list[AIToolSpec]:
-    """Les quatre specs du tour, ``enum`` calé sur l'instantané du cours."""
-    return [
+def _propose_block_edit_spec() -> AIToolSpec:
+    """Spec du tool HITL de proposition d'édition (contexte ``block_text``)."""
+    return AIToolSpec(
+        name=PROPOSE_BLOCK_EDIT,
+        description=(
+            "Propose au professeur une réécriture du bloc texte en cours "
+            "d'édition et ATTEND sa décision : le comparatif lui est présenté "
+            "dans son éditeur, et le résultat de l'appel est sa décision — "
+            "proposition acceptée (et appliquée) ou rejetée, avec son "
+            "éventuel commentaire. Ne modifie rien par lui-même. Une seule "
+            "proposition à la fois."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "new_markdown": {
+                    "type": "string",
+                    "description": (
+                        "Contenu markdown INTÉGRAL de remplacement du bloc — "
+                        "recopier à l'identique tout ce qui ne change pas."
+                    ),
+                },
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Une phrase, en français, décrivant le changement "
+                        "proposé (affichée au professeur)."
+                    ),
+                },
+            },
+            "required": ["new_markdown"],
+        },
+    )
+
+
+def build_tool_specs(refs: CourseRefs, *, include_propose: bool = False) -> list[AIToolSpec]:
+    """Les specs du tour, ``enum`` calé sur l'instantané du cours ;
+    ``include_propose`` (contexte ``block_text``) ajoute ``propose_block_edit``."""
+    specs = [
         _ref_spec(
             READ_BLOCK,
             "Lit le contenu complet d'un bloc du cours (texte, exercice avec "
@@ -137,6 +192,9 @@ def build_tool_specs(refs: CourseRefs) -> list[AIToolSpec]:
             refs.refs("module"),
         ),
     ]
+    if include_propose:
+        specs.append(_propose_block_edit_spec())
+    return specs
 
 
 def read_pdf_sync(storage: Storage, s3_key: str) -> str:
@@ -191,14 +249,17 @@ def read_image_sync(storage: Storage, s3_key: str) -> str:
 
 
 def build_tool_executor(
-    storage: Storage, refs: CourseRefs
+    storage: Storage, refs: CourseRefs, *, include_propose: bool = False
 ) -> Callable[[AIToolCall], Awaitable[AIToolResult]]:
     """Fabrique l'exécuteur async passé à ``stream_agent``.
 
     Les tools d'un même round peuvent s'exécuter en concurrence (ToolNode) :
     la lecture S3 est déportée par appel dans le threadpool, ``storage`` est
     thread-safe en lecture. ``refs`` porte l'instantané du cours (blocs,
-    ressources, modules et leurs références courtes).
+    ressources, modules et leurs références courtes). ``include_propose``
+    (contexte ``block_text`` — run à ``thread_id`` obligatoire) active
+    ``propose_block_edit`` — validation de forme puis **interrupt** jusqu'à la
+    décision du professeur (docstring du module), aucune mutation.
     """
 
     async def _read_block(arguments: dict) -> AIToolResult:
@@ -306,6 +367,36 @@ def build_tool_executor(
             return AIToolResult(content=resolution.error, is_error=True)
         return AIToolResult(content=format_module(resolution.entry.entity, refs))
 
+    async def _propose_block_edit(call: AIToolCall) -> AIToolResult:
+        # Validation AVANT l'interrupt (échec immédiat, aucun run figé) — et
+        # idempotente : à la reprise, le tool est ré-exécuté depuis le début.
+        new_markdown = call.arguments.get("new_markdown")
+        if not isinstance(new_markdown, str):
+            return AIToolResult(
+                content="Paramètre new_markdown manquant ou invalide (chaîne attendue).",
+                is_error=True,
+            )
+        if len(new_markdown) > PROPOSAL_MAX_CHARS:
+            return AIToolResult(
+                content=(
+                    f"Proposition trop longue ({len(new_markdown)} caractères, "
+                    f"plafond {PROPOSAL_MAX_CHARS}) — proposez une version plus courte."
+                ),
+                is_error=True,
+            )
+        # Fige le run (interrupt LangGraph — le flux SSE se ferme) ; à la
+        # reprise, agent_interrupt RETOURNE la décision du professeur.
+        decision = agent_interrupt({"tool_call_id": call.id or "?"})
+        accepted = isinstance(decision, dict) and bool(decision.get("accepted"))
+        comment = decision.get("comment") if isinstance(decision, dict) else None
+        if accepted:
+            content = "Le professeur a ACCEPTÉ la proposition et l'a appliquée au bloc."
+        else:
+            content = "Le professeur a REJETÉ la proposition — le bloc est inchangé."
+        if comment:
+            content += f" Son commentaire : {comment}"
+        return AIToolResult(content=content)
+
     handlers = {
         READ_BLOCK: _read_block,
         READ_RESOURCE_PDF: _read_resource_pdf,
@@ -314,6 +405,9 @@ def build_tool_executor(
     }
 
     async def executor(call: AIToolCall) -> AIToolResult:
+        if call.name == PROPOSE_BLOCK_EDIT and include_propose:
+            # À part des handlers génériques : il lit call.id (clé de reprise).
+            return await _propose_block_edit(call)
         handler = handlers.get(call.name)
         if handler is None:
             return AIToolResult(content=f"Outil inconnu : {call.name}", is_error=True)

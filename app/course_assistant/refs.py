@@ -249,9 +249,29 @@ class CourseRefs:
             entry = candidates[0] if len(candidates) == 1 else None
         return f"oc-{scheme}:{entry.id}" if entry is not None else match.group(0)
 
+    def rewrite_content_refs(self, text: str) -> str:
+        """Liens de CONTENU d'un markdown proposé (``propose_block_edit``) :
+        ``oc-resource:<cible>`` / ``oc-module:<cible>`` réécrits en UUID —
+        le modèle insère par référence courte (``oc-resource:R2``), un lien
+        existant recopié en UUID passe tel quel (``by_uuid_prefix`` le
+        retrouve), une cible inconnue reste verbatim (note « indisponible »
+        côté rendu, visible au diff)."""
+        return _CONTENT_REF_RE.sub(self._rewrite_content_match, text)
+
+    def _rewrite_content_match(self, match: re.Match[str]) -> str:
+        scheme, target = match.group(1), match.group(2)
+        kind: Kind = "resource" if scheme == "resource" else "module"
+        entry = self.by_ref(kind, target)
+        if entry is None:
+            candidates = self.by_uuid_prefix(kind, target)
+            entry = candidates[0] if len(candidates) == 1 else None
+        return f"oc-{scheme}:{entry.id}" if entry is not None else match.group(0)
+
 
 _CITATION_SCHEMES = ("oc-block:", "oc-resource:")
 _CITATION_RE = re.compile(r"oc-(block|resource):([A-Za-z0-9-]+)")
+# Liens de contenu (markdown d'un bloc) : ressources et modules intégrés.
+_CONTENT_REF_RE = re.compile(r"oc-(resource|module):([A-Za-z0-9-]+)")
 # Suffixes pouvant amorcer une citation encore incomplète : préfixe strict d'un
 # schéma (``o``, ``oc-bl``…) ou schéma complet suivi d'une cible en cours.
 _SCHEME_PREFIXES = sorted(

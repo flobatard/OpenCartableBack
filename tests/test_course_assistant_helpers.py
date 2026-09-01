@@ -1,7 +1,8 @@
 """Tests des helpers purs de l'assistant de cours (contexte, citations,
-replay, tools) — aucun réseau, DB ni S3 (fakes en mémoire)."""
+replay, tools, gate HITL) — aucun réseau, DB ni S3 (fakes en mémoire)."""
 
 import io
+import time
 import uuid
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 from pypdf import PdfWriter
 
 from app.core.ai import AIToolCall
+from app.course_assistant import hitl
 from app.course_assistant import tools as tools_module
 from app.course_assistant.context import (
     build_course_context,
@@ -22,6 +24,8 @@ from app.course_assistant.tools import (
     IMAGE_MAX_BYTES,
     PDF_MAX_BYTES,
     PDF_MAX_PAGES,
+    PROPOSAL_MAX_CHARS,
+    PROPOSE_BLOCK_EDIT,
     build_tool_executor,
     build_tool_specs,
     read_image_sync,
@@ -170,6 +174,45 @@ def test_build_course_context_summary_mode() -> None:
     assert "mot " * 100 not in context
 
 
+def test_build_course_context_block_text_focus() -> None:
+    other = _block(id=uuid.uuid4(), title="Suite", content={"markdown": "La suite du cours."})
+    focus = _block()
+    context = build_course_context(_COURSE, _refs(blocks=[focus, other]), focus_block=focus)
+    # Mission et règles d'édition substituées à la mission « course ».
+    assert "un bloc de texte de son cours" in context
+    assert "propose_block_edit" in context
+    assert "L'appel est BLOQUANT" in context
+    # Syntaxes d'édition déclarées (le modèle connaît tous ses outils).
+    assert "```mermaid" in context
+    assert "```tikz" in context
+    assert "```geogebra" in context
+    assert "```jsxgraph" in context
+    assert "oc-module:<cible>" in context
+    # Bloc édité en entier dans la section dédiée, pointeur dans la liste.
+    assert "## Bloc en cours d'édition" in context
+    assert context.count("Le théorème de Pythagore.") == 1
+    assert "(bloc en cours d'édition — contenu complet dans la section dédiée ci-dessus)" in context
+    # Le reste du cours reste rendu.
+    assert "La suite du cours." in context
+    # Les syntaxes/règles d'édition ne polluent pas le contexte « course ».
+    course_context = build_course_context(_COURSE, _refs(blocks=[focus, other]))
+    assert "```tikz" not in course_context
+    assert "propose_block_edit" not in course_context
+
+
+def test_build_course_context_block_text_focus_full_even_in_summary_mode() -> None:
+    others = [
+        _block(id=uuid.uuid4(), content={"markdown": "mot " * 500}) for _ in range(5)
+    ]
+    focus = _block(content={"markdown": "CONTENU ÉDITÉ INTÉGRAL. " * 40})
+    context = build_course_context(
+        _COURSE, _refs(blocks=[focus, *others]), max_chars=2000, focus_block=focus
+    )
+    assert "extraits" in context
+    # Le bloc édité reste rendu EN ENTIER (jamais excerpté), une seule fois.
+    assert context.count("CONTENU ÉDITÉ INTÉGRAL. " * 40) == 1
+
+
 # ------------------------------------------------------------------- specs
 
 
@@ -195,6 +238,15 @@ def test_tool_specs_enum_follows_snapshot() -> None:
         ("read_module", "module_ref"),
     ):
         assert "enum" not in empty[name].parameters["properties"][param]
+
+
+def test_tool_specs_propose_only_on_demand() -> None:
+    assert PROPOSE_BLOCK_EDIT not in {s.name for s in build_tool_specs(_refs())}
+    specs = {s.name: s for s in build_tool_specs(_refs(), include_propose=True)}
+    spec = specs[PROPOSE_BLOCK_EDIT]
+    assert spec.parameters["required"] == ["new_markdown"]
+    assert set(spec.parameters["properties"]) == {"new_markdown", "summary"}
+    assert "ATTEND sa décision" in spec.description
 
 
 # ---------------------------------------------------------------- citations
@@ -496,3 +548,124 @@ async def test_executor_image_storage_failure() -> None:
 async def test_executor_unknown_tool() -> None:
     result = await _executor()(AIToolCall(name="hack", arguments={}))
     assert result.is_error
+
+
+# ------------------------------------------------- propose_block_edit (HITL)
+
+
+def _propose_executor():
+    return build_tool_executor(_FakeStorage(b""), _refs(), include_propose=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("decision", "expected"),
+    [
+        ({"accepted": True}, "ACCEPTÉ la proposition et l'a appliquée"),
+        ({"accepted": False}, "REJETÉ la proposition"),
+        (
+            {"accepted": False, "comment": "Trop long, condensez."},
+            "Son commentaire : Trop long, condensez.",
+        ),
+    ],
+)
+async def test_executor_propose_returns_the_decision(monkeypatch, decision, expected) -> None:
+    """Le résultat du tool EST la décision du professeur — ``agent_interrupt``
+    est mocké ici (le vrai fige le run LangGraph : l'aller-retour complet est
+    couvert par ``test_ai_agent.py``) ; le payload de l'interrupt porte l'id
+    d'appel (clé de la reprise)."""
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        tools_module, "agent_interrupt", lambda payload: seen.append(payload) or decision
+    )
+    result = await _propose_executor()(
+        AIToolCall(id="call_p", name=PROPOSE_BLOCK_EDIT, arguments={"new_markdown": "# Nouveau"})
+    )
+    assert not result.is_error
+    assert expected in result.content
+    assert seen == [{"tool_call_id": "call_p"}]
+
+
+@pytest.mark.anyio
+async def test_executor_propose_validates_before_interrupting(monkeypatch) -> None:
+    """Args invalides : échec immédiat, JAMAIS d'interrupt (aucun run figé)."""
+    monkeypatch.setattr(
+        tools_module,
+        "agent_interrupt",
+        lambda payload: pytest.fail("interrupt inattendu sur des args invalides"),
+    )
+    executor = _propose_executor()
+
+    missing = await executor(AIToolCall(id="c1", name=PROPOSE_BLOCK_EDIT, arguments={}))
+    assert missing.is_error
+    assert "new_markdown" in missing.content
+
+    not_a_string = await executor(
+        AIToolCall(id="c2", name=PROPOSE_BLOCK_EDIT, arguments={"new_markdown": 42})
+    )
+    assert not_a_string.is_error
+
+    too_long = await executor(
+        AIToolCall(
+            id="c3",
+            name=PROPOSE_BLOCK_EDIT,
+            arguments={"new_markdown": "x" * (PROPOSAL_MAX_CHARS + 1)},
+        )
+    )
+    assert too_long.is_error
+    assert "plafond" in too_long.content
+
+
+@pytest.mark.anyio
+async def test_executor_propose_block_edit_absent_by_default() -> None:
+    """Hors contexte block_text, le tool n'existe pas (outil inconnu)."""
+    result = await _executor()(
+        AIToolCall(name=PROPOSE_BLOCK_EDIT, arguments={"new_markdown": "x"})
+    )
+    assert result.is_error
+    assert "inconnu" in result.content
+
+
+# ----------------------------------------------- registre de reprises (hitl)
+
+
+def _pending(**overrides) -> hitl.PendingProposal:
+    defaults = dict(thread_id="t-1", tool_call_id="call_p", provider="mistral", config=None)
+    defaults.update(overrides)
+    return hitl.PendingProposal(**defaults)
+
+
+def test_hitl_register_take_and_mismatch() -> None:
+    conversation_id = uuid.uuid4()
+    pending = _pending()
+    assert hitl.register(conversation_id, pending) is None
+    # Mauvais id d'appel : l'entrée n'est PAS consommée.
+    assert hitl.take(conversation_id, "autre") is None
+    assert hitl.take(conversation_id, "call_p") is pending
+    assert hitl.take(conversation_id, "call_p") is None  # consommée
+
+
+def test_hitl_register_replaces_and_returns_previous() -> None:
+    """Une seule reprise par conversation : la nouvelle remplace l'ancienne,
+    rendue à l'appelant (qui purge son thread)."""
+    conversation_id = uuid.uuid4()
+    first = _pending(thread_id="t-1", tool_call_id="c1")
+    second = _pending(thread_id="t-2", tool_call_id="c2")
+    hitl.register(conversation_id, first)
+    assert hitl.register(conversation_id, second) is first
+    assert hitl.take(conversation_id, "c2") is second
+
+
+def test_hitl_expired_entry_is_dropped() -> None:
+    conversation_id = uuid.uuid4()
+    expired = _pending(created_at=time.time() - hitl.PENDING_TTL_SECONDS - 1)
+    hitl.register(conversation_id, expired)
+    assert hitl.take(conversation_id, "call_p") is None
+
+
+def test_hitl_drop() -> None:
+    conversation_id = uuid.uuid4()
+    pending = _pending()
+    hitl.register(conversation_id, pending)
+    assert hitl.drop(conversation_id) is pending
+    assert hitl.drop(conversation_id) is None

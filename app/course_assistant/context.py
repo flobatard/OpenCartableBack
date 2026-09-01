@@ -3,10 +3,15 @@
 Aucune I/O ici (testable sans DB ni storage) :
 
 - :func:`build_course_context` assemble le system prompt (consignes + cours en
-  markdown). Le modèle ne voit **jamais d'UUID** : chaque bloc, ressource et
-  module est désigné par sa référence courte (``B3``, ``R2``, ``M1`` —
+  markdown) — mission et règles par contexte de conversation (``course`` /
+  ``block_text`` via ``focus_block``, qui met le bloc édité en avant et pose
+  les règles du tool ``propose_block_edit``). Le modèle ne voit **jamais
+  d'UUID** : chaque bloc, ressource et module est désigné par sa référence
+  courte (``B3``, ``R2``, ``M1`` —
   :class:`~app.course_assistant.refs.CourseRefs`), pour les tools comme pour
-  les citations ;
+  les citations — seule exception, actée : les liens ``oc-resource:``/
+  ``oc-module:`` recopiés verbatim DANS le markdown d'une proposition
+  d'édition ;
 - :func:`format_block` produit la représentation textuelle d'un bloc — partagée
   entre le contexte et le tool ``read_block`` ; :func:`format_module` celle
   d'un module interactif (titre + code HTML/CSS/JS plafonné, tool
@@ -57,13 +62,27 @@ _UUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-f
 _BLOCK_REF_RE = re.compile(rf"oc-block:({_UUID_RE})")
 _RESOURCE_REF_RE = re.compile(rf"oc-resource:({_UUID_RE})")
 
-_SYSTEM_PROMPT = """\
+# Le system prompt est assemblé par fragments : une MISSION propre au contexte
+# de conversation (course / block_text) + des RÈGLES COMMUNES (math, références
+# courtes, citations, tools de lecture) + d'éventuelles règles dédiées.
+
+_COURSE_MISSION = """\
 Vous êtes l'assistant pédagogique d'OpenCartable, aux côtés d'un professeur \
 qui édite son cours. Vous l'aidez à explorer, critiquer et synthétiser ce \
 cours : structure, clarté, progression pédagogique, exactitude, exercices et \
 corrigés. Vouvoyez toujours votre interlocuteur et répondez en français, en \
-markdown.
+markdown.\
+"""
 
+_BLOCK_TEXT_MISSION = """\
+Vous êtes l'assistant pédagogique d'OpenCartable, aux côtés d'un professeur \
+qui édite un bloc de texte de son cours. Votre mission : l'aider à réécrire, \
+améliorer ou compléter ce bloc — clarté, style, exactitude, progression \
+pédagogique — en cohérence avec le reste du cours, fourni pour contexte. \
+Vouvoyez toujours votre interlocuteur et répondez en français, en markdown.\
+"""
+
+_COMMON_RULES = """\
 Formules mathématiques — règle stricte : utilisez EXCLUSIVEMENT les \
 délimiteurs dollar, seule syntaxe rendue par l'application. En ligne : \
 $u_{n+1} = a u_n + b$ ; formule centrée, seule sur sa ligne : \
@@ -96,8 +115,56 @@ Outils à votre disposition (ils prennent la référence en paramètre) : \
 d'une ressource PDF de la bibliothèque ; `read_resource_image` vous montre une \
 ressource image de la bibliothèque (PNG, JPEG, GIF ou WebP — nécessite un \
 modèle acceptant les images) ; `read_module` lit le code HTML/CSS/JS d'un \
-module interactif. Ne les appelez que si le contexte ci-dessous ne suffit pas.
+module interactif. Ne les appelez que si le contexte ci-dessous ne suffit pas.\
 """
+
+_MARKDOWN_SYNTAXES = """\
+Syntaxes disponibles dans le markdown d'un bloc — toutes rendues par \
+l'application, utilisez-les librement dans vos propositions :
+
+- Markdown standard : titres, listes, tableaux, blocs de code, liens, images.
+- Formules mathématiques KaTeX entre dollars (règle stricte ci-dessus).
+- Diagrammes Mermaid : bloc de code ```mermaid (graphes, séquences, frises…).
+- Figures TikZ : bloc de code ```tikz contenant du code TikZ, compilé dans le \
+navigateur — ex. \\draw (0,0) -- (4,0) -- (0,3) -- cycle;
+- Applet GeoGebra : bloc de code ```geogebra en clé=valeur, une par ligne \
+(id=<id du matériel geogebra.org>, width=, height=).
+- Graphe JSXGraph : bloc de code ```jsxgraph en clé=valeur, une par ligne \
+(equation=<expression de x>, point=x,y, bbox=xmin,ymax,xmax,ymin — plusieurs \
+lignes equation=/point= possibles).
+- Ressource de la bibliothèque intégrée au texte : lien \
+[nom](oc-resource:<cible>) — ou ![nom](oc-resource:<cible>) pour afficher une \
+image en ligne. Module interactif intégré : [titre](oc-module:<cible>).\
+"""
+
+_BLOCK_TEXT_EDIT_RULES = """\
+Règles d'édition du bloc — impératives :
+
+- Toute proposition de modification du bloc passe EXCLUSIVEMENT par l'outil \
+`propose_block_edit` : ne réécrivez jamais le bloc (ni un long extrait \
+remanié) directement dans le texte de votre réponse — le professeur ne \
+pourrait pas l'appliquer.
+- L'appel est BLOQUANT : le professeur examine votre proposition dans un \
+comparatif, et le résultat de l'outil vous donne sa décision — acceptée (et \
+appliquée à son éditeur) ou rejetée — avec son éventuel commentaire. Une \
+seule proposition à la fois ; si elle est rejetée avec un commentaire, vous \
+pouvez en soumettre une nouvelle version qui en tient compte.
+- `new_markdown` est le contenu INTÉGRAL de remplacement du bloc : recopiez à \
+l'identique tout ce que vous ne modifiez pas.
+- Préservez à l'identique les formules $…$ / $$…$$ et les liens \
+`oc-resource:` / `oc-module:` déjà présents dans le markdown du bloc, \
+identifiants longs compris — c'est la SEULE exception à la règle « jamais \
+d'identifiant long » : elle vaut pour le contenu recopié du bloc, jamais pour \
+votre prose ni vos citations. Pour INSÉRER une nouvelle ressource ou un \
+nouveau module de la bibliothèque, utilisez sa référence courte \
+(`oc-resource:R2`, `oc-module:M1`) : elle sera résolue automatiquement.\
+"""
+
+_SYSTEM_PROMPT = f"{_COURSE_MISSION}\n\n{_COMMON_RULES}"
+
+_BLOCK_TEXT_SYSTEM_PROMPT = (
+    f"{_BLOCK_TEXT_MISSION}\n\n{_COMMON_RULES}\n\n{_MARKDOWN_SYNTAXES}\n\n{_BLOCK_TEXT_EDIT_RULES}"
+)
 
 _SUMMARY_NOTICE = (
     "\n\n> Cours volumineux : seuls des extraits sont fournis ci-dessous — "
@@ -226,27 +293,61 @@ def build_refs(blocks, resources, modules) -> CourseRefs:
     )
 
 
-def build_course_context(course, refs: CourseRefs, *, max_chars: int = CONTEXT_MAX_CHARS) -> str:
+def _focus_pointer(block, refs: CourseRefs) -> str:
+    """Pointeur d'une ligne remplaçant le bloc édité dans la liste du cours
+    (son contenu complet vit dans la section « Bloc en cours d'édition »)."""
+    ref = refs.ref_of("block", block.id) or "B?"
+    return (
+        f"### Bloc {ref[1:]} — {block_title(block)} (ref: {ref})\n\n"
+        "(bloc en cours d'édition — contenu complet dans la section dédiée ci-dessus)"
+    )
+
+
+def build_course_context(
+    course, refs: CourseRefs, *, max_chars: int = CONTEXT_MAX_CHARS, focus_block=None
+) -> str:
     """System prompt complet : consignes + cours en markdown + bibliothèques.
 
     ``refs`` porte l'instantané du cours (:func:`build_refs`). Si le rendu
     complet dépasse ``max_chars``, bascule en **mode sommaire** (extraits +
     invite à ``read_block``) — jamais de coupe au milieu d'un bloc.
+
+    ``focus_block`` (contexte ``block_text``) : mission et règles d'édition
+    substituées, et le bloc édité est rendu **en entier** dans une section
+    « Bloc en cours d'édition » — y compris en mode sommaire (le professeur
+    édite CE bloc, l'assistant doit toujours en voir l'état exact) ; dans la
+    liste du cours, il est remplacé par un pointeur d'une ligne.
     """
-    head = [_SYSTEM_PROMPT, f"\n# Cours : {course.title}"]
+    prompt = _SYSTEM_PROMPT if focus_block is None else _BLOCK_TEXT_SYSTEM_PROMPT
+    head = [prompt, f"\n# Cours : {course.title}"]
     if course.description:
         head.append(course.description)
+    focus_section: list[str] = []
+    if focus_block is not None:
+        focus_section = ["\n## Bloc en cours d'édition", format_block(focus_block, refs)]
     tail = _libraries_section(refs)
     blocks = [entry.entity for entry in refs.entries["block"]]
 
-    full_blocks = "\n\n".join(format_block(b, refs) for b in blocks)
-    context = "\n\n".join([*head, "\n## Contenu du cours", full_blocks, tail])
+    def _render(block, renderer) -> str:
+        if focus_block is not None and block.id == focus_block.id:
+            return _focus_pointer(block, refs)
+        return renderer(block, refs)
+
+    full_blocks = "\n\n".join(_render(b, format_block) for b in blocks)
+    context = "\n\n".join([*head, *focus_section, "\n## Contenu du cours", full_blocks, tail])
     if len(context) <= max_chars:
         return context
 
-    summary_blocks = "\n\n".join(_excerpt_block(b, refs) for b in blocks)
+    summary_blocks = "\n\n".join(_render(b, _excerpt_block) for b in blocks)
     return "\n\n".join(
-        [*head, _SUMMARY_NOTICE, "\n## Contenu du cours (extraits)", summary_blocks, tail]
+        [
+            *head,
+            *focus_section,
+            _SUMMARY_NOTICE,
+            "\n## Contenu du cours (extraits)",
+            summary_blocks,
+            tail,
+        ]
     )
 
 

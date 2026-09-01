@@ -24,6 +24,7 @@ from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.storage import get_storage
+from app.course_assistant import hitl
 from app.course_assistant.service import (
     MAX_MESSAGES_PER_CONVERSATION,
     TOOL_RESULT_EXCERPT_CHARS,
@@ -183,6 +184,7 @@ class _FakeAssistantAI:
         self.eager_error = eager_error
         self.mid_stream_error = mid_stream_error
         self.calls = []
+        self.dropped_threads = []
 
     def stream_agent(
         self,
@@ -192,15 +194,27 @@ class _FakeAssistantAI:
         tools,
         tool_executor,
         max_tool_rounds=5,
+        thread_id=None,
+        resume=None,
         trace_name=None,
         user_id=None,
     ):
         if self.eager_error is not None:
             raise self.eager_error
         self.calls.append(
-            {"messages": messages, "config": config, "tools": tools, "user_id": user_id}
+            {
+                "messages": messages,
+                "config": config,
+                "tools": tools,
+                "user_id": user_id,
+                "thread_id": thread_id,
+                "resume": resume,
+            }
         )
         return self._gen()
+
+    def drop_agent_thread(self, thread_id):
+        self.dropped_threads.append(thread_id)
 
     async def _gen(self):
         for event in self.events:
@@ -286,6 +300,80 @@ def test_create_conversation_rejects_unshipped_context() -> None:
     client, _ = _client(session)
     response = client.post(f"{BASE}/conversations", json={"context": "module"})
     assert response.status_code == 422
+
+
+def test_create_conversation_block_text() -> None:
+    """FIFO : [user], [course], [block] (scopé), puis insert à RETURNING."""
+    session = _FakeSession(
+        [[_user_row()], [_course_row()], [_block_row()], [(NOW, NOW)]]
+    )
+    client, _ = _client(session)
+    response = client.post(
+        f"{BASE}/conversations",
+        json={"context": "block_text", "block_id": str(BLOCK_ID)},
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["context"] == "block_text"
+    assert payload["block_id"] == str(BLOCK_ID)
+    assert payload["module_id"] is None
+
+
+def test_create_conversation_block_text_unknown_block_404() -> None:
+    session = _FakeSession([[_user_row()], [_course_row()], []])
+    client, _ = _client(session)
+    response = client.post(
+        f"{BASE}/conversations",
+        json={"context": "block_text", "block_id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Bloc introuvable"
+
+
+def test_create_conversation_block_text_non_text_block_422() -> None:
+    exercise = _block_row()
+    exercise.type = "exercise"
+    session = _FakeSession([[_user_row()], [_course_row()], [exercise]])
+    client, _ = _client(session)
+    response = client.post(
+        f"{BASE}/conversations",
+        json={"context": "block_text", "block_id": str(BLOCK_ID)},
+    )
+    assert response.status_code == 422
+    assert "blocs texte" in response.json()["detail"]
+
+
+def test_create_conversation_block_text_requires_block_id() -> None:
+    session = _FakeSession([[_user_row()]])
+    client, _ = _client(session)
+    response = client.post(f"{BASE}/conversations", json={"context": "block_text"})
+    assert response.status_code == 422
+
+
+def test_create_conversation_course_rejects_block_id() -> None:
+    session = _FakeSession([[_user_row()]])
+    client, _ = _client(session)
+    response = client.post(
+        f"{BASE}/conversations",
+        json={"context": "course", "block_id": str(BLOCK_ID)},
+    )
+    assert response.status_code == 422
+
+
+def test_list_conversations_filters_by_block() -> None:
+    conv = _conversation_row(context="block_text", block_id=BLOCK_ID)
+    session = _FakeSession([[_user_row()], [_course_row()], [conv]])
+    client, _ = _client(session)
+    response = client.get(
+        f"{BASE}/conversations", params={"context": "block_text", "block_id": str(BLOCK_ID)}
+    )
+    assert response.status_code == 200
+    [payload] = response.json()
+    assert payload["context"] == "block_text"
+    assert payload["block_id"] == str(BLOCK_ID)
+    # Le filtre bloc est bien dans la requête (en plus du filtre contexte).
+    list_stmt = session.executed[-1][0]
+    assert "ai_conversations.block_id =" in str(list_stmt)
 
 
 def test_get_conversation_detail_with_tool_turns() -> None:
@@ -470,6 +558,232 @@ def test_stream_rewrites_short_ref_citations_across_chunks() -> None:
     assert specs["read_block"].parameters["properties"]["block_ref"]["enum"] == ["B1"]
     assert specs["read_resource_pdf"].parameters["properties"]["resource_ref"]["enum"] == ["R1"]
     assert "enum" not in specs["read_resource_image"].parameters["properties"]["resource_ref"]
+
+
+def test_stream_block_text_context() -> None:
+    """Contexte block_text : prompt d'édition + tool ``propose_block_edit``,
+    args de la proposition relayés COMPLETS sur le flux et persistés (aucun
+    événement SSE dédié — décision actée), avec les références courtes des
+    liens de contenu réécrites en UUID (le markdown reçu est applicable)."""
+    proposal = "# Version proposée\n\nVoir le [sujet](oc-resource:R1), réécrit."
+    rewritten = f"# Version proposée\n\nVoir le [sujet](oc-resource:{RESOURCE_ID}), réécrit."
+    events = [
+        AIStreamEvent(
+            type="tool_call",
+            tool_call=AIToolCall(
+                id="call_p",
+                name="propose_block_edit",
+                arguments={"new_markdown": proposal, "summary": "Réécriture clarifiée"},
+            ),
+        ),
+        AIStreamEvent(
+            type="tool_result",
+            delta="Le professeur a ACCEPTÉ la proposition et l'a appliquée au bloc.",
+            tool_call=AIToolCall(id="call_p", name="propose_block_edit"),
+            tool_result_error=False,
+        ),
+        AIStreamEvent(type="token", delta="Appliqué, très bien."),
+        AIStreamEvent(type="done", usage=None),
+    ]
+    conv = _conversation_row(context="block_text", block_id=BLOCK_ID, title="T")
+    session = _stream_session(conversation=conv)
+    client, fake = _client(session, _FakeAssistantAI(events=events))
+    response = client.post(STREAM_PATH, json={"content": "Réécris ce bloc"})
+    assert response.status_code == 200
+
+    events_out = _parse_sse(response.text)
+    assert [k for k, _ in events_out] == ["tool_call", "tool_result", "token", "done"]
+    assert events_out[0][1]["args"]["new_markdown"] == rewritten
+    assert events_out[0][1]["args"]["summary"] == "Réécriture clarifiée"
+
+    # Persistance : la proposition (réécrite) vit dans les tool_calls du
+    # segment assistant, la décision dans le contenu du tour tool.
+    rows = _inserted_message_rows(session)
+    assert rows[0]["tool_calls"][0]["arguments"]["new_markdown"] == rewritten
+    assert "ACCEPTÉ" in rows[1]["content"]
+
+    # Prompt et tools du contexte d'édition ; run checkpointé (thread), purgé
+    # au done.
+    [call] = fake.calls
+    system = call["messages"][0].content
+    assert "## Bloc en cours d'édition" in system
+    assert "propose_block_edit" in system
+    assert "```mermaid" in system  # syntaxes d'édition déclarées
+    assert "propose_block_edit" in {t.name for t in call["tools"]}
+    assert call["thread_id"] is not None
+    assert fake.dropped_threads == [call["thread_id"]]
+
+
+def test_stream_block_text_interrupt_registers_resume() -> None:
+    """Proposition HITL : le flux émet ``interrupt`` et se ferme SANS done, le
+    tour partiel (segment assistant porteur du tool_call) est persisté et la
+    reprise est enregistrée au registre in-process."""
+    events = [
+        AIStreamEvent(type="token", delta="Je propose ceci. "),
+        AIStreamEvent(
+            type="tool_call",
+            tool_call=AIToolCall(
+                id="call_p",
+                name="propose_block_edit",
+                arguments={"new_markdown": "# Proposé", "summary": "Réécriture"},
+            ),
+        ),
+        AIStreamEvent(type="interrupt", interrupt_value={"tool_call_id": "call_p"}),
+    ]
+    conv = _conversation_row(context="block_text", block_id=BLOCK_ID, title="T")
+    session = _stream_session(conversation=conv)
+    client, fake = _client(session, _FakeAssistantAI(events=events))
+    try:
+        response = client.post(STREAM_PATH, json={"content": "Réécris ce bloc"})
+        assert response.status_code == 200
+
+        events_out = _parse_sse(response.text)
+        assert [k for k, _ in events_out] == ["token", "tool_call", "interrupt"]
+        interrupt = events_out[-1][1]
+        assert interrupt["tool_call_id"] == "call_p"
+        assert len(interrupt["message_ids"]) == 1
+
+        # Tour PARTIEL persisté : le segment assistant (texte + tool_call),
+        # aucun tour tool — un abandon restera un round incomplet, replié.
+        rows = _inserted_message_rows(session)
+        assert [r["role"] for r in rows] == ["assistant"]
+        assert rows[0]["tool_calls"][0]["id"] == "call_p"
+
+        # Reprise enregistrée : thread du run, config et provider du tour.
+        [call] = fake.calls
+        pending = hitl.take(CONVERSATION_ID, "call_p")
+        assert pending is not None
+        assert pending.thread_id == call["thread_id"]
+        assert pending.provider == "ollama"
+        # Le thread n'est PAS purgé (le run attend sa reprise).
+        assert fake.dropped_threads == []
+    finally:
+        hitl.drop(CONVERSATION_ID)
+
+
+def _resume_session(messages=(), conversation=None):
+    """FIFO de sse_resume_stream : [user] (router), [course], [conversation],
+    [messages], [blocks], [resources], [modules] — pas de cascade IA."""
+    return _FakeSession(
+        [
+            [_user_row()],
+            [_course_row()],
+            [conversation or _conversation_row(context="block_text", block_id=BLOCK_ID, title="T")],
+            list(messages),
+            [_block_row()],
+            [_resource_row()],
+            [],  # modules
+        ]
+    )
+
+
+def test_proposal_decision_resumes_the_run() -> None:
+    """La décision REPREND le run figé : reprise consommée au registre, flux
+    SSE de la suite du tour (tool_result → done), positions continuant le tour
+    partiel persisté, thread purgé au done."""
+    hitl.register(
+        CONVERSATION_ID,
+        hitl.PendingProposal(
+            thread_id="t-run", tool_call_id="call_p", provider="ollama", config=None
+        ),
+    )
+    events = [
+        AIStreamEvent(
+            type="tool_result",
+            delta="Le professeur a ACCEPTÉ la proposition et l'a appliquée au bloc. "
+            "Son commentaire : Très bien",
+            tool_call=AIToolCall(id="call_p", name="propose_block_edit"),
+            tool_result_error=False,
+        ),
+        AIStreamEvent(type="token", delta="Parfait, c'est appliqué."),
+        AIStreamEvent(type="done", usage=None),
+    ]
+    # Tour partiel déjà persisté : user (0), assistant à tool_call (1).
+    existing = [
+        _message_row(0, role="user"),
+        _message_row(1, role="assistant", tool_calls=[{"id": "call_p"}]),
+    ]
+    session = _resume_session(messages=existing)
+    client, fake = _client(session, _FakeAssistantAI(events=events))
+    response = client.post(
+        f"{BASE}/conversations/{CONVERSATION_ID}/proposals/call_p/decision",
+        json={"accepted": True, "comment": "Très bien"},
+    )
+    assert response.status_code == 200
+
+    events_out = _parse_sse(response.text)
+    assert [k for k, _ in events_out] == ["tool_result", "token", "done"]
+    assert events_out[-1][1]["user_message_id"] is None  # pas de nouveau message user
+
+    # Reprise : même thread, décision en valeur de resume, config du tour.
+    [call] = fake.calls
+    assert call["thread_id"] == "t-run"
+    assert call["resume"] == {"accepted": True, "comment": "Très bien"}
+    assert call["messages"] == []  # l'état vit au checkpoint
+    assert fake.dropped_threads == ["t-run"]  # purgé au done
+
+    # Suite du tour persistée À LA SUITE : tour tool (2) + segment final (3).
+    rows = _inserted_message_rows(session)
+    assert [(r["role"], r["position"]) for r in rows] == [("tool", 2), ("assistant", 3)]
+    assert rows[0]["tool_call_id"] == "call_p"
+    assert "ACCEPTÉ" in rows[0]["content"]
+
+    # Registre consommé : une seconde décision → 404.
+    assert hitl.take(CONVERSATION_ID, "call_p") is None
+
+
+def test_proposal_decision_without_pending_404() -> None:
+    conv = _conversation_row(context="block_text", block_id=BLOCK_ID, title="T")
+    session = _FakeSession([[_user_row()], [_course_row()], [conv]])
+    client, _ = _client(session)
+    response = client.post(
+        f"{BASE}/conversations/{CONVERSATION_ID}/proposals/call_p/decision",
+        json={"accepted": False},
+    )
+    assert response.status_code == 404
+    assert "proposition" in response.json()["detail"].casefold()
+
+
+def test_new_message_abandons_a_pending_resume() -> None:
+    """Envoyer un nouveau message alors qu'une proposition attendait : la
+    reprise est abandonnée (registre vidé, thread purgé)."""
+    hitl.register(
+        CONVERSATION_ID,
+        hitl.PendingProposal(
+            thread_id="t-stale", tool_call_id="call_old", provider="ollama", config=None
+        ),
+    )
+    conv = _conversation_row(context="block_text", block_id=BLOCK_ID, title="T")
+    session = _stream_session(conversation=conv)
+    client, fake = _client(
+        session, _FakeAssistantAI(events=[AIStreamEvent(type="done", usage=None)])
+    )
+    response = client.post(STREAM_PATH, json={"content": "Autre chose"})
+    assert response.status_code == 200
+    assert "t-stale" in fake.dropped_threads
+    assert hitl.take(CONVERSATION_ID, "call_old") is None
+
+
+def test_proposal_decision_comment_too_long_422() -> None:
+    session = _FakeSession([[_user_row()]])
+    client, _ = _client(session)
+    response = client.post(
+        f"{BASE}/conversations/{CONVERSATION_ID}/proposals/call_p/decision",
+        json={"accepted": True, "comment": "x" * 2_001},
+    )
+    assert response.status_code == 422
+
+
+def test_stream_block_text_missing_block_404() -> None:
+    """Bloc de la conversation absent de l'instantané : 404 défensif AVANT
+    l'insert du message user (la FK CASCADE rend le cas théorique)."""
+    conv = _conversation_row(context="block_text", block_id=uuid.uuid4(), title="T")
+    session = _stream_session(conversation=conv)
+    client, _ = _client(session)
+    response = client.post(STREAM_PATH, json={"content": "Salut"})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Bloc introuvable"
+    assert _inserted_message_rows(session) is None
 
 
 def test_stream_replays_history() -> None:

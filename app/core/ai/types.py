@@ -59,9 +59,11 @@ class AIToolSpec(BaseModel):
 class AIToolCall(BaseModel):
     """Demande d'exécution d'un tool émise par le modèle.
 
-    ``id`` apparie l'appel à son résultat dans l'historique rejoué (formats
-    propres à chaque provider) ; il est vide quand l'appariement n'est pas
-    disponible (pendant l'exécution côté exécuteur, notamment).
+    ``id`` apparie l'appel à son résultat — dans l'historique rejoué comme
+    pendant l'exécution : l'exécuteur reçoit l'id de l'événement ``tool_call``
+    du flux (propagé par le middleware du client, contextvar) et peut s'en
+    servir de clé d'appariement (attentes HITL de l'assistant, notamment).
+    Vide seulement si le provider n'en fournit pas.
     """
 
     id: str = ""
@@ -147,11 +149,17 @@ class AIStreamEvent(BaseModel):
     - ``tool_result`` : résultat d'exécution — ``tool_call`` reprend id/nom,
       ``tool_result_error`` relaie l'échec métier, ``delta`` porte le contenu
       (pour la persistance par l'appelant ; les routes SSE ne le relaient pas) ;
+    - ``interrupt`` : le run est FIGÉ par ``agent_interrupt`` (HITL) —
+      ``interrupt_value`` porte le payload du tool, ``interrupt_id`` l'id
+      LangGraph ; le flux se termine ensuite SANS ``done``, la reprise passe
+      par un nouvel appel ``stream_agent(..., thread_id=, resume=)`` ;
     - ``done`` : clôt le flux avec l'usage cumulé quand fourni (sinon ``None``).
     """
 
-    type: Literal["token", "thinking", "tool_call", "tool_result", "done"]
+    type: Literal["token", "thinking", "tool_call", "tool_result", "interrupt", "done"]
     delta: str = ""
     usage: AIUsage | None = None
     tool_call: AIToolCall | None = None
     tool_result_error: bool | None = None
+    interrupt_id: str | None = None
+    interrupt_value: dict[str, Any] | None = None
