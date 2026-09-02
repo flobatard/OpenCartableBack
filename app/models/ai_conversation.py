@@ -4,10 +4,10 @@ Une conversation rattache un fil de messages (:mod:`app.models.ai_message`) à
 un cours, son propriétaire et un **contexte** d'usage — les flux HITL de
 l'assistant diffèrent par contexte mais partagent ce modèle :
 
-- ``course`` : assistant global du cours (critique, exploration, synthèse) —
-  seul contexte livré pour l'instant ;
+- ``course`` : assistant global du cours (critique, exploration, synthèse) ;
 - ``block_text`` / ``block_exercise`` : aide à l'édition d'un bloc (le bloc
-  visé vit dans ``block_id``) — à venir ;
+  visé vit dans ``block_id``) — flux HITL décrits par les descripteurs de
+  :mod:`app.course_assistant.editing` (livrés) ;
 - ``module`` : aide à l'édition d'un module (``module_id``) — à venir.
 
 La résolution d'exercice côté élève (5e contexte du cadrage) est **exemptée de

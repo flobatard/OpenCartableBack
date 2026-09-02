@@ -6,11 +6,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.course_assistant.refs import CANDIDATES_LISTED, CitationRewriter, CourseRefs
+from app.course_assistant.refs import (
+    CANDIDATES_LISTED,
+    QUESTION_TITLE_CHARS,
+    CitationRewriter,
+    CourseRefs,
+)
 
 B1, B2, B3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 R1, R2 = uuid.uuid4(), uuid.uuid4()
 M1 = uuid.uuid4()
+Q1, Q2, Q3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
 
 def _block(id, title, type="text"):
@@ -221,3 +227,117 @@ def test_rewrite_content_refs_ignores_block_citations() -> None:
     # oc-block: n'est pas un lien de CONTENU (réécrit ailleurs, en flux).
     refs = _refs()
     assert refs.rewrite_content_refs("Voir oc-block:B1") == "Voir oc-block:B1"
+
+
+# ------------------------------------------ questions du bloc exercice édité
+
+
+def _question(id, statement="Énoncé"):
+    return {"id": str(id), "statement": statement, "type": "free_text", "expected_answer": ""}
+
+
+def _question_refs(questions=None, question_refs=None) -> CourseRefs:
+    default = [
+        _question(Q1, "Calculer 2+2."),
+        _question(Q2, "Développer $(a+b)^2$."),
+        _question(Q3, "Conclure."),
+    ]
+    return CourseRefs.build(
+        [],
+        [],
+        [],
+        questions=default if questions is None else questions,
+        question_refs=question_refs,
+    )
+
+
+def test_build_question_refs_in_order_and_skips_bad_ids() -> None:
+    refs = CourseRefs.build(
+        [],
+        [],
+        [],
+        questions=[
+            _question(Q1, "Calculer 2+2."),
+            {"id": "pas-un-uuid", "statement": "ignorée"},
+            "n'importe quoi",
+            {"statement": "sans id"},
+            _question(Q3, ""),
+        ],
+    )
+    # Numérotation continue sur les seules questions à id valide.
+    assert refs.refs("question") == ["Q1", "Q2"]
+    assert refs.ref_of("question", Q3) == "Q2"
+    assert refs.by_ref("question", "Q1").title == "Calculer 2+2."
+    assert refs.by_ref("question", "Q2").title == "Question 2"  # énoncé vide : repli
+    assert refs.by_ref("question", "Q2").entity["id"] == str(Q3)
+    # Aucune question : genre vide, jamais absent (``refs("question")`` sûr).
+    assert CourseRefs.build([], [], []).refs("question") == []
+
+
+def test_build_question_title_is_a_folded_excerpt() -> None:
+    refs = CourseRefs.build(
+        [],
+        [],
+        [],
+        questions=[_question(Q1, "  ligne 1\n\nligne   2  "), _question(Q2, "mot " * 100)],
+    )
+    assert refs.by_ref("question", "Q1").title == "ligne 1 ligne 2"
+    long_title = refs.by_ref("question", "Q2").title
+    assert long_title.endswith("…")
+    assert len(long_title) <= QUESTION_TITLE_CHARS + 1
+
+
+def test_build_question_refs_replays_mapping_never_reuses_a_freed_ref() -> None:
+    """Reprise HITL : Q2 supprimée entre-temps, une question ajoutée — Q1 et Q3
+    gardent leur référence, Q2 n'est jamais réattribuée, la nouvelle est Q4."""
+    q4 = uuid.uuid4()
+    mapping = {"Q1": str(Q1), "Q2": str(Q2), "Q3": str(Q3)}
+    refs = CourseRefs.build(
+        [],
+        [],
+        [],
+        # Ordre du bloc volontairement différent du mapping : le mapping prime.
+        questions=[_question(Q3, "c"), _question(q4, "nouvelle"), _question(Q1, "a")],
+        question_refs=mapping,
+    )
+    assert refs.refs("question") == ["Q1", "Q3", "Q4"]
+    assert refs.by_ref("question", "Q3").id == Q3  # par libellé, jamais par position
+    assert refs.by_ref("question", "3").id == Q3
+    assert refs.by_ref("question", "Q4").id == q4
+    assert refs.by_ref("question", "Q2") is None
+    missing = refs.resolve("question", "Q2")
+    assert missing.entry is None
+    assert "Questions de l'exercice : Q1 — a; Q3 — c; Q4 — nouvelle." in missing.error
+
+
+def test_build_question_refs_mapping_tolerates_garbage() -> None:
+    mapping = {"Q1": str(Q1), "bidule": str(Q2), "Q7": "pas-un-uuid"}
+    refs = _question_refs(questions=[_question(Q1, "a"), _question(Q2, "b")], question_refs=mapping)
+    # Q1 conservée ; l'entrée « bidule » est ignorée (Q2 redevient nouvelle) ;
+    # Q7 est illisible mais son numéro reste réservé → la nouvelle est Q8.
+    assert refs.refs("question") == ["Q1", "Q8"]
+    assert refs.by_ref("question", "Q8").id == Q2
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["Q2", "q2", " Q2 ", "2", "#2", "question 2", "Question 2", "Développer $(a+b)^2$."],
+)
+def test_resolve_question_variants(raw) -> None:
+    assert _question_refs().resolve("question", raw).entry.id == Q2
+
+
+def test_resolve_question_by_uuid_prefix_and_close_statement() -> None:
+    refs = _question_refs()
+    assert refs.resolve("question", str(Q3)).entry.id == Q3
+    assert refs.resolve("question", str(Q3)[:22] + "f-9e37194af").entry.id == Q3
+    assert refs.resolve("question", "Calculer 2+3.").entry.id == Q1  # titre approchant
+
+
+def test_resolve_question_lists_candidates() -> None:
+    resolution = _question_refs().resolve("question", "Q9")
+    assert resolution.entry is None
+    assert "Question introuvable" in resolution.error
+    assert "Q1 — Calculer 2+2.; Q2 — Développer $(a+b)^2$.; Q3 — Conclure." in resolution.error
+    empty = CourseRefs.build([], [], []).resolve("question", "Q1")
+    assert "Questions de l'exercice : aucun disponible." in empty.error

@@ -4,7 +4,8 @@ Préfixe ``/courses/{course_id}/assistant`` — aucun conflit de littéral avec
 ``app/courses/`` (segment ``assistant`` dédié). Le streaming est un **POST**
 servi en ``text/event-stream`` (motif ``app/ai/router.py`` : fetch +
 ReadableStream côté front, EventSource ne porte pas de Bearer) ; contrat SSE
-documenté dans :mod:`app.course_assistant.service`.
+documenté dans :mod:`app.course_assistant.streaming` (le CRUD vit dans
+:mod:`app.course_assistant.service`).
 """
 
 import uuid
@@ -17,7 +18,7 @@ from app.core.ai import AIClient, get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
 from app.core.storage import Storage, get_storage
-from app.course_assistant import service
+from app.course_assistant import service, streaming
 from app.course_assistant.schemas import (
     ConversationCreate,
     ConversationDetailRead,
@@ -114,7 +115,7 @@ async def submit_proposal_decision(
     nouvel ``interrupt``). 404 si rien n'attend (déjà tranchée, expirée, ou
     perdue — redémarrage)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    events = await service.sse_resume_stream(
+    events = await streaming.sse_resume_stream(
         client, db, storage, auth, user, course_id, conversation_id, tool_call_id, payload
     )
     return StreamingResponse(events, media_type="text/event-stream", headers=_SSE_HEADERS)
@@ -134,7 +135,7 @@ async def stream_message(
     plafond, cascade IA 422/429/503, validation eager) partent en vraies
     HTTPException AVANT le flux ; le reste devient un événement ``error``."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    events = await service.sse_stream(
+    events = await streaming.sse_stream(
         client, db, storage, auth, user, course_id, conversation_id, payload
     )
     return StreamingResponse(events, media_type="text/event-stream", headers=_SSE_HEADERS)

@@ -23,6 +23,15 @@ id, groupe sauté). Trois parades standards, combinées ici :
    par tour dans :mod:`app.course_assistant.tools`) : les providers à décodage
    contraint garantissent alors une valeur valide.
 
+Quatrième genre, propre aux contextes d'édition d'exercice : les **questions
+du bloc édité** (``Q1, Q2…``, ordre du bloc, titre = extrait de l'énoncé).
+Leur numérotation doit rester **stable le temps d'un tour**, reprises HITL
+comprises — le modèle enchaîne plusieurs propositions (supprimer Q2, puis
+modifier Q3) sans que « Q3 » change de cible : ``question_refs`` (mapping
+ref → id capturé à l'interrupt, cf. ``hitl.PendingProposal``) rejoue la
+numérotation d'origine, une question disparue **libère sa référence sans
+qu'elle soit réattribuée**, une question nouvelle reçoit la suivante.
+
 Les citations ``[titre](oc-block:B3)`` / ``oc-resource:R2`` écrites par le
 modèle sont **réécrites en UUID** avant tout usage (front, ``extract_sources``,
 persistance) par :class:`CitationRewriter`, qui travaille **en flux** (retenue
@@ -34,10 +43,11 @@ import difflib
 import re
 import unicodedata
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-Kind = Literal["block", "resource", "module"]
+Kind = Literal["block", "resource", "module", "question"]
 
 # Préfixe commun minimal (hex, tirets retirés) pour rattraper un UUID déformé :
 # 8 hex = 32 bits, collision entre deux ids d'un même cours ≈ impossible.
@@ -46,20 +56,25 @@ UUID_PREFIX_MIN_HEX = 8
 TITLE_FUZZY_CUTOFF = 0.6
 # Nombre max de candidats listés dans un message d'échec.
 CANDIDATES_LISTED = 40
+# Longueur de l'extrait d'énoncé servant de « titre » à une question.
+QUESTION_TITLE_CHARS = 80
 
-_KIND_PREFIX: dict[Kind, str] = {"block": "B", "resource": "R", "module": "M"}
+_KIND_PREFIX: dict[Kind, str] = {"block": "B", "resource": "R", "module": "M", "question": "Q"}
 _KIND_WORDS: dict[Kind, frozenset[str]] = {
     "block": frozenset({"b", "bloc", "block"}),
     "resource": frozenset({"r", "ressource", "resource"}),
     "module": frozenset({"m", "module"}),
+    "question": frozenset({"q", "question"}),
 }
 _KIND_LABELS: dict[Kind, tuple[str, str]] = {
     "block": ("Bloc", "Blocs du cours"),
     "resource": ("Ressource", "Ressources du cours"),
     "module": ("Module", "Modules du cours"),
+    "question": ("Question", "Questions de l'exercice"),
 }
 _REF_RE = re.compile(r"^(?:([a-z]+)\s*)?#?(\d+)$")
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
+_QUESTION_REF_RE = re.compile(r"^Q(\d+)$")
 
 
 def _normalize(text: str) -> str:
@@ -87,19 +102,100 @@ class Resolution:
     error: str | None = None
 
 
+def _question_title(question: dict, number: int) -> str:
+    """« Titre » d'une question : extrait replié de son énoncé, repli
+    ``Question n`` (énoncé vide)."""
+    statement = " ".join(str(question.get("statement") or "").split())
+    if not statement:
+        return f"Question {number}"
+    if len(statement) > QUESTION_TITLE_CHARS:
+        statement = statement[:QUESTION_TITLE_CHARS].rstrip() + "…"
+    return statement
+
+
+def _question_entries(
+    questions: Sequence, question_refs: Mapping[str, str] | None
+) -> list[RefEntry]:
+    """Références des questions d'un bloc exercice (docstring du module).
+
+    Sans ``question_refs`` : ``Q1…Qn`` dans l'ordre du bloc (question à id
+    absent ou invalide ignorée). Avec : les références du mapping sont
+    conservées pour les ids encore présents (ordre du mapping), une référence
+    dont la question a disparu n'est **jamais réattribuée**, les questions
+    nouvelles reçoivent les numéros suivants.
+    """
+    parsed: list[tuple[uuid.UUID, dict]] = []
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        try:
+            parsed.append((uuid.UUID(str(question.get("id"))), question))
+        except ValueError:
+            continue
+    if not question_refs:
+        return [
+            RefEntry(ref=f"Q{i}", id=qid, title=_question_title(q, i), entity=q)
+            for i, (qid, q) in enumerate(parsed, start=1)
+        ]
+    by_id = dict(parsed)
+    entries: list[RefEntry] = []
+    seen: set[uuid.UUID] = set()
+    highest = 0
+    for ref, raw_id in question_refs.items():
+        match = _QUESTION_REF_RE.match(str(ref))
+        if match is None:
+            continue
+        number = int(match.group(1))
+        highest = max(highest, number)
+        try:
+            qid = uuid.UUID(str(raw_id))
+        except ValueError:
+            continue
+        question = by_id.get(qid)
+        if question is None or qid in seen:
+            continue
+        seen.add(qid)
+        entries.append(_question_entry(number, qid, question))
+    for qid, question in parsed:
+        if qid in seen:
+            continue
+        seen.add(qid)
+        highest += 1
+        entries.append(_question_entry(highest, qid, question))
+    return entries
+
+
+def _question_entry(number: int, qid: uuid.UUID, question: dict) -> RefEntry:
+    return RefEntry(
+        ref=f"Q{number}", id=qid, title=_question_title(question, number), entity=question
+    )
+
+
 @dataclass
 class CourseRefs:
     """Table de correspondance références courtes ↔ entités, pour un tour."""
 
     entries: dict[Kind, list[RefEntry]] = field(
-        default_factory=lambda: {"block": [], "resource": [], "module": []}
+        default_factory=lambda: {"block": [], "resource": [], "module": [], "question": []}
     )
 
     @classmethod
-    def build(cls, blocks, resources, modules, *, block_titles: dict | None = None) -> "CourseRefs":
+    def build(
+        cls,
+        blocks,
+        resources,
+        modules,
+        *,
+        block_titles: dict | None = None,
+        questions: Sequence = (),
+        question_refs: Mapping[str, str] | None = None,
+    ) -> "CourseRefs":
         """Numérote blocs (ordre reçu = ordre d'affichage), ressources et
         modules. ``block_titles`` (optionnel) donne le titre affiché d'un bloc
-        sans titre (libellé de type, cf. ``context.format_block``)."""
+        sans titre (libellé de type, cf. ``context.format_block``).
+        ``questions`` (dicts du content d'un bloc exercice — le bloc édité)
+        et ``question_refs`` (numérotation d'origine à rejouer) alimentent le
+        genre ``question`` (:func:`_question_entries`)."""
         refs = cls()
         titles = block_titles or {}
         for kind, items, title_of in (
@@ -112,6 +208,7 @@ class CourseRefs:
                 RefEntry(ref=f"{prefix}{i}", id=item.id, title=title_of(item), entity=item)
                 for i, item in enumerate(items, start=1)
             ]
+        refs.entries["question"] = _question_entries(questions, question_refs)
         return refs
 
     # ------------------------------------------------------------ lookups
@@ -129,16 +226,18 @@ class CourseRefs:
         return {entry.id for entry in self.entries[kind]}
 
     def by_ref(self, kind: Kind, ref: str) -> RefEntry | None:
-        """Référence stricte (``B3``/``b3``/``bloc 3``/``3``) ou UUID exact."""
-        entries = self.entries[kind]
+        """Référence stricte (``B3``/``b3``/``bloc 3``/``3``) — cherchée par
+        son libellé, jamais par position : la numérotation des questions peut
+        avoir des trous (référence libérée, non réattribuée)."""
         raw = ref.strip().casefold()
         match = _REF_RE.match(raw)
         if match:
             word, number = match.groups()
             if word is None or word in _KIND_WORDS[kind]:
-                index = int(number) - 1
-                if 0 <= index < len(entries):
-                    return entries[index]
+                wanted = f"{_KIND_PREFIX[kind]}{int(number)}"
+                for entry in self.entries[kind]:
+                    if entry.ref == wanted:
+                        return entry
         return None
 
     def by_uuid(self, kind: Kind, raw: str) -> RefEntry | None:

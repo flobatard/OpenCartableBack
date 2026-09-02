@@ -1,11 +1,15 @@
 """Reprises HITL en attente de décision — registre in-memory (décision actée).
 
 Le flux HITL d'un contexte d'édition passe par l'**interrupt LangGraph** : quand
-l'agent propose (``agent_interrupt`` dans le tool ``propose_block_edit``), le
-flux SSE émet ``interrupt`` et SE FERME ; l'état du run vit au **checkpointer
-InMemory** du client IA (:mod:`app.core.ai`), et CE registre retient de quoi le
-reprendre — thread, appel en attente, config résolue. La route de décision
-consomme l'entrée (:func:`take`) et rouvre un flux qui reprend le run
+l'agent propose (``agent_interrupt`` dans un tool de proposition —
+:mod:`app.course_assistant.editing`), le flux SSE émet ``interrupt`` et SE
+FERME ; l'état du run vit au **checkpointer InMemory** du client IA
+(:mod:`app.core.ai`), et CE registre retient de quoi le reprendre — thread,
+appel en attente, config résolue, et la numérotation ``Q…`` des questions du
+bloc édité (``question_refs``, rejouée à la reprise pour que les références
+restent stables le temps du tour — docstring de
+:mod:`app.course_assistant.refs`). La route de décision consomme l'entrée
+(:func:`take`) et rouvre un flux qui reprend le run
 (``stream_agent(..., thread_id=, resume=)``) : le résultat du tool est la
 décision du professeur.
 
@@ -43,6 +47,9 @@ class PendingProposal:
     tool_call_id: str
     provider: str
     config: AIRequestConfig | None
+    # Références ``Q…`` → id des questions du bloc édité (contexte exercice),
+    # telles que numérotées au tour de l'interrupt ; ``None`` sinon.
+    question_refs: dict[str, str] | None = None
     created_at: float = field(default_factory=time.time)
 
     def expired(self) -> bool:
