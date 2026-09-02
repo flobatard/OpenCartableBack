@@ -89,8 +89,11 @@ class ProfileUpdate(BaseModel):
 class AvatarCreate(BaseModel):
     """Déclaration d'upload d'avatar (motif ResourceCreate, réduit).
 
-    Le front envoie toujours un carré recadré côté navigateur (JPEG) ; la
-    whitelist reste à trois formats pour les clients hors navigateur.
+    Le front envoie un carré recadré côté navigateur, en **WebP** (seul
+    format de la whitelist qui préserve la transparence à poids raisonnable)
+    — ou en PNG si le navigateur n'encode pas le WebP, ``canvas.toBlob`` y
+    retombant silencieusement. Le JPEG reste accepté pour les clients hors
+    navigateur.
     """
 
     model_config = ConfigDict(extra="forbid")
