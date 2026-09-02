@@ -16,9 +16,25 @@ from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.core import auth as auth_module  # noqa: E402
+from app.core.config import Settings, settings  # noqa: E402
 from app.main import create_app  # noqa: E402
 
 TEST_KID = "test-key"
+
+# Réglages IA/observabilité : la machine de dev les renseigne (.env +
+# config/development.yaml), ce qui activerait le fallback serveur et ferait
+# diverger les tests qui vérifient son ABSENCE. On repart donc des valeurs par
+# défaut déclarées sur Settings ; les tests qui veulent un fallback (ou
+# Langfuse, ou une clé maître) le posent eux-mêmes par monkeypatch.
+_ENV_SENSITIVE_SETTINGS = tuple(
+    name for name in Settings.model_fields if name.startswith(("AI_", "LANGFUSE_"))
+)
+
+
+@pytest.fixture(autouse=True)
+def neutral_ai_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _ENV_SENSITIVE_SETTINGS:
+        monkeypatch.setattr(settings, name, Settings.model_fields[name].default)
 
 
 @pytest.fixture
