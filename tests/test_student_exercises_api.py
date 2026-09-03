@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Insert, Update
+from sqlalchemy.sql.dml import Delete, Insert, Update
 
 from app.core.ai import AIStreamEvent, AIToolCall, AIUsage
 from app.student_exercises.service import MAX_TURNS_PER_QUESTION
@@ -429,3 +429,84 @@ def test_list_submissions_empty_and_404s() -> None:
     session = FakeSession([[user_row()], [_course_row("private")]])
     client, _ = make_client(session)
     assert client.get(f"{BASE}/submissions").status_code == 404
+
+
+# ---------------------------------------------------------------- effacement
+
+
+def _deleted_stmt(session):
+    for stmt, _ in session.executed:
+        if isinstance(stmt, Delete) and stmt.table.name == "exercise_submissions":
+            return str(stmt.compile())
+    return None
+
+
+def test_student_deletes_own_turns_of_a_question_or_block() -> None:
+    session = FakeSession([[user_row()], [_course_row()], [_exercise_row()]])
+    client, _ = make_client(session)
+    response = client.delete(f"{BASE}/submissions?question_id={Q1}")
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 1}
+    sql = _deleted_stmt(session)
+    assert "user_id" in sql and "question_id" in sql
+    assert session.commits >= 1
+
+    session = FakeSession([[user_row()], [_course_row()], [_exercise_row()]])
+    client, _ = make_client(session)
+    assert client.delete(f"{BASE}/submissions").status_code == 200
+    sql = _deleted_stmt(session)
+    assert "user_id" in sql and "question_id" not in sql
+
+
+def test_student_delete_requires_course_access() -> None:
+    session = FakeSession([[user_row()], [_course_row("private")]])
+    client, _ = make_client(session)
+    assert client.delete(f"{BASE}/submissions").status_code == 404
+
+
+TEACHER_BASE = f"/api/v1/courses/{COURSE_ID}/blocks/{BLOCK_ID}/submissions"
+
+
+def _owned_course():
+    course = _course_row("draft")
+    course.owner_id = USER_ID
+    return course
+
+
+def test_teacher_summary_groups_counts_by_question() -> None:
+    session = FakeSession([[user_row()], [_owned_course()], [_exercise_row()], [(Q1, 3), (Q2, 1)]])
+    client, _ = make_client(session)
+    response = client.get(f"{TEACHER_BASE}/summary")
+    assert response.status_code == 200
+    assert response.json() == {"total": 4, "by_question": {str(Q1): 3, str(Q2): 1}}
+
+
+def test_teacher_routes_are_owner_scoped() -> None:
+    # Cours d'autrui : introuvable (le select du propriétaire ne renvoie rien).
+    session = FakeSession([[user_row()], []])
+    client, _ = make_client(session)
+    assert client.get(f"{TEACHER_BASE}/summary").status_code == 404
+    session = FakeSession([[user_row()], []])
+    client, _ = make_client(session)
+    assert client.delete(TEACHER_BASE).status_code == 404
+    # Bloc qui n'est pas un exercice.
+    session = FakeSession([[user_row()], [_owned_course()], []])
+    client, _ = make_client(session)
+    assert client.delete(TEACHER_BASE).status_code == 404
+
+
+def test_teacher_deletes_everyones_turns() -> None:
+    session = FakeSession([[user_row()], [_owned_course()], [_exercise_row()]])
+    client, _ = make_client(session)
+    response = client.delete(f"{TEACHER_BASE}?question_id={Q2}")
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 1}
+    sql = _deleted_stmt(session)
+    assert "question_id" in sql and "user_id" not in sql
+
+    session = FakeSession([[user_row()], [_owned_course()], [_exercise_row()]])
+    client, _ = make_client(session)
+    assert client.delete(TEACHER_BASE).status_code == 200
+    sql = _deleted_stmt(session)
+    assert "question_id" not in sql and "user_id" not in sql
+    assert session.commits >= 1

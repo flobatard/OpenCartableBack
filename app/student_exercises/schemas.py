@@ -42,3 +42,18 @@ class QuestionThreadRead(BaseModel):
 class SubmissionsRead(BaseModel):
     # Clé : id de question (chaîne) — les questions sans tour sont absentes.
     questions: dict[str, QuestionThreadRead]
+
+
+class DeletedRead(BaseModel):
+    """Nombre de tours effacés (élève : les siens ; professeur : ceux de tous)."""
+
+    deleted: int
+
+
+class SubmissionSummaryRead(BaseModel):
+    """Vue professeur : tentatives des élèves sur un exercice, par question
+    (clé = id de question, chaîne — les questions supprimées du bloc peuvent
+    encore y figurer tant que leurs tentatives ne sont pas effacées)."""
+
+    total: int
+    by_question: dict[str, int]
