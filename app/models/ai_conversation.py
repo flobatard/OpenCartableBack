@@ -10,9 +10,10 @@ l'assistant diffèrent par contexte mais partagent ce modèle :
   :mod:`app.course_assistant.editing` (livrés) ;
 - ``module`` : aide à l'édition d'un module (``module_id``) — à venir.
 
-La résolution d'exercice côté élève (5e contexte du cadrage) est **exemptée de
-persistance** (décision produit : fonctionnement par question, pas d'assistant
-attenant) — elle n'apparaît donc pas dans le CHECK.
+La résolution d'exercice côté élève (5e contexte du cadrage) n'est **pas une
+conversation** : elle a sa propre table par tentative et par question
+(:mod:`app.models.exercise_submission`, tuteur de :mod:`app.student_exercises`)
+— elle n'apparaît donc pas dans le CHECK.
 
 Cohérence cible (CHECK symétrique, motif ``blocks``) : ``course`` ne pointe
 rien ; les contextes ``block_*`` exigent ``block_id`` (et jamais

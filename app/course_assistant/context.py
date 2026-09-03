@@ -230,13 +230,14 @@ def build_refs(
     )
 
 
-def _focus_pointer(block, refs: CourseRefs) -> str:
-    """Pointeur d'une ligne remplaçant le bloc édité dans la liste du cours
-    (son contenu complet vit dans la section « Bloc en cours d'édition »)."""
+def _focus_pointer(block, refs: CourseRefs, note: str) -> str:
+    """Pointeur d'une ligne remplaçant le bloc mis en avant dans la liste du
+    cours (son contenu complet vit dans la section dédiée de l'appelant —
+    « Bloc en cours d'édition », « Exercice en cours de résolution »…)."""
     ref = refs.ref_of("block", block.id) or "B?"
     return (
         f"### Bloc {ref[1:]} — {block_title(block)} (ref: {ref})\n\n"
-        "(bloc en cours d'édition — contenu complet dans la section dédiée ci-dessus)"
+        f"({note} — contenu complet dans la section dédiée ci-dessus)"
     )
 
 
@@ -269,9 +270,6 @@ def build_course_context(
     if (focus is None) != (edit is None):
         raise ValueError("la cible d'édition et edit vont ensemble (contexte d'édition)")
     prompt = COURSE_SYSTEM_PROMPT if edit is None else edit.system_prompt
-    head = [prompt, f"\n# Cours : {course.title}"]
-    if course.description:
-        head.append(course.description)
     focus_section: list[str] = []
     if focus_block is not None:
         focus_section = ["\n## Bloc en cours d'édition", format_block(focus_block, refs)]
@@ -280,12 +278,44 @@ def build_course_context(
             "\n## Module en cours d'édition",
             format_module(focus_module, refs, max_chars=FOCUS_MODULE_MAX_CHARS),
         ]
+    return assemble_context(
+        prompt,
+        course,
+        refs,
+        focus_section=focus_section,
+        focus_block=focus_block,
+        focus_note="bloc en cours d'édition",
+        max_chars=max_chars,
+    )
+
+
+def assemble_context(
+    prompt: str,
+    course,
+    refs: CourseRefs,
+    *,
+    focus_section: Sequence[str] = (),
+    focus_block=None,
+    focus_note: str = "bloc mis en avant",
+    max_chars: int = CONTEXT_MAX_CHARS,
+) -> str:
+    """Assemblage commun des system prompts adossés à un cours : ``prompt``
+    (mission + règles), en-tête du cours, ``focus_section`` (sections propres
+    à l'appelant, rendues AVANT le cours et conservées en mode sommaire),
+    contenu du cours (le ``focus_block``, s'il est donné, y est remplacé par
+    un pointeur d'une ligne annoté ``focus_note``) et bibliothèques. Partagé
+    par :func:`build_course_context` et le tuteur d'exercice élève
+    (:mod:`app.student_exercises.context`).
+    """
+    head = [prompt, f"\n# Cours : {course.title}"]
+    if course.description:
+        head.append(course.description)
     tail = _libraries_section(refs)
     blocks = [entry.entity for entry in refs.entries["block"]]
 
     def _render(block, renderer) -> str:
         if focus_block is not None and block.id == focus_block.id:
-            return _focus_pointer(block, refs)
+            return _focus_pointer(block, refs, focus_note)
         return renderer(block, refs)
 
     full_blocks = "\n\n".join(_render(b, format_block) for b in blocks)

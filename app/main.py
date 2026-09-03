@@ -19,6 +19,7 @@ from app.public.router import router as public_router
 from app.resources.router import router as resources_router
 from app.search.router import router as search_router
 from app.share_links.router import router as share_links_router
+from app.student_exercises.router import router as student_exercises_router
 from app.subjects.router import router as subjects_router
 from app.users.router import router as users_router
 
@@ -64,6 +65,8 @@ def create_app() -> FastAPI:
     app.include_router(modules_router, prefix=settings.API_V1_PREFIX)
     # Assistant IA du cours (J5) : conversations persistées + SSE agent.
     app.include_router(course_assistant_router, prefix=settings.API_V1_PREFIX)
+    # Tuteur IA d'exercice élève (J5) : JWT de l'élève + accès public au cours.
+    app.include_router(student_exercises_router, prefix=settings.API_V1_PREFIX)
     app.include_router(share_links_router, prefix=settings.API_V1_PREFIX)
     # Régime élève (J2) : routes publiques par visibilité/token de partage,
     # sans JWT — l'autorisation vit dans app/public/service.py.

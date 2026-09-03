@@ -77,7 +77,7 @@ def _link_valid(link: ShareLink | None) -> bool:
     )
 
 
-def _public_content(type_: str, content: dict) -> dict:
+def public_content(type_: str, content: dict) -> dict:
     """Content JSONB servi aux élèves — NOUVEAU dict, jamais l'original.
 
     Pour un bloc ``exercise``, reconstruction explicite sans les
@@ -107,7 +107,7 @@ def _block_read(block: Block) -> PublicBlockRead:
         type=block.type,
         title=block.title,
         description=block.description,
-        content=_public_content(block.type, block.content),
+        content=public_content(block.type, block.content),
         resource_id=block.resource_id,
         module_id=block.module_id,
     )

@@ -16,6 +16,7 @@ from app.models.ai_message import AIMessage
 from app.models.block import Block
 from app.models.course import Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
+from app.models.exercise_submission import ExerciseSubmission
 from app.models.module import Module
 from app.models.resource import Resource
 from app.models.share_link import ShareLink
@@ -30,6 +31,7 @@ __all__ = [
     "Block",
     "Course",
     "EducationLevel",
+    "ExerciseSubmission",
     "Module",
     "Resource",
     "ShareLink",
