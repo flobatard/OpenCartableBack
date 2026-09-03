@@ -1,7 +1,7 @@
 """Tests des routes de l'assistant de cours pour les **contextes d'édition**
-(conversations rattachées à un bloc) et le **flux HITL** — interrupt à la
-proposition, reprise par la route de décision, abandon. Fakes partagés dans
-``course_assistant_fakes.py`` (contrats FIFO documentés là).
+(conversations rattachées à un bloc ou à un module) et le **flux HITL** —
+interrupt à la proposition, reprise par la route de décision, abandon. Fakes
+partagés dans ``course_assistant_fakes.py`` (contrats FIFO documentés là).
 """
 
 import uuid
@@ -12,6 +12,7 @@ from tests.course_assistant_fakes import (
     BASE,
     BLOCK_ID,
     CONVERSATION_ID,
+    MODULE_ID,
     NOW,
     RESOURCE_ID,
     STREAM_PATH,
@@ -23,6 +24,7 @@ from tests.course_assistant_fakes import (
     inserted_message_rows,
     make_client,
     message_row,
+    module_row,
     parse_sse,
     resume_session,
     stream_session,
@@ -38,6 +40,7 @@ EXERCISE_TOOLS = {
     "propose_question_add",
     "propose_question_delete",
 }
+MODULE_TOOLS = {"propose_html_edit", "propose_css_edit", "propose_js_edit"}
 
 
 def _question(qid, statement, expected=""):
@@ -500,5 +503,206 @@ def test_proposal_decision_resumes_exercise_run_with_stable_question_refs() -> N
         "Q4",
     ]
     assert fake.dropped_threads == ["t-ex"]
+    rows = inserted_message_rows(session)
+    assert [(r["role"], r["position"]) for r in rows] == [("tool", 2), ("assistant", 3)]
+
+
+# ------------------------------------------- contexte module (cible module)
+
+
+def test_create_conversation_module() -> None:
+    """Cible module : FIFO [user], [course], [module] (scopé au cours), puis
+    insert à RETURNING — la conversation pointe ``module_id``, jamais un bloc."""
+    session = FakeSession([[user_row()], [course_row()], [module_row()], [(NOW, NOW)]])
+    client, _ = make_client(session)
+    response = client.post(
+        f"{BASE}/conversations",
+        json={"context": "module", "module_id": str(MODULE_ID)},
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["context"] == "module"
+    assert payload["module_id"] == str(MODULE_ID)
+    assert payload["block_id"] is None
+
+
+def test_create_conversation_module_unknown_module_404() -> None:
+    session = FakeSession([[user_row()], [course_row()], []])
+    client, _ = make_client(session)
+    response = client.post(
+        f"{BASE}/conversations",
+        json={"context": "module", "module_id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Module introuvable"
+
+
+def test_create_conversation_module_requires_module_id() -> None:
+    """Cohérence contexte ↔ cible validée par le schéma (miroir du CHECK) :
+    ni ``module_id`` manquant, ni ``block_id`` sur un contexte module."""
+    client, _ = make_client(FakeSession([[user_row()]]))
+    assert client.post(f"{BASE}/conversations", json={"context": "module"}).status_code == 422
+    client2, _ = make_client(FakeSession([[user_row()]]))
+    response = client2.post(
+        f"{BASE}/conversations",
+        json={"context": "module", "module_id": str(MODULE_ID), "block_id": str(BLOCK_ID)},
+    )
+    assert response.status_code == 422
+
+
+def test_create_conversation_block_text_rejects_module_id() -> None:
+    client, _ = make_client(FakeSession([[user_row()]]))
+    response = client.post(
+        f"{BASE}/conversations",
+        json={"context": "block_text", "block_id": str(BLOCK_ID), "module_id": str(MODULE_ID)},
+    )
+    assert response.status_code == 422
+
+
+def test_list_conversations_filters_by_module() -> None:
+    conv = conversation_row(context="module", module_id=MODULE_ID)
+    session = FakeSession([[user_row()], [course_row()], [conv]])
+    client, _ = make_client(session)
+    response = client.get(
+        f"{BASE}/conversations", params={"context": "module", "module_id": str(MODULE_ID)}
+    )
+    assert response.status_code == 200
+    [payload] = response.json()
+    assert payload["module_id"] == str(MODULE_ID)
+    list_stmt = session.executed[-1][0]
+    assert "ai_conversations.module_id =" in str(list_stmt)
+
+
+def test_stream_module_context() -> None:
+    """Contexte module : le module édité est rendu EN ENTIER dans le prompt
+    (code des trois fichiers), les trois tools de proposition sont exposés et
+    les args voyagent tels quels (aucune référence courte dans du code)."""
+    proposal = "const x = 1; // oc-resource:R1 reste du texte, jamais réécrit"
+    events = [
+        AIStreamEvent(
+            type="tool_call",
+            tool_call=AIToolCall(
+                id="call_p",
+                name="propose_js_edit",
+                arguments={"new_code": proposal, "summary": "Ajout du compteur"},
+            ),
+        ),
+        AIStreamEvent(
+            type="tool_result",
+            delta="Le professeur a ACCEPTÉ la proposition et l'a appliquée au fichier "
+            "JavaScript du module.",
+            tool_call=AIToolCall(id="call_p", name="propose_js_edit"),
+            tool_result_error=False,
+        ),
+        AIStreamEvent(type="done", usage=None),
+    ]
+    conv = conversation_row(context="module", module_id=MODULE_ID, title="T")
+    session = stream_session(conversation=conv, modules=[module_row()])
+    client, fake = make_client(session, FakeAssistantAI(events=events))
+    response = client.post(STREAM_PATH, json={"content": "Ajoute un compteur"})
+    assert response.status_code == 200
+
+    events_out = parse_sse(response.text)
+    assert [k for k, _ in events_out] == ["tool_call", "tool_result", "done"]
+    assert events_out[0][1]["args"]["new_code"] == proposal
+
+    rows = inserted_message_rows(session)
+    assert rows[0]["tool_calls"][0]["arguments"]["new_code"] == proposal
+    assert "ACCEPTÉ" in rows[1]["content"]
+
+    [call] = fake.calls
+    system = call["messages"][0].content
+    assert "## Module en cours d'édition" in system
+    assert "button { color: red; }" in system  # code du module, en entier
+    assert "default-src 'none'" in system  # contraintes du bac à sable
+    assert "```mermaid" not in system  # catalogue markdown hors sujet ici
+    assert MODULE_TOOLS <= {t.name for t in call["tools"]}
+    assert "propose_block_edit" not in {t.name for t in call["tools"]}
+    assert call["thread_id"] is not None
+    assert fake.dropped_threads == [call["thread_id"]]
+
+
+def test_stream_module_interrupt_registers_resume() -> None:
+    """Proposition de code : flux clos sur ``interrupt`` sans done, tour
+    partiel persisté, reprise enregistrée (aucune numérotation de question)."""
+    events = [
+        AIStreamEvent(
+            type="tool_call",
+            tool_call=AIToolCall(
+                id="call_p",
+                name="propose_css_edit",
+                arguments={"new_code": "button { color: blue; }", "summary": "Bleu"},
+            ),
+        ),
+        AIStreamEvent(type="interrupt", interrupt_value={"tool_call_id": "call_p"}),
+    ]
+    conv = conversation_row(context="module", module_id=MODULE_ID, title="T")
+    session = stream_session(conversation=conv, modules=[module_row()])
+    client, fake = make_client(session, FakeAssistantAI(events=events))
+    try:
+        response = client.post(STREAM_PATH, json={"content": "Mets le bouton en bleu"})
+        assert response.status_code == 200
+        assert [k for k, _ in parse_sse(response.text)] == ["tool_call", "interrupt"]
+
+        rows = inserted_message_rows(session)
+        assert [r["role"] for r in rows] == ["assistant"]
+
+        [call] = fake.calls
+        pending = hitl.take(CONVERSATION_ID, "call_p")
+        assert pending is not None
+        assert pending.thread_id == call["thread_id"]
+        assert pending.question_refs is None
+        assert fake.dropped_threads == []
+    finally:
+        hitl.drop(CONVERSATION_ID)
+
+
+def test_stream_module_missing_module_404() -> None:
+    """Module de la conversation absent de l'instantané : 404 défensif AVANT
+    l'insert du message user (message propre à la cible)."""
+    conv = conversation_row(context="module", module_id=uuid.uuid4(), title="T")
+    session = stream_session(conversation=conv, modules=[module_row()])
+    client, _ = make_client(session)
+    response = client.post(STREAM_PATH, json={"content": "Salut"})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Module introuvable"
+    assert inserted_message_rows(session) is None
+
+
+def test_proposal_decision_resumes_module_run() -> None:
+    """Reprise d'un run module : graphe rebâti avec les tools de CE contexte,
+    config du tour d'origine réutilisée, suite du tour streamée."""
+    hitl.register(
+        CONVERSATION_ID,
+        hitl.PendingProposal(
+            thread_id="t-mod", tool_call_id="call_p", provider="ollama", config=None
+        ),
+    )
+    events = [
+        AIStreamEvent(
+            type="tool_result",
+            delta="Le professeur a ACCEPTÉ la proposition et l'a appliquée au fichier CSS.",
+            tool_call=AIToolCall(id="call_p", name="propose_css_edit"),
+            tool_result_error=False,
+        ),
+        AIStreamEvent(type="token", delta="Appliqué."),
+        AIStreamEvent(type="done", usage=None),
+    ]
+    existing = [
+        message_row(0, role="user"),
+        message_row(1, role="assistant", tool_calls=[{"id": "call_p"}]),
+    ]
+    conv = conversation_row(context="module", module_id=MODULE_ID, title="T")
+    session = resume_session(messages=existing, conversation=conv, modules=[module_row()])
+    client, fake = make_client(session, FakeAssistantAI(events=events))
+    response = client.post(DECISION_PATH, json={"accepted": True, "comment": "Parfait"})
+    assert response.status_code == 200
+    assert [k for k, _ in parse_sse(response.text)] == ["tool_result", "token", "done"]
+
+    [call] = fake.calls
+    assert call["thread_id"] == "t-mod"
+    assert call["resume"] == {"accepted": True, "comment": "Parfait"}
+    assert MODULE_TOOLS <= {t.name for t in call["tools"]}
+    assert fake.dropped_threads == ["t-mod"]
     rows = inserted_message_rows(session)
     assert [(r["role"], r["position"]) for r in rows] == [("tool", 2), ("assistant", 3)]

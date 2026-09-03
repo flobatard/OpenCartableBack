@@ -1,12 +1,15 @@
 """Socle des contextes d'édition HITL de l'assistant : descripteur + gate.
 
-Un **contexte d'édition** (``block_text``, ``block_exercise``…) est décrit par
-un :class:`EditContext` immuable : le type de bloc qu'il édite (validé à la
-création de la conversation), son system prompt et ses **tools de
-proposition** (:class:`ProposalTool`). Service et streaming ne connaissent que
-ce descripteur, résolu par le registre de :mod:`app.course_assistant.editing`
-— ajouter un contexte = un module sous ``editing/`` + une entrée au registre,
-aucune branche ``if context == …`` ailleurs.
+Un **contexte d'édition** (``block_text``, ``block_exercise``, ``module``…) est
+décrit par un :class:`EditContext` immuable : la **cible** qu'il édite
+(:data:`TARGET_BLOCK` — et alors le type de bloc attendu — ou
+:data:`TARGET_MODULE`, validée à la création de la conversation), son system
+prompt et ses **tools de proposition** (:class:`ProposalTool`). Service et
+streaming ne connaissent que ce descripteur, résolu par le registre de
+:mod:`app.course_assistant.editing` — ajouter un contexte = un module sous
+``editing/`` + une entrée au registre, aucune branche ``if context == …``
+ailleurs (le seul aiguillage autorisé est sur :attr:`EditContext.target`, dont
+dépendent la colonne cible et la table à valider).
 
 Un tool de proposition **ne mute rien** : la proposition voyage dans les
 ``args`` du ``tool_call`` (relayés complets sur le flux SSE et persistés dans
@@ -27,6 +30,12 @@ from app.course_assistant.refs import CourseRefs
 
 Handler = Callable[[AIToolCall], Awaitable[AIToolResult]]
 
+# Cible d'un contexte d'édition : la conversation pointe un bloc
+# (``ai_conversations.block_id``) ou un module (``module_id``) — cf. le CHECK
+# ``ck_ai_conversations_target`` de :mod:`app.models.ai_conversation`.
+TARGET_BLOCK = "block"
+TARGET_MODULE = "module"
+
 
 @dataclass(frozen=True)
 class ProposalTool:
@@ -42,10 +51,17 @@ class ProposalTool:
 
 @dataclass(frozen=True)
 class EditContext:
-    """Descripteur d'un contexte d'édition (voir docstring du module)."""
+    """Descripteur d'un contexte d'édition (voir docstring du module).
+
+    ``block_type`` n'a de sens que pour une cible :data:`TARGET_BLOCK` (type
+    attendu du bloc visé, 422 sinon) ; il vaut ``None`` pour un contexte qui
+    édite un module. ``type_error_detail`` est le détail du 422 de cible
+    inadaptée.
+    """
 
     context: str
-    block_type: str
+    target: str
+    block_type: str | None
     type_error_detail: str
     system_prompt: str
     tools: tuple[ProposalTool, ...]
@@ -55,6 +71,34 @@ class EditContext:
             if tool.name == name:
                 return tool
         return None
+
+
+def tool_error(message: str) -> AIToolResult:
+    """Échec métier d'un tool de proposition (message lu par le modèle)."""
+    return AIToolResult(content=message, is_error=True)
+
+
+def string_arg(
+    arguments: dict, name: str, *, max_chars: int, required: bool
+) -> tuple[str | None, AIToolResult | None]:
+    """Argument chaîne borné, partagé par les contextes d'édition :
+    ``(valeur, None)`` — ``(None, None)`` si absent et facultatif — ou
+    ``(None, résultat d'échec)``. Les plafonds sont appliqués ICI et jamais en
+    ``maxLength`` de schéma (mot-clé inégalement supporté par les providers).
+    """
+    value = arguments.get(name)
+    if value is None:
+        if required:
+            return None, tool_error(f"Paramètre {name} manquant (chaîne attendue).")
+        return None, None
+    if not isinstance(value, str):
+        return None, tool_error(f"Paramètre {name} invalide (chaîne attendue).")
+    if len(value) > max_chars:
+        return None, tool_error(
+            f"Paramètre {name} trop long ({len(value)} caractères, plafond {max_chars}) "
+            "— proposez une version plus courte."
+        )
+    return value, None
 
 
 def hitl_gate(call: AIToolCall, *, accepted_text: str, rejected_text: str) -> AIToolResult:

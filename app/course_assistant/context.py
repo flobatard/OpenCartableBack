@@ -6,8 +6,9 @@ Aucune I/O ici (testable sans DB ni storage) :
   markdown) — la mission et les règles viennent du contexte de conversation :
   ``course`` (:data:`~app.course_assistant.prompts.COURSE_SYSTEM_PROMPT`) ou
   un **contexte d'édition** (descripteur
-  :class:`~app.course_assistant.editing.EditContext` passé en ``edit``, avec
-  le bloc édité en ``focus_block`` — mis en avant et rendu en entier). Le
+  :class:`~app.course_assistant.editing.EditContext` passé en ``edit``, avec sa
+  cible en ``focus_block`` OU ``focus_module`` — mise en avant et rendue en
+  entier). Le
   modèle ne voit **jamais d'UUID** : chaque bloc, ressource et module est
   désigné par sa référence courte (``B3``, ``R2``, ``M1`` —
   :class:`~app.course_assistant.refs.CourseRefs`), pour les tools comme pour
@@ -58,6 +59,9 @@ FOLDED_TOOL_RESULT_CHARS = 500
 # Plafond (caractères) du code d'un module lu par ``read_module`` — même ordre
 # de grandeur que la lecture d'un PDF (contrainte contexte + persistance).
 MODULE_MAX_CHARS = 40_000
+# Plafond du module EN COURS D'ÉDITION, plus large : c'est le sujet du tour,
+# l'assistant doit en voir l'état exact (miroir du bloc édité, rendu en entier).
+FOCUS_MODULE_MAX_CHARS = 120_000
 
 _TYPE_LABELS = {
     TYPE_TEXT: "Texte",
@@ -242,6 +246,7 @@ def build_course_context(
     *,
     max_chars: int = CONTEXT_MAX_CHARS,
     focus_block=None,
+    focus_module=None,
     edit: EditContext | None = None,
 ) -> str:
     """System prompt complet : consignes + cours en markdown + bibliothèques.
@@ -250,15 +255,19 @@ def build_course_context(
     complet dépasse ``max_chars``, bascule en **mode sommaire** (extraits +
     invite à ``read_block``) — jamais de coupe au milieu d'un bloc.
 
-    Contexte d'édition (``edit`` ET ``focus_block``, toujours ensemble) : le
-    prompt est celui du descripteur (mission + règles d'édition du contexte),
-    et le bloc édité est rendu **en entier** dans une section « Bloc en cours
-    d'édition » — y compris en mode sommaire (le professeur édite CE bloc,
-    l'assistant doit toujours en voir l'état exact) ; dans la liste du cours,
-    il est remplacé par un pointeur d'une ligne.
+    Contexte d'édition (``edit`` et **exactement une** cible — ``focus_block``
+    ou ``focus_module`` — toujours ensemble) : le prompt est celui du
+    descripteur (mission + règles d'édition du contexte), et la cible est
+    rendue **en entier** dans une section dédiée (« Bloc / Module en cours
+    d'édition ») — y compris en mode sommaire (le professeur édite CETTE
+    cible, l'assistant doit toujours en voir l'état exact) ; un bloc édité est
+    en outre remplacé par un pointeur d'une ligne dans la liste du cours.
     """
-    if (focus_block is None) != (edit is None):
-        raise ValueError("focus_block et edit vont ensemble (contexte d'édition)")
+    focus = focus_block if focus_block is not None else focus_module
+    if focus_block is not None and focus_module is not None:
+        raise ValueError("une seule cible d'édition (bloc OU module)")
+    if (focus is None) != (edit is None):
+        raise ValueError("la cible d'édition et edit vont ensemble (contexte d'édition)")
     prompt = COURSE_SYSTEM_PROMPT if edit is None else edit.system_prompt
     head = [prompt, f"\n# Cours : {course.title}"]
     if course.description:
@@ -266,6 +275,11 @@ def build_course_context(
     focus_section: list[str] = []
     if focus_block is not None:
         focus_section = ["\n## Bloc en cours d'édition", format_block(focus_block, refs)]
+    elif focus_module is not None:
+        focus_section = [
+            "\n## Module en cours d'édition",
+            format_module(focus_module, refs, max_chars=FOCUS_MODULE_MAX_CHARS),
+        ]
     tail = _libraries_section(refs)
     blocks = [entry.entity for entry in refs.entries["block"]]
 

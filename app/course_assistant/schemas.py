@@ -2,10 +2,11 @@
 
 Règle d'or (motif ``app/public/schemas.py``) : jamais de ``owner_id`` ni de
 donnée interne dans les réponses. ``ConversationCreate.context`` est un
-``Literal`` restreint aux contextes **livrés** (``course``, ``block_text``,
-``block_exercise``) — étendre le Literal au fil des lots (module), le CHECK
-en base accepte déjà les quatre. La cohérence contexte ↔ cible est validée
-deux fois : ici (422 Pydantic) et par le CHECK ``ck_ai_conversations_target``.
+``Literal`` restreint aux contextes **livrés** — les quatre le sont désormais
+(``course``, ``block_text``, ``block_exercise``, ``module``) ; la résolution
+d'exercice élève, elle, restera hors persistance. La cohérence contexte ↔
+cible est validée deux fois : ici (422 Pydantic) et par le CHECK
+``ck_ai_conversations_target``.
 """
 
 import uuid
@@ -18,6 +19,7 @@ from app.models.ai_conversation import (
     CONTEXT_BLOCK_EXERCISE,
     CONTEXT_BLOCK_TEXT,
     CONTEXT_COURSE,
+    CONTEXT_MODULE,
 )
 
 # Garde-fou de taille d'un message utilisateur (422 Pydantic au-delà).
@@ -25,22 +27,37 @@ MAX_MESSAGE_CHARS = 8_000
 # Commentaire d'une décision HITL (relayé au modèle dans le résultat du tool).
 MAX_PROPOSAL_COMMENT_CHARS = 2_000
 
-# Contextes d'édition d'un bloc : ``block_id`` requis (miroir du CHECK).
+# Contextes d'édition d'un bloc : ``block_id`` requis (miroir du CHECK) ; le
+# contexte ``module`` exige ``module_id``, le contexte ``course`` ni l'un ni
+# l'autre.
 _BLOCK_CONTEXTS = frozenset({CONTEXT_BLOCK_TEXT, CONTEXT_BLOCK_EXERCISE})
 
 
 class ConversationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    context: Literal["course", "block_text", "block_exercise"] = CONTEXT_COURSE
+    context: Literal["course", "block_text", "block_exercise", "module"] = CONTEXT_COURSE
     block_id: uuid.UUID | None = None
+    module_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _check_target(self) -> "ConversationCreate":
-        if self.context in _BLOCK_CONTEXTS and self.block_id is None:
-            raise ValueError(f"block_id est requis pour le contexte « {self.context} »")
-        if self.context == CONTEXT_COURSE and self.block_id is not None:
-            raise ValueError("block_id ne s'applique pas au contexte « course »")
+        if self.context in _BLOCK_CONTEXTS:
+            if self.block_id is None:
+                raise ValueError(f"block_id est requis pour le contexte « {self.context} »")
+            if self.module_id is not None:
+                raise ValueError(
+                    f"module_id ne s'applique pas au contexte « {self.context} »"
+                )
+        elif self.context == CONTEXT_MODULE:
+            if self.module_id is None:
+                raise ValueError("module_id est requis pour le contexte « module »")
+            if self.block_id is not None:
+                raise ValueError("block_id ne s'applique pas au contexte « module »")
+        elif self.block_id is not None or self.module_id is not None:
+            raise ValueError(
+                "block_id et module_id ne s'appliquent pas au contexte « course »"
+            )
         return self
 
 

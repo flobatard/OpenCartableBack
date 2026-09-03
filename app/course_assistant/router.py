@@ -43,11 +43,12 @@ async def list_conversations(
     course_id: uuid.UUID,
     context: str = Query(default=CONTEXT_COURSE),
     block_id: uuid.UUID | None = None,
+    module_id: uuid.UUID | None = None,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ConversationRead]:
     user = await users_service.get_or_create_by_sub(db, auth)
-    return await service.list_conversations(db, user, course_id, context, block_id)
+    return await service.list_conversations(db, user, course_id, context, block_id, module_id)
 
 
 @router.post(

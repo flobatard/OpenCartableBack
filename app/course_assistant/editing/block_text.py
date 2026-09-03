@@ -8,7 +8,13 @@ insérés par référence courte sont réécrits en UUID à l'émission.
 """
 
 from app.core.ai import AIToolCall, AIToolResult, AIToolSpec
-from app.course_assistant.editing.base import EditContext, Handler, ProposalTool, hitl_gate
+from app.course_assistant.editing.base import (
+    TARGET_BLOCK,
+    EditContext,
+    Handler,
+    ProposalTool,
+    hitl_gate,
+)
 from app.course_assistant.prompts import edit_system_prompt
 from app.course_assistant.refs import CourseRefs
 from app.models.ai_conversation import CONTEXT_BLOCK_TEXT
@@ -126,6 +132,7 @@ def _rewrite_args(arguments: dict, refs: CourseRefs) -> dict:
 
 BLOCK_TEXT = EditContext(
     context=CONTEXT_BLOCK_TEXT,
+    target=TARGET_BLOCK,
     block_type=TYPE_TEXT,
     type_error_detail="Ce contexte ne s'applique qu'aux blocs texte",
     system_prompt=edit_system_prompt(_MISSION, _EDIT_RULES),

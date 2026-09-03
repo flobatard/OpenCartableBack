@@ -34,6 +34,7 @@ COURSE_ID = uuid.uuid4()
 CONVERSATION_ID = uuid.uuid4()
 BLOCK_ID = uuid.uuid4()
 RESOURCE_ID = uuid.uuid4()
+MODULE_ID = uuid.uuid4()
 
 BASE = f"/api/v1/courses/{COURSE_ID}/assistant"
 STREAM_PATH = f"{BASE}/conversations/{CONVERSATION_ID}/messages/stream"
@@ -111,6 +112,21 @@ def block_row(**overrides):
         content={"markdown": "Pythagore."},
         resource_id=None,
         module_id=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def module_row(**overrides):
+    defaults = dict(
+        id=MODULE_ID,
+        course_id=COURSE_ID,
+        title="Compteur",
+        html="<button id=\"go\">Go</button>",
+        css="button { color: red; }",
+        js="document.getElementById('go').onclick = () => {};",
+        created_at=NOW,
+        updated_at=NOW,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -255,7 +271,7 @@ def inserted_message_rows(session):
     return None
 
 
-def stream_session(messages=(), conversation=None, user=None, blocks=None):
+def stream_session(messages=(), conversation=None, user=None, blocks=None, modules=()):
     """FIFO de ``sse_stream`` (docstring du module)."""
     return FakeSession(
         [
@@ -266,12 +282,12 @@ def stream_session(messages=(), conversation=None, user=None, blocks=None):
             [user or user_row()],  # cascade effective_config
             list(blocks) if blocks is not None else [block_row()],
             [resource_row()],
-            [],  # modules
+            list(modules),
         ]
     )
 
 
-def resume_session(messages=(), conversation=None, blocks=None):
+def resume_session(messages=(), conversation=None, blocks=None, modules=()):
     """FIFO de ``sse_resume_stream`` : [user] (router), [course],
     [conversation], [messages], [blocks], [resources], [modules] — pas de
     cascade IA."""
@@ -283,6 +299,6 @@ def resume_session(messages=(), conversation=None, blocks=None):
             list(messages),
             list(blocks) if blocks is not None else [block_row()],
             [resource_row()],
-            [],  # modules
+            list(modules),
         ]
     )

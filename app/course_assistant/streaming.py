@@ -74,7 +74,7 @@ from app.course_assistant.context import (
     extract_sources,
     replay_messages,
 )
-from app.course_assistant.editing import EditContext, edit_context_for
+from app.course_assistant.editing import TARGET_MODULE, EditContext, edit_context_for
 from app.course_assistant.refs import CitationRewriter
 from app.course_assistant.schemas import MessageCreate, ProposalDecisionCreate
 from app.course_assistant.service import (
@@ -147,6 +147,22 @@ async def _load_snapshot(db: AsyncSession, course) -> tuple[list, list, list]:
     return blocks, resources, modules
 
 
+def _resolve_focus(
+    edit: EditContext | None, conversation: AIConversation, blocks: list, modules: list
+) -> tuple[Any, Any]:
+    """Cible d'un contexte d'édition, retrouvée dans l'instantané déjà chargé :
+    ``(focus_block, focus_module)`` — au plus un des deux, ``(None, None)`` hors
+    contexte d'édition. Une cible absente (supprimée : la conversation part en
+    cascade avec elle, cas théorique) donne ``None`` — l'appelant décide (404
+    défensif à l'aller, tolérance à la reprise). **Seul aiguillage sur
+    ``edit.target``** du streaming."""
+    if edit is None:
+        return None, None
+    if edit.target == TARGET_MODULE:
+        return None, next((m for m in modules if m.id == conversation.module_id), None)
+    return next((b for b in blocks if b.id == conversation.block_id), None), None
+
+
 async def sse_stream(
     client: AIClient,
     db: AsyncSession,
@@ -173,9 +189,10 @@ async def sse_stream(
     message ; ``updated_at`` bumpé) puis commit. Le generator retourné insère
     ensuite les messages du tour (un execute + commit à la clôture).
 
-    Contexte d'édition (même ordre d'execute) : le bloc édité est retrouvé
-    dans l'instantané déjà chargé (404 défensif s'il a disparu), mis en avant
-    dans le system prompt (``focus_block``), le run est **checkpointé**
+    Contexte d'édition (même ordre d'execute) : la cible éditée — bloc ou
+    module selon le descripteur — est retrouvée dans l'instantané déjà chargé
+    (404 défensif si elle a disparu), mise en avant dans le system prompt
+    (``focus_block``/``focus_module``), le run est **checkpointé**
     (``thread_id`` — InMemorySaver du client) et les tools de proposition du
     descripteur sont exposés — la proposition voyage dans les args du
     ``tool_call`` (références réécrites en UUID, relayés complets sur le flux
@@ -201,18 +218,19 @@ async def sse_stream(
 
     blocks, resources, modules = await _load_snapshot(db, course)
 
-    # Contexte d'édition : le bloc édité est retrouvé dans l'instantané déjà
-    # chargé (404 défensif : la FK CASCADE rend le bloc absent théorique).
+    # Contexte d'édition : la cible éditée (bloc ou module) est retrouvée dans
+    # l'instantané déjà chargé (404 défensif : la FK CASCADE rend la cible
+    # absente théorique).
     edit = edit_context_for(conversation.context)
-    focus_block = None
-    if edit is not None:
-        focus_block = next((b for b in blocks if b.id == conversation.block_id), None)
-        if focus_block is None:
-            # Le quota a déjà été réservé par la cascade : remboursé (motif de
-            # l'erreur eager de stream_agent ci-dessous).
-            if ticket is not None:
-                await refund_default_quota(db, ticket)
-            raise not_found("Bloc introuvable")
+    focus_block, focus_module = _resolve_focus(edit, conversation, blocks, modules)
+    if edit is not None and focus_block is None and focus_module is None:
+        # Le quota a déjà été réservé par la cascade : remboursé (motif de
+        # l'erreur eager de stream_agent ci-dessous).
+        if ticket is not None:
+            await refund_default_quota(db, ticket)
+        raise not_found(
+            "Module introuvable" if edit.target == TARGET_MODULE else "Bloc introuvable"
+        )
     # Instantané du cours en références courtes (B1/R1/M1 — et Q1… pour les
     # questions du bloc exercice édité) : le modèle ne manipule jamais d'UUID
     # — cf. app/course_assistant/refs.py.
@@ -226,7 +244,9 @@ async def sse_stream(
         stale = hitl.drop(conversation.id)
         if stale is not None:
             client.drop_agent_thread(stale.thread_id)
-    system_content = build_course_context(course, refs, focus_block=focus_block, edit=edit)
+    system_content = build_course_context(
+        course, refs, focus_block=focus_block, focus_module=focus_module, edit=edit
+    )
     history, truncated = replay_messages(existing, provider)
     if truncated:
         system_content += TRUNCATED_HISTORY_NOTICE
@@ -333,11 +353,11 @@ async def sse_resume_stream(
     existing = await load_messages(db, conversation)
 
     blocks, resources, modules = await _load_snapshot(db, course)
-    # Le bloc édité (absent = supprimé pendant la revue ; la conversation
-    # partant en cascade avec lui, le cas est théorique — pas de question
+    # La cible éditée (absente = supprimée pendant la revue ; la conversation
+    # partant en cascade avec elle, le cas est théorique — pas de question
     # numérotée, le tool répondra par une erreur actionnable) et la
     # numérotation Q… du tour d'origine, rejouée pour la suite du tour.
-    focus_block = next((b for b in blocks if b.id == conversation.block_id), None)
+    focus_block, _ = _resolve_focus(edit, conversation, blocks, modules)
     refs = build_refs(
         blocks,
         resources,

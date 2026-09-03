@@ -29,7 +29,15 @@ providers).
 """
 
 from app.core.ai import AIToolCall, AIToolResult, AIToolSpec
-from app.course_assistant.editing.base import EditContext, Handler, ProposalTool, hitl_gate
+from app.course_assistant.editing.base import (
+    TARGET_BLOCK,
+    EditContext,
+    Handler,
+    ProposalTool,
+    hitl_gate,
+    string_arg,
+    tool_error,
+)
 from app.course_assistant.prompts import edit_system_prompt
 from app.course_assistant.refs import CourseRefs, RefEntry
 from app.models.ai_conversation import CONTEXT_BLOCK_EXERCISE
@@ -249,42 +257,18 @@ def _question_delete_spec(refs: CourseRefs) -> AIToolSpec:
 # ---------------------------------------------------------------- handlers
 
 
-def _error(message: str) -> AIToolResult:
-    return AIToolResult(content=message, is_error=True)
-
-
-def _string_arg(
-    arguments: dict, name: str, *, max_chars: int, required: bool
-) -> tuple[str | None, AIToolResult | None]:
-    """Argument chaîne borné : ``(valeur, None)`` — ``(None, None)`` si absent et
-    facultatif — ou ``(None, résultat d'échec)``."""
-    value = arguments.get(name)
-    if value is None:
-        if required:
-            return None, _error(f"Paramètre {name} manquant (chaîne attendue).")
-        return None, None
-    if not isinstance(value, str):
-        return None, _error(f"Paramètre {name} invalide (chaîne attendue).")
-    if len(value) > max_chars:
-        return None, _error(
-            f"Paramètre {name} trop long ({len(value)} caractères, plafond {max_chars}) "
-            "— proposez une version plus courte."
-        )
-    return value, None
-
-
 def _resolve_question(refs: CourseRefs, raw) -> tuple[RefEntry | None, AIToolResult | None]:
     """Question du bloc édité par référence (chaîne tolérante de ``resolve``),
     ou le résultat d'échec listant les candidats."""
     resolution = refs.resolve("question", raw)
     if resolution.entry is None:
-        return None, _error(resolution.error)
+        return None, tool_error(resolution.error)
     return resolution.entry, None
 
 
 def _build_statement_handler(refs: CourseRefs) -> Handler:
     async def propose_statement_edit(call: AIToolCall) -> AIToolResult:
-        _, failure = _string_arg(
+        _, failure = string_arg(
             call.arguments, "new_statement", max_chars=STATEMENT_MAX_CHARS, required=True
         )
         if failure is not None:
@@ -299,18 +283,18 @@ def _build_question_edit_handler(refs: CourseRefs) -> Handler:
         _, failure = _resolve_question(refs, call.arguments.get("question_ref"))
         if failure is not None:
             return failure
-        statement, failure = _string_arg(
+        statement, failure = string_arg(
             call.arguments, "statement", max_chars=QUESTION_MAX_CHARS, required=False
         )
         if failure is not None:
             return failure
-        expected, failure = _string_arg(
+        expected, failure = string_arg(
             call.arguments, "expected_answer", max_chars=QUESTION_MAX_CHARS, required=False
         )
         if failure is not None:
             return failure
         if statement is None and expected is None:
-            return _error(
+            return tool_error(
                 "Rien à modifier : fournissez statement (nouvel énoncé) et/ou "
                 "expected_answer (nouveau corrigé)."
             )
@@ -321,18 +305,18 @@ def _build_question_edit_handler(refs: CourseRefs) -> Handler:
 
 def _build_question_add_handler(refs: CourseRefs) -> Handler:
     async def propose_question_add(call: AIToolCall) -> AIToolResult:
-        _, failure = _string_arg(
+        _, failure = string_arg(
             call.arguments, "statement", max_chars=QUESTION_MAX_CHARS, required=True
         )
         if failure is not None:
             return failure
-        _, failure = _string_arg(
+        _, failure = string_arg(
             call.arguments, "expected_answer", max_chars=QUESTION_MAX_CHARS, required=False
         )
         if failure is not None:
             return failure
         if len(refs.entries["question"]) >= QUESTIONS_MAX:
-            return _error(
+            return tool_error(
                 f"L'exercice compte déjà {QUESTIONS_MAX} questions (plafond) — "
                 "proposez d'en supprimer ou d'en fusionner avant d'ajouter."
             )
@@ -402,6 +386,7 @@ def _rewrite_question_delete_args(arguments: dict, refs: CourseRefs) -> dict:
 
 BLOCK_EXERCISE = EditContext(
     context=CONTEXT_BLOCK_EXERCISE,
+    target=TARGET_BLOCK,
     block_type=TYPE_EXERCISE,
     type_error_detail="Ce contexte ne s'applique qu'aux blocs exercice",
     system_prompt=edit_system_prompt(_MISSION, _EDIT_RULES),

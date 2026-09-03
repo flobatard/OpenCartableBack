@@ -7,13 +7,22 @@ Chaque contexte d'édition est un module de ce package exposant un
 service et le streaming (``None`` = contexte sans édition, ``course``).
 """
 
-from app.course_assistant.editing.base import EditContext, Handler, ProposalTool, hitl_gate
+from app.course_assistant.editing.base import (
+    TARGET_BLOCK,
+    TARGET_MODULE,
+    EditContext,
+    Handler,
+    ProposalTool,
+    hitl_gate,
+)
 from app.course_assistant.editing.block_exercise import BLOCK_EXERCISE
 from app.course_assistant.editing.block_text import BLOCK_TEXT
+from app.course_assistant.editing.module import MODULE
 
 EDIT_CONTEXTS: dict[str, EditContext] = {
     BLOCK_TEXT.context: BLOCK_TEXT,
     BLOCK_EXERCISE.context: BLOCK_EXERCISE,
+    MODULE.context: MODULE,
 }
 
 
@@ -25,6 +34,8 @@ def edit_context_for(context: str) -> EditContext | None:
 
 __all__ = [
     "EDIT_CONTEXTS",
+    "TARGET_BLOCK",
+    "TARGET_MODULE",
     "EditContext",
     "Handler",
     "ProposalTool",

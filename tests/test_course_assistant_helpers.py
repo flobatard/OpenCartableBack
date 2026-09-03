@@ -36,6 +36,13 @@ from app.course_assistant.editing.block_text import (
     PROPOSAL_MAX_CHARS,
     PROPOSE_BLOCK_EDIT,
 )
+from app.course_assistant.editing.module import (
+    MODULE,
+    MODULE_CODE_MAX_CHARS,
+    PROPOSE_CSS_EDIT,
+    PROPOSE_HTML_EDIT,
+    PROPOSE_JS_EDIT,
+)
 from app.course_assistant.tools import (
     IMAGE_MAX_BYTES,
     PDF_MAX_BYTES,
@@ -56,6 +63,7 @@ EXERCISE_TOOLS = {
     PROPOSE_QUESTION_ADD,
     PROPOSE_QUESTION_DELETE,
 }
+MODULE_TOOLS = {PROPOSE_HTML_EDIT, PROPOSE_CSS_EDIT, PROPOSE_JS_EDIT}
 
 
 def _block(**overrides):
@@ -367,6 +375,63 @@ def test_tool_specs_propose_only_on_demand() -> None:
     assert set(spec.parameters["properties"]) == {"new_markdown", "summary"}
     assert "ATTEND sa décision" in spec.description
     assert not EXERCISE_TOOLS & set(specs)  # les tools exercice n'y sont pas
+
+
+def test_build_course_context_module_focus() -> None:
+    """Contexte module : le module édité est rendu EN ENTIER dans sa section,
+    les contraintes du bac à sable remplacent le catalogue markdown."""
+    module = _module()
+    other = _block(id=uuid.uuid4(), title="Suite", content={"markdown": "La suite du cours."})
+    context = build_course_context(
+        _COURSE,
+        _refs(blocks=[other], modules=[module]),
+        focus_module=module,
+        edit=MODULE,
+    )
+    assert "qui édite un module interactif de son cours" in context
+    for tool in MODULE_TOOLS:
+        assert f"`{tool}`" in context
+    assert "UN fichier par appel" in context
+    # Code du module en entier, dans sa section dédiée.
+    assert "## Module en cours d'édition" in context
+    assert "#scale { color: red; }" in context
+    assert "console.log('go');" in context
+    # Contraintes d'exécution déclarées, catalogue markdown écarté.
+    assert "default-src 'none'" in context
+    assert "window.ocModule.emit" in context
+    assert "```mermaid" not in context
+    assert "propose_block_edit" not in context
+    # Le reste du cours reste rendu.
+    assert "La suite du cours." in context
+
+
+def test_build_course_context_rejects_two_focus_targets() -> None:
+    module, block = _module(), _block()
+    with pytest.raises(ValueError):
+        build_course_context(
+            _COURSE,
+            _refs(blocks=[block], modules=[module]),
+            focus_block=block,
+            focus_module=module,
+            edit=MODULE,
+        )
+    # Une cible sans descripteur d'édition (et inversement) reste refusée.
+    with pytest.raises(ValueError):
+        build_course_context(_COURSE, _refs(), focus_module=module)
+
+
+def test_tool_specs_module() -> None:
+    specs = {s.name: s for s in build_tool_specs(_refs(), edit=MODULE)}
+    assert MODULE_TOOLS <= set(specs)
+    assert PROPOSE_BLOCK_EDIT not in specs
+    assert not EXERCISE_TOOLS & set(specs)
+    for name in MODULE_TOOLS:
+        spec = specs[name]
+        assert spec.parameters["required"] == ["new_code"]
+        assert set(spec.parameters["properties"]) == {"new_code", "summary"}
+        assert "ATTEND la décision" in spec.description
+    html_hint = specs[PROPOSE_HTML_EDIT].parameters["properties"]["new_code"]["description"]
+    assert "sans balise `<style>` ni `<script>`" in html_hint
 
 
 def test_tool_specs_block_exercise() -> None:
@@ -975,3 +1040,99 @@ def test_hitl_drop() -> None:
     hitl.register(conversation_id, pending)
     assert hitl.drop(conversation_id) is pending
     assert hitl.drop(conversation_id) is None
+
+
+# ---------------------------- tools de proposition d'un module (HITL)
+
+
+def _module_executor():
+    module = _module()
+    return build_tool_executor(_FakeStorage(b""), _refs(modules=[module]), edit=MODULE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("name", "accepted_needle"),
+    [
+        (PROPOSE_HTML_EDIT, "appliquée au fichier HTML"),
+        (PROPOSE_CSS_EDIT, "appliquée au fichier CSS"),
+        (PROPOSE_JS_EDIT, "appliquée au fichier JavaScript"),
+    ],
+)
+async def test_executor_propose_code_returns_the_decision(
+    monkeypatch, name, accepted_needle
+) -> None:
+    """Chaque tool de fichier retourne la décision du professeur, nommant le
+    fichier appliqué (le modèle sait sur quoi enchaîner)."""
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        editing_base,
+        "agent_interrupt",
+        lambda payload: seen.append(payload) or {"accepted": True},
+    )
+    result = await _module_executor()(
+        AIToolCall(id="call_p", name=name, arguments={"new_code": "const x = 1;"})
+    )
+    assert not result.is_error
+    assert accepted_needle in result.content
+    assert seen == [{"tool_call_id": "call_p"}]
+
+
+@pytest.mark.anyio
+async def test_executor_propose_code_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        editing_base,
+        "agent_interrupt",
+        lambda payload: {"accepted": False, "comment": "Trop verbeux."},
+    )
+    result = await _module_executor()(
+        AIToolCall(id="c", name=PROPOSE_JS_EDIT, arguments={"new_code": "x"})
+    )
+    assert not result.is_error
+    assert "REJETÉ" in result.content
+    assert "le module est inchangé" in result.content
+    assert "Son commentaire : Trop verbeux." in result.content
+
+
+@pytest.mark.anyio
+async def test_executor_propose_code_validates_before_interrupting(monkeypatch) -> None:
+    """Args invalides : échec immédiat, JAMAIS d'interrupt (aucun run figé)."""
+    _no_interrupt(monkeypatch)
+    executor = _module_executor()
+
+    missing = await executor(AIToolCall(id="c1", name=PROPOSE_CSS_EDIT, arguments={}))
+    assert missing.is_error
+    assert "new_code" in missing.content
+
+    not_a_string = await executor(
+        AIToolCall(id="c2", name=PROPOSE_HTML_EDIT, arguments={"new_code": 42})
+    )
+    assert not_a_string.is_error
+
+    too_long = await executor(
+        AIToolCall(
+            id="c3",
+            name=PROPOSE_JS_EDIT,
+            arguments={"new_code": "x" * (MODULE_CODE_MAX_CHARS + 1)},
+        )
+    )
+    assert too_long.is_error
+    assert "plafond" in too_long.content
+
+
+def test_module_rewrite_args_is_identity() -> None:
+    """Le code d'un module ne porte pas de référence courte : les args partent
+    tels quels (rien à réécrire, contrairement au markdown de cours)."""
+    refs = _refs()
+    code = "// [sujet](oc-resource:R1) reste du texte"
+    tool = MODULE.tool(PROPOSE_HTML_EDIT)
+    assert tool is not None
+    arguments = {"new_code": code, "summary": "s"}
+    assert tool.rewrite_args(arguments, refs) == arguments
+
+
+@pytest.mark.anyio
+async def test_module_context_keeps_the_read_tools() -> None:
+    """Les tools de lecture du cours restent disponibles en contexte module."""
+    names = {s.name for s in build_tool_specs(_refs(), edit=MODULE)}
+    assert {"read_block", "read_module", "read_resource_pdf", "read_resource_image"} <= names

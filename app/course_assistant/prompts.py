@@ -3,8 +3,10 @@
 Le system prompt est assemblé par fragments par
 :func:`app.course_assistant.context.build_course_context` : une **mission**
 propre au contexte de conversation, les **règles communes** (formules, références
-courtes, citations, tools de lecture) et, pour un contexte d'édition, le
-**catalogue des syntaxes** du markdown de cours suivi des **règles d'édition** du
+courtes, citations, tools de lecture) et, pour un contexte d'édition, un
+**catalogue de ce qu'on peut écrire** — :data:`MARKDOWN_SYNTAXES` pour les
+contextes qui éditent du markdown de cours, :data:`MODULE_RUNTIME` pour celui
+qui édite le code d'un module interactif — suivi des **règles d'édition** du
 contexte (:func:`edit_system_prompt`, consommé par les descripteurs de
 :mod:`app.course_assistant.editing`).
 
@@ -75,12 +77,48 @@ lignes equation=/point= possibles).
 image en ligne. Module interactif intégré : [titre](oc-module:<cible>).\
 """
 
+# Environnement d'exécution d'un module interactif — miroir du contrat de
+# ``shared/module-runner/module-document.ts`` côté front (CSP ``MODULE_CSP``,
+# bridge, composition du srcdoc) : à mettre à jour avec lui.
+MODULE_RUNTIME = """\
+Environnement d'exécution d'un module — contraintes STRICTES, un module qui \
+les ignore ne fonctionnera pas :
+
+- Le module est composé en un seul document (CSS dans un `<style>`, HTML dans \
+le `<body>`, puis JavaScript dans un `<script>`, dans cet ordre) et exécuté \
+dans une iframe **sandbox à origine opaque**. Votre JavaScript s'exécute après \
+l'insertion du HTML : le DOM du champ HTML est déjà là, n'attendez pas \
+`DOMContentLoaded`.
+- **Aucun réseau sortant** (`default-src 'none'`) : jamais de CDN, de \
+bibliothèque externe (pas de jQuery, React, D3, Chart.js…), de `fetch`, \
+`XMLHttpRequest`, WebSocket, police Google Fonts ni `<img src="https://…">`. \
+Tout est écrit à la main, en JavaScript natif ; les images et sons doivent \
+être des URI `data:` (ou générés en `canvas`/`blob:`).
+- **Aucun stockage** : `localStorage`, `sessionStorage` et les cookies sont \
+inaccessibles (leur simple lecture LÈVE une exception dans une origine \
+opaque). L'état du module vit en mémoire, il repart de zéro à chaque \
+chargement.
+- `'unsafe-eval'` est disponible (`new Function`, `eval`) pour évaluer une \
+expression saisie par l'élève ; la soumission de formulaire est bloquée \
+(`form-action 'none'`) — gérez les formulaires en JavaScript avec \
+`preventDefault()`.
+- La **hauteur de l'iframe s'ajuste automatiquement** au contenu (ne codez ni \
+resize, ni `postMessage` de hauteur). Pour signaler un événement pédagogique à \
+l'application (ex. un score), appelez `window.ocModule.emit(nom, données)`.
+- Le module doit être **autonome et accessible** : contrastes suffisants, \
+utilisable au clavier, lisible sur mobile, et présentable sur fond clair comme \
+sur fond sombre (ne présumez pas la couleur de fond de la page : posez la \
+vôtre).\
+"""
+
 # Contexte ``course`` (chat global) : mission + règles communes, sans catalogue
 # de syntaxes ni règles d'édition (ils ne doivent pas polluer ce contexte).
 COURSE_SYSTEM_PROMPT = f"{COURSE_MISSION}\n\n{COMMON_RULES}"
 
 
-def edit_system_prompt(mission: str, rules: str) -> str:
+def edit_system_prompt(mission: str, rules: str, *, catalog: str = MARKDOWN_SYNTAXES) -> str:
     """Prompt d'un contexte d'édition : mission du contexte, règles communes,
-    catalogue des syntaxes du markdown de cours, règles d'édition dédiées."""
-    return f"{mission}\n\n{COMMON_RULES}\n\n{MARKDOWN_SYNTAXES}\n\n{rules}"
+    catalogue de ce qui est écrivable dans la cible (syntaxes du markdown de
+    cours par défaut, :data:`MODULE_RUNTIME` pour le code d'un module), règles
+    d'édition dédiées."""
+    return f"{mission}\n\n{COMMON_RULES}\n\n{catalog}\n\n{rules}"
