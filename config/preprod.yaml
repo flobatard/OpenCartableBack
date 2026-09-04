@@ -1,0 +1,69 @@
+# Config publique de PREPROD (versionnée dans le repo) — chargée quand le .env
+# du serveur porte APP_ENV=preprod (cf. app/core/config.py et
+# .gitea/workflows/deploy-preprod.yml).
+# Les secrets (POSTGRES_PASSWORD, S3_*, AI_API_KEY, ...) vont dans le .env du
+# serveur, jamais ici.
+#
+# ⚠️ VALEURS PLACEHOLDER — à renseigner avant le premier déploiement.
+
+DEBUG: false
+
+# Derrière le nginx de l'infra, front et API partagent la même origine :
+# laisser vide (middleware CORS désactivé). Ajouter l'origine de la SPA sinon.
+CORS_ORIGINS: []
+# CORS_ORIGINS:
+#   - https://preprod.example.org
+
+# Postgres — EXTERNE à la stack de preprod (cf. docker-compose.preprod.yml :
+# aucun service `db`). Le mot de passe vit dans le .env du serveur ; un Postgres
+# managé peut aussi être branché d'un bloc via DATABASE_URL dans ce .env.
+POSTGRES_USER: <placeholder_postgres_user>
+POSTGRES_HOST: <placeholder_postgres_host>
+POSTGRES_PORT: 5432
+POSTGRES_DB: <placeholder_postgres_db>
+# Postgres managé/TLS : décommenter.
+# POSTGRES_SSLMODE: require
+
+# Zitadel de preprod. OIDC_AUDIENCE = l'ID de projet Zitadel (2e entrée du
+# claim `aud`), qui doit rester cohérent avec le clientId gravé côté front dans
+# src/environments/environment.preprod.ts.
+OIDC_ISSUER: https://<placeholder_zitadel_host>
+OIDC_AUDIENCE: "<placeholder_oidc_audience>"
+
+# Stockage S3 — bucket privé EXTERNE à la stack. Laisser S3_ENDPOINT_URL vide
+# pour AWS S3, ou renseigner l'endpoint d'un S3-compatible (MinIO...).
+# Les clés (S3_ACCESS_KEY/S3_SECRET_KEY) vont dans le .env du serveur.
+# S3_ENDPOINT_URL: https://<placeholder_s3_endpoint>
+S3_REGION: eu-west-3
+S3_BUCKET: <placeholder_s3_bucket>
+
+# Partage public (J2) — durée de vie des liens de partage élèves (jours).
+SHARE_LINK_TTL_DAYS: 270
+
+# Client IA (BYO token) — fallback serveur OPTIONNEL quand l'appelant ne
+# fournit pas sa propre config. AI_API_KEY est un secret → .env du serveur.
+# Laisser commenté = pas de fallback (chaque utilisateur apporte sa clé).
+# AI_PROVIDER: <placeholder_ai_provider>
+# AI_MODEL: <placeholder_ai_model>
+# AI_BASE_URL: <placeholder_ai_base_url>
+# Quota d'appels au fallback AI_* par utilisateur et par jour (UTC) — priorité
+# à users.ai_daily_call_quota s'il est renseigné ; 0 = illimité. Défaut : 30.
+# AI_DEFAULT_DAILY_QUOTA: 30
+
+# Langfuse (observabilité LLM, opt-in) — actif ssi les 3 variables sont
+# renseignées ; les clés sont des secrets → .env du serveur.
+# LANGFUSE_HOST: https://cloud.langfuse.com
+
+# Purge périodique (app/maintenance/, service `purge` du compose de preprod).
+# TOUS les délais de purge vivent ici. Rétentions en JOURS, 0 = tâche
+# désactivée ; les valeurs ci-dessous sont les DÉFAUTS du code, décommenter pour
+# les changer.
+# PURGE_INTERVAL_SECONDS: 86400         # cadence (lue une fois au démarrage du conteneur)
+# PURGE_AI_USAGE_DAYS: 365              # compteurs de quota (plancher dur : 2 j)
+# PURGE_AI_TOOL_CONTENT_DAYS: 180       # allège le contenu des tours tool
+# PURGE_AI_CONVERSATIONS_DAYS: 0        # désactivé — travail de prof
+# PURGE_EXERCISE_SUBMISSIONS_DAYS: 0    # désactivé — données d'élèves
+# PURGE_SHARE_LINKS_DAYS: 365           # liens expirés depuis N jours
+# PURGE_PENDING_RESOURCES_DAYS: 30      # uploads jamais confirmés (+ objet S3)
+# PURGE_S3_ORPHANS_DAYS: 90             # grâce sur LastModified (sécurité)
+# PURGE_S3_ORPHANS_DRY_RUN: true        # à passer à false après relecture des logs

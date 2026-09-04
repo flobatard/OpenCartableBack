@@ -13,12 +13,11 @@
 #   PRIVATE_SSH_KEY                   → clé privée SSH de l'utilisateur de déploiement (PEM, multiline)
 #   PREPROD_ENV_VARIABLES             → contenu complet du .env de preprod (cf. .env.example)
 #
-# ⚠️ Le .env doit porter APP_ENV=production : il n'existe PAS de
-#    config/preprod.yaml (seuls development.yaml et production.yaml existent,
-#    cf. app/core/config.py) — un APP_ENV=preprod ferait retomber l'API sur les
-#    seuls defaults Pydantic, sans charger CORS_ORIGINS/OIDC_*/S3_* de
-#    config/production.yaml. La branche "preprod" ne nomme que le déclencheur
-#    CI, pas l'environnement applicatif.
+# ⚠️ Le .env doit porter APP_ENV=preprod : c'est lui qui fait charger
+#    config/preprod.yaml (CORS_ORIGINS/OIDC_*/S3_*/purge — cf.
+#    app/core/config.py, qui résout config/<APP_ENV>.yaml). Un APP_ENV
+#    sans fichier YAML correspondant ferait silencieusement retomber l'API sur
+#    les seuls defaults Pydantic.
 
 name: Deploy PREPROD
 
@@ -164,8 +163,8 @@ jobs:
         run: |
           printf '%s' "$ENV_VARIABLES" > .env
           chmod 600 .env
-          grep -q '^APP_ENV=production$' .env || {
-            echo "::error::PREPROD_ENV_VARIABLES doit contenir APP_ENV=production (pas de config/preprod.yaml — voir l'en-tête de ce fichier)."
+          grep -q '^APP_ENV=preprod$' .env || {
+            echo "::error::PREPROD_ENV_VARIABLES doit contenir APP_ENV=preprod (c'est ce qui charge config/preprod.yaml — voir l'en-tête de ce fichier)."
             exit 1
           }
 

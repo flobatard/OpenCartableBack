@@ -1,10 +1,10 @@
 # Compose de déploiement (preprod) — l'image est PULLÉE depuis le registry,
 # jamais buildée ici (cf. .gitea/workflows/deploy-preprod.yml).
 #
-# Postgres et S3 sont EXTERNES à cette stack (cf. config/production.yaml :
+# Postgres et S3 sont EXTERNES à cette stack (cf. config/preprod.yaml :
 # POSTGRES_HOST/S3_* pointent l'infra existante, pas des conteneurs locaux) :
-# tout ce qui les configure vit dans le .env déployé à côté de ce fichier
-# (mêmes clés que .env.example, plus APP_ENV=production — cf. le workflow).
+# les SECRETS qui les complètent vivent dans le .env déployé à côté de ce
+# fichier (mêmes clés que .env.example, plus APP_ENV=preprod — cf. le workflow).
 #
 # REGISTRY / IMAGE / IMAGE_TAG sont exportés par le workflow de déploiement
 # avant `docker compose pull && up` ; ce fichier ne les définit pas.
