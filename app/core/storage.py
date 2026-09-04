@@ -12,10 +12,18 @@ bornés par ``TRANSFER_MAX_ZIP_BYTES``.
 
 ``generate_presigned_url`` est du **calcul local** (signature, aucune I/O
 réseau) : l'appeler de façon synchrone dans un handler async ne bloque pas
-l'event loop. En revanche ``head_object``/``delete_objects`` parlent au réseau :
-ils sont déportés dans un thread (:func:`run_in_threadpool`) pour ne pas bloquer.
+l'event loop. En revanche ``head_object``/``delete_objects``/``list_objects_v2``
+parlent au réseau : ils sont déportés dans un thread
+(:func:`run_in_threadpool`) pour ne pas bloquer.
+
+``iter_objects`` est la seule façon d'énumérer le bucket ; elle n'existe que
+pour la réconciliation des orphelins du job de purge (:mod:`app.maintenance`)
+— l'API, elle, ne liste jamais S3 (elle liste la table ``resources``).
 """
 
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from typing import BinaryIO
 
@@ -25,6 +33,20 @@ from botocore.exceptions import ClientError
 from fastapi.concurrency import run_in_threadpool
 
 from app.core.config import settings
+
+# ``delete_objects`` plafonne à 1 000 clés par appel ; ``list_objects_v2`` à
+# 1 000 par page. Mêmes lots des deux côtés : une page listée = un lot supprimé.
+DELETE_BATCH_SIZE = 1000
+LIST_PAGE_SIZE = 1000
+
+
+@dataclass(frozen=True)
+class S3Object:
+    """Un objet du bucket, tel que listé (jamais son contenu)."""
+
+    key: str
+    last_modified: datetime
+    size: int
 
 
 class Storage:
@@ -125,14 +147,53 @@ class Storage:
         )
 
     async def delete_many(self, s3_keys: list[str]) -> None:
-        """Supprime en lot les objets donnés (no-op si la liste est vide)."""
-        if not s3_keys:
-            return
-        await run_in_threadpool(
-            self._client.delete_objects,
-            Bucket=self._bucket,
-            Delete={"Objects": [{"Key": key} for key in s3_keys], "Quiet": True},
-        )
+        """Supprime en lot les objets donnés (no-op si la liste est vide).
+
+        Découpé par lots de ``DELETE_BATCH_SIZE`` : ``delete_objects`` plafonne
+        à 1 000 clés par appel. Les suppressions unitaires (une ressource, un
+        cours) tiennent toujours dans un lot ; le balayage d'orphelins du job
+        de purge, lui, en dépasse.
+        """
+        for start in range(0, len(s3_keys), DELETE_BATCH_SIZE):
+            batch = s3_keys[start : start + DELETE_BATCH_SIZE]
+            await run_in_threadpool(
+                self._client.delete_objects,
+                Bucket=self._bucket,
+                Delete={"Objects": [{"Key": key} for key in batch], "Quiet": True},
+            )
+
+    async def iter_objects(
+        self, prefix: str, page_size: int = LIST_PAGE_SIZE
+    ) -> AsyncIterator[list[S3Object]]:
+        """Énumère le bucket sous ``prefix``, **page par page**.
+
+        Rend des pages (au plus ``page_size`` objets) plutôt que des objets un
+        à un : l'appelant traite un lot borné et ne tient jamais le bucket
+        entier en RAM (contrainte Pi). Chaque page est un aller-retour réseau,
+        déporté en thread comme ``head``/``delete_many``.
+
+        Sert la réconciliation des orphelins (:mod:`app.maintenance`) ; aucun
+        autre appelant n'a besoin de lister le bucket.
+        """
+        token: str | None = None
+        while True:
+            params = {"Bucket": self._bucket, "Prefix": prefix, "MaxKeys": page_size}
+            if token:
+                params["ContinuationToken"] = token
+            response = await run_in_threadpool(self._client.list_objects_v2, **params)
+            page = [
+                S3Object(
+                    key=item["Key"],
+                    last_modified=item["LastModified"],
+                    size=item["Size"],
+                )
+                for item in response.get("Contents", [])
+            ]
+            if page:
+                yield page
+            token = response.get("NextContinuationToken")
+            if not response.get("IsTruncated") or not token:
+                return
 
 
 @lru_cache

@@ -24,3 +24,39 @@ services:
     # Le reverse proxy nginx (géré par l'infra) se branche sur ce port.
     ports:
       - "8000:8000"
+
+  # Purge périodique des données (app/maintenance/) — même image que l'API,
+  # hors de son process : la réconciliation S3 énumère tout le bucket, ça n'a
+  # rien à faire dans le worker qui sert les requêtes (contrainte Pi).
+  # Entre deux passes, aucun process Python résident : le one-shot sort, seuls
+  # `sh` et `sleep` dorment (~1 Mo).
+  purge:
+    image: ${REGISTRY}/${IMAGE}:${IMAGE_TAG}
+    restart: unless-stopped
+    env_file: .env
+    # Confort de démarrage seulement : ça ordonne la PREMIÈRE mise en route.
+    # La vraie garantie est ailleurs — le job refuse de purger tant que la base
+    # n'est pas à la révision Alembic de son image (app/maintenance/schema.py),
+    # ce qui couvre aussi le reboot du Pi (restart sans réévaluation des
+    # dépendances) et les déploiements ultérieurs, pendant lesquels ce
+    # conteneur-ci tourne déjà.
+    depends_on:
+      api:
+        condition: service_healthy
+    # ⚠ Écrase l'ENTRYPOINT de l'image (docker-entrypoint.sh = init_db.py +
+    # alembic upgrade head) : sans ça, ce conteneur rejouerait les migrations
+    # en concurrence avec l'api à chaque démarrage.
+    entrypoint: ["/bin/sh", "-c"]
+    # La cadence est lue UNE FOIS dans config/<APP_ENV>.yaml (tous les délais de
+    # purge y vivent) ; le `case` garde contre une valeur vide ou non numérique,
+    # qui ferait tourner la boucle à vide. Une passe part au démarrage : le
+    # déploiement est vérifiable dans les logs sans attendre 24 h.
+    command:
+      - |
+        INTERVAL="$$(python -c 'from app.core.config import settings; print(settings.PURGE_INTERVAL_SECONDS)' 2>/dev/null || true)"
+        case "$$INTERVAL" in ''|*[!0-9]*) INTERVAL=86400 ;; esac
+        echo "purge : une passe toutes les $$INTERVAL s"
+        while true; do
+          python -m app.maintenance || echo "purge : passe sans effet ou en échec (voir ci-dessus)"
+          sleep "$$INTERVAL"
+        done

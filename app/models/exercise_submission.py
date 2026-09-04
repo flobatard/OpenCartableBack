@@ -24,8 +24,12 @@ La ligne est insérée **avant** l'appel provider (durable même si l'appel
 ``question_id`` désigne ``blocks.content.questions[].id`` (uuid **stable à
 vie**, contrat de :mod:`app.models.block`) — pas de FK possible vers un
 élément de JSONB. FK toutes en ``CASCADE`` (utilisateur, cours, bloc) ;
-aucune relation ORM (lazy-load async interdit). Pas de purge pour l'instant
-(TODO.md racine, même stratégie que ``ai_daily_usage``).
+aucune relation ORM (lazy-load async interdit).
+
+Purge : la tâche existe (``app/maintenance/``, ``PURGE_EXERCISE_SUBMISSIONS_DAYS``)
+mais est **désactivée par défaut** — ce sont des données personnelles d'élèves,
+et l'effacement manuel existe des deux côtés (l'élève ses tours, le prof ceux de
+tous ses élèves). L'opérateur l'active en posant une rétention.
 """
 
 import uuid

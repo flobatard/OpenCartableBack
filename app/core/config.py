@@ -197,6 +197,39 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: str = ""  # SECRET (.env)
     LANGFUSE_HOST: str = ""
 
+    # Purge périodique (app/maintenance/, exécutée par le service `purge` du
+    # compose — jamais par l'API). Rétentions en JOURS ; **0 = tâche
+    # désactivée**. Défauts volontairement prudents : rien de pédagogique ne
+    # part sans décision explicite de l'opérateur, la purge est d'abord de
+    # l'hygiène disque.
+    # Cadence : secondes entre deux passes. Seule la boucle shell du conteneur
+    # la consomme — elle la lit ICI, une fois au démarrage (cf. la commande du
+    # service `purge`), pour que tous les délais de purge vivent au même
+    # endroit : les config/<APP_ENV>.yaml.
+    PURGE_INTERVAL_SECONDS: int = 86_400
+    PURGE_AI_USAGE_DAYS: int = 365
+    # Contenu des tours `tool` d'ai_messages (jusqu'à 40k caractères par lecture
+    # de PDF) : allégé, pas supprimé — la ligne doit survivre pour rester
+    # appariée à son tool_call_id. C'est le plus gros gain disque.
+    PURGE_AI_TOOL_CONTENT_DAYS: int = 180
+    # Désactivées par défaut (effacement manuel déjà offert des deux côtés) :
+    # ce sont du travail de prof et des données d'élèves.
+    PURGE_AI_CONVERSATIONS_DAYS: int = 0
+    PURGE_EXERCISE_SUBMISSIONS_DAYS: int = 0
+    # Liens de partage périmés (expires_at dépassé de N jours). Un lien expiré
+    # répond déjà 404 : aucun impact sur le chemin de lecture. Les liens
+    # révoqués mais non expirés sont conservés (trace d'audit côté prof).
+    PURGE_SHARE_LINKS_DAYS: int = 365
+    # Ressources restées `pending` (upload déclaré, jamais confirmé).
+    PURGE_PENDING_RESOURCES_DAYS: int = 30
+    # Réconciliation des orphelins S3 : grâce sur LastModified. Elle n'est pas
+    # un confort mais une SÉCURITÉ — l'import de cours pousse les objets AVANT
+    # son commit, un objet légitime passe donc un instant sans ligne en base.
+    PURGE_S3_ORPHANS_DAYS: int = 90
+    # Tant que True, la réconciliation ne fait que JOURNALISER les candidats.
+    # À basculer une fois les logs relus.
+    PURGE_S3_ORPHANS_DRY_RUN: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

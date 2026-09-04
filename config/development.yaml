@@ -45,3 +45,17 @@ AI_BASE_URL: https://api.mistral.ai/v1
 # Langfuse (observabilité LLM, opt-in) — actif ssi les 3 variables sont
 # renseignées ; les clés sont des secrets → .env.
 # LANGFUSE_HOST: https://cloud.langfuse.com
+
+# Purge périodique (app/maintenance/, service `purge` du compose sous le profil
+# `maintenance` en dev). TOUS les délais de purge vivent ici. Rétentions en
+# JOURS, 0 = tâche désactivée ; les valeurs ci-dessous sont les DÉFAUTS du code,
+# décommenter pour les changer.
+# PURGE_INTERVAL_SECONDS: 86400         # cadence (lue une fois au démarrage du conteneur)
+# PURGE_AI_USAGE_DAYS: 365              # compteurs de quota (plancher dur : 2 j)
+# PURGE_AI_TOOL_CONTENT_DAYS: 180       # allège le contenu des tours tool
+# PURGE_AI_CONVERSATIONS_DAYS: 0        # désactivé — travail de prof
+# PURGE_EXERCISE_SUBMISSIONS_DAYS: 0    # désactivé — données d'élèves
+# PURGE_SHARE_LINKS_DAYS: 365           # liens expirés depuis N jours
+# PURGE_PENDING_RESOURCES_DAYS: 30      # uploads jamais confirmés (+ objet S3)
+# PURGE_S3_ORPHANS_DAYS: 90             # grâce sur LastModified (sécurité)
+# PURGE_S3_ORPHANS_DRY_RUN: true        # à passer à false après relecture des logs

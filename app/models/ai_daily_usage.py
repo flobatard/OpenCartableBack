@@ -30,6 +30,8 @@ class AIDailyUsage(Base):
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     calls: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # Pas de relation ORM (lazy-load async interdit) ni de purge automatique :
-    # une ligne par utilisateur actif et par jour, volume négligeable à court
-    # terme — stratégie de purge à prévoir, suivie dans le TODO.md racine.
+    # Pas de relation ORM (lazy-load async interdit). Une ligne par utilisateur
+    # actif et par jour : la croissance est bornée par le job de purge
+    # (app/maintenance/, PURGE_AI_USAGE_DAYS), qui ne touche JAMAIS le jour
+    # courant ni la veille — le quota vivant se lit ici, et un remboursement
+    # peut viser la veille quand un appel traverse minuit UTC.
