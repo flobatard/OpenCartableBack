@@ -1,0 +1,26 @@
+# Compose de déploiement (preprod) — l'image est PULLÉE depuis le registry,
+# jamais buildée ici (cf. .gitea/workflows/deploy-preprod.yml).
+#
+# Postgres et S3 sont EXTERNES à cette stack (cf. config/production.yaml :
+# POSTGRES_HOST/S3_* pointent l'infra existante, pas des conteneurs locaux) :
+# tout ce qui les configure vit dans le .env déployé à côté de ce fichier
+# (mêmes clés que .env.example, plus APP_ENV=production — cf. le workflow).
+#
+# REGISTRY / IMAGE / IMAGE_TAG sont exportés par le workflow de déploiement
+# avant `docker compose pull && up` ; ce fichier ne les définit pas.
+services:
+  api:
+    image: ${REGISTRY}/${IMAGE}:${IMAGE_TAG}
+    restart: unless-stopped
+    # Les migrations s'appliquent au démarrage (no-op si déjà à jour).
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    env_file: .env
+    healthcheck:
+      # curl absent de python:slim -> healthcheck en python stdlib
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Le reverse proxy nginx (géré par l'infra) se branche sur ce port.
+    ports:
+      - "8000:8000"

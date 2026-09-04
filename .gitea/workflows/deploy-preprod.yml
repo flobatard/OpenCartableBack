@@ -1,0 +1,208 @@
+# Preprod backend — Build → Push registry → Deploy (pull) via docker compose.
+#
+# Variables Gitea (Settings → Actions → Variables) :
+#   REGISTRY             → registre Docker privé (ex. registry.example.tld)
+#   REGISTRY_NAMESPACE   → namespace/organisation dans le registre (ex. admin)
+#   IMAGE_NAME            → nom de l'image, sans namespace ni tag (ex. opencartable-back)
+#   APP_SERVER            → hôte de preprod (ex. app-05.vpn.example.tld)
+#   DEPLOY_PATH            → répertoire de déploiement sur l'hôte cible
+#   DEPLOY_SSH_USER        → utilisateur SSH de déploiement (optionnel, défaut "deploy")
+#
+# Secrets Gitea (Settings → Actions → Secrets) :
+#   REGISTRY_USER / REGISTRY_PASSWORD → credentials du registry
+#   PRIVATE_SSH_KEY                   → clé privée SSH de l'utilisateur de déploiement (PEM, multiline)
+#   PREPROD_ENV_VARIABLES             → contenu complet du .env de preprod (cf. .env.example)
+#
+# ⚠️ Le .env doit porter APP_ENV=production : il n'existe PAS de
+#    config/preprod.yaml (seuls development.yaml et production.yaml existent,
+#    cf. app/core/config.py) — un APP_ENV=preprod ferait retomber l'API sur les
+#    seuls defaults Pydantic, sans charger CORS_ORIGINS/OIDC_*/S3_* de
+#    config/production.yaml. La branche "preprod" ne nomme que le déclencheur
+#    CI, pas l'environnement applicatif.
+
+name: Deploy PREPROD
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - preprod
+
+env:
+  REGISTRY: ${{ vars.REGISTRY }}
+  IMAGE: ${{ vars.REGISTRY_NAMESPACE }}/${{ vars.IMAGE_NAME }}
+  DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+  SSH_USER: ${{ vars.DEPLOY_SSH_USER || 'deploy' }}
+  COMPOSE_FILE: docker-compose.preprod.yml
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 0a : Tests + lint — garde du déploiement
+  # ─────────────────────────────────────────────
+  # Aucune base Postgres ici : la suite ne requiert ni Postgres ni Zitadel
+  # (routes protégées testées via dependency_overrides / fausses sessions FIFO,
+  # cf. CLAUDE.md du back) — pas de service à démarrer pour ce job.
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Tests (pytest)
+        run: pytest -q
+
+  # ─────────────────────────────────────────────
+  # Job 0b : Garde config — rien ne part si les variables Gitea sont incomplètes
+  # ─────────────────────────────────────────────
+  # En parallèle de "test" : échoue vite sans consommer de temps de build si
+  # l'infra n'est pas configurée côté Gitea.
+  check-vars:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check required Gitea variables
+        run: |
+          for name in REGISTRY REGISTRY_NAMESPACE IMAGE_NAME APP_SERVER DEPLOY_PATH; do
+            value="$(eval echo "\$$name")"
+            [ -n "$value" ] || {
+              echo "::error::La variable Gitea $name n'est pas définie (Settings → Actions → Variables)."
+              exit 1
+            }
+          done
+        env:
+          REGISTRY: ${{ vars.REGISTRY }}
+          REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+          APP_SERVER: ${{ vars.APP_SERVER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+
+  # ─────────────────────────────────────────────
+  # Job 1 : Build de l'image et push vers le registry
+  # ─────────────────────────────────────────────
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [test, check-vars]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to private registry
+        run: |
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | \
+            docker login ${{ env.REGISTRY }} \
+              --username "${{ secrets.REGISTRY_USER }}" \
+              --password-stdin
+
+      # Builder docker-container : requis pour --cache-to type=registry (le
+      # builder « docker » par défaut ne sait pas exporter de cache). Créé au
+      # premier run, réutilisé ensuite si le runner persiste.
+      - name: Setup buildx builder
+        run: |
+          docker buildx create --name ci --driver docker-container --use 2>/dev/null \
+            || docker buildx use ci
+
+      # Cache de build DANS le registry (tag :buildcache ; mode=max = toutes les
+      # couches, stages intermédiaires compris) : seules les couches qui changent
+      # réellement sont re-poussées. Sans cache, chaque run reconstruisait des
+      # digests neufs et re-poussait l'image entière — c'est ce qui faisait
+      # tomber le push en timeout. Premier run après ce changement : cache
+      # absent (simple warning), build et push complets ; les suivants sont
+      # incrémentaux.
+      #
+      # Tags : "preprod" plutôt que "latest" — pour ne pas préempter le nom
+      # "latest" le jour où un pipeline de prod poussera sur la même image.
+      - name: Build and push Docker image
+        run: |
+          docker buildx build \
+            --cache-from "type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE }}:buildcache" \
+            --cache-to "type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE }}:buildcache,mode=max" \
+            -t "${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}" \
+            -t "${{ env.REGISTRY }}/${{ env.IMAGE }}:preprod" \
+            --push \
+            .
+
+      - name: Logout from registry
+        if: always()
+        run: docker logout ${{ env.REGISTRY }}
+
+  # ─────────────────────────────────────────────
+  # Job 2 : Déploiement sur le host de preprod via SSH
+  # ─────────────────────────────────────────────
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.PRIVATE_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H ${{ vars.APP_SERVER }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Materialize .env from secret
+        env:
+          ENV_VARIABLES: ${{ secrets.PREPROD_ENV_VARIABLES }}
+        run: |
+          printf '%s' "$ENV_VARIABLES" > .env
+          chmod 600 .env
+          grep -q '^APP_ENV=production$' .env || {
+            echo "::error::PREPROD_ENV_VARIABLES doit contenir APP_ENV=production (pas de config/preprod.yaml — voir l'en-tête de ce fichier)."
+            exit 1
+          }
+
+      - name: Create deploy directory on target host
+        run: |
+          ssh -i ~/.ssh/id_deploy ${{ env.SSH_USER }}@${{ vars.APP_SERVER }} \
+            "mkdir -p ${{ env.DEPLOY_PATH }}"
+
+      - name: Upload ${{ env.COMPOSE_FILE }} and .env
+        run: |
+          scp -i ~/.ssh/id_deploy ${{ env.COMPOSE_FILE }} .env \
+            ${{ env.SSH_USER }}@${{ vars.APP_SERVER }}:${{ env.DEPLOY_PATH }}/
+
+      - name: Pull image and restart service
+        run: |
+          ssh -i ~/.ssh/id_deploy ${{ env.SSH_USER }}@${{ vars.APP_SERVER }} bash -s <<'EOF'
+          set -e
+          cd ${{ env.DEPLOY_PATH }}
+
+          # Consommés par l'interpolation du compose (image: ${REGISTRY}/${IMAGE}:${IMAGE_TAG}).
+          # Déployer par SHA plutôt que par le tag mobile "preprod" : le
+          # rollback est un `up` avec l'ancien SHA.
+          export REGISTRY="${{ env.REGISTRY }}"
+          export IMAGE="${{ env.IMAGE }}"
+          export IMAGE_TAG="${{ github.sha }}"
+
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | \
+            docker login ${{ env.REGISTRY }} \
+              --username "${{ secrets.REGISTRY_USER }}" \
+              --password-stdin
+
+          docker compose -f ${{ env.COMPOSE_FILE }} pull
+          docker compose -f ${{ env.COMPOSE_FILE }} up -d --remove-orphans
+
+          docker logout ${{ env.REGISTRY }}
+          EOF
+
+      - name: Cleanup secrets from runner
+        if: always()
+        run: rm -f .env ~/.ssh/id_deploy
