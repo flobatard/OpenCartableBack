@@ -16,11 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert, Update
 
-from app.core.database import get_db
-from app.core.storage import get_storage
-from app.main import create_app
+from tests.fakes import FakeSession, FakeStorage, make_client
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 _NOW_JSON = "2026-07-07T12:00:00Z"
@@ -112,50 +109,8 @@ def _user_row(**overrides):
     return SimpleNamespace(**defaults)
 
 
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT ; écritures tracées sans consommer."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, Insert) and stmt._returning:
-            return _FakeResult(self._select_results.pop(0))
-        if isinstance(stmt, (Insert, Update, Delete)):
-            return _FakeResult([])
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-
-class _FakeStorage:
-    def __init__(self):
-        self.inline_calls = []
+class _FakeStorage(FakeStorage):
+    """Variante publique : trace ``(clé, nom, inline)`` et une URL propre."""
 
     def presign_get(self, s3_key, original_name, inline=False):
         self.inline_calls.append((s3_key, original_name, inline))
@@ -164,10 +119,7 @@ class _FakeStorage:
 
 def _client(session, storage=None) -> TestClient:
     # PAS d'override de get_current_user : ces routes vivent sans lui.
-    app = create_app()
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
-    return TestClient(app)
+    return make_client(session, storage or _FakeStorage(), authenticated=False)
 
 
 # Sélections vides du détail (matières, niveaux, blocs, ressources, modules).
@@ -179,7 +131,7 @@ _EMPTY_DETAIL = [[], [], [], [], []]
 
 def test_public_routes_respond_without_authorization():
     course = _course_row()
-    session = _FakeSession([[course], *_EMPTY_DETAIL])
+    session = FakeSession([[course], *_EMPTY_DETAIL])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
     assert response.status_code == 200
     assert "WWW-Authenticate" not in response.headers
@@ -191,7 +143,7 @@ def test_public_routes_respond_without_authorization():
 
 def test_public_course_accessible_without_token():
     course = _course_row(visibility="public")
-    session = _FakeSession([[course], *_EMPTY_DETAIL])
+    session = FakeSession([[course], *_EMPTY_DETAIL])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
     assert response.status_code == 200
     assert response.json()["title"] == "Fractions"
@@ -199,7 +151,7 @@ def test_public_course_accessible_without_token():
 
 def test_private_course_without_token_not_found():
     course = _course_row(visibility="private")
-    session = _FakeSession([[course]])
+    session = FakeSession([[course]])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
@@ -209,7 +161,7 @@ def test_private_course_valid_token_ok():
     course = _course_row(visibility="private")
     link = _link_row(course.id)
     # FIFO : cours, lien (scopé cours), puis détail.
-    session = _FakeSession([[course], [link], *_EMPTY_DETAIL])
+    session = FakeSession([[course], [link], *_EMPTY_DETAIL])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}", params={"token": _TOKEN}
     )
@@ -220,7 +172,7 @@ def test_draft_course_not_found_even_with_token():
     # Le lien est suspendu, pas supprimé : la visibilité prime, court-circuit
     # avant même le select du lien.
     course = _course_row(visibility="draft")
-    session = _FakeSession([[course]])
+    session = FakeSession([[course]])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}", params={"token": _TOKEN}
     )
@@ -228,7 +180,7 @@ def test_draft_course_not_found_even_with_token():
 
 
 def test_missing_course_not_found():
-    session = _FakeSession([[]])
+    session = FakeSession([[]])
     response = _client(session).get(f"/api/v1/public/courses/{uuid.uuid4()}")
     assert response.status_code == 404
 
@@ -243,7 +195,7 @@ def test_missing_course_not_found():
 def test_private_course_revoked_or_expired_link_not_found(link_overrides):
     course = _course_row(visibility="private")
     link = _link_row(course.id, **link_overrides)
-    session = _FakeSession([[course], [link]])
+    session = FakeSession([[course], [link]])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}", params={"token": _TOKEN}
     )
@@ -254,7 +206,7 @@ def test_private_course_revoked_or_expired_link_not_found(link_overrides):
 def test_token_for_course_a_does_not_grant_course_b():
     # Le select du lien est scopé (course_id + token) : il ne retourne rien.
     course_b = _course_row(visibility="private")
-    session = _FakeSession([[course_b], []])
+    session = FakeSession([[course_b], []])
     response = _client(session).get(
         f"/api/v1/public/courses/{course_b.id}", params={"token": _TOKEN}
     )
@@ -270,7 +222,7 @@ def test_shared_valid_link_returns_detail():
     block = _block_row(course.id)
     # FIFO : lien (par token), cours, puis détail (matières, niveaux,
     # blocs, ressources, modules).
-    session = _FakeSession([[link], [course], [], [], [block], [], []])
+    session = FakeSession([[link], [course], [], [], [block], [], []])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
 
     assert response.status_code == 200
@@ -281,7 +233,7 @@ def test_shared_valid_link_returns_detail():
 
 
 def test_shared_unknown_token_not_found():
-    session = _FakeSession([[]])
+    session = FakeSession([[]])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
@@ -290,7 +242,7 @@ def test_shared_unknown_token_not_found():
 def test_shared_course_back_to_draft_not_found():
     course = _course_row(visibility="draft")
     link = _link_row(course.id)
-    session = _FakeSession([[link], [course]])
+    session = FakeSession([[link], [course]])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
     assert response.status_code == 404
 
@@ -298,7 +250,7 @@ def test_shared_course_back_to_draft_not_found():
 def test_shared_valid_link_on_course_turned_public_stays_valid():
     course = _course_row(visibility="public")
     link = _link_row(course.id)
-    session = _FakeSession([[link], [course], *_EMPTY_DETAIL])
+    session = FakeSession([[link], [course], *_EMPTY_DETAIL])
     response = _client(session).get(f"/api/v1/public/shared/{_TOKEN}")
     assert response.status_code == 200
 
@@ -323,7 +275,7 @@ def test_exercise_content_without_expected_answer():
             ],
         },
     )
-    session = _FakeSession([[course], [], [], [block], [], []])
+    session = FakeSession([[course], [], [], [block], [], []])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
 
     assert response.status_code == 200
@@ -346,7 +298,7 @@ def test_full_detail_denormalized_names_and_available_resources():
     course = _course_row(preview_settings={"font": "serif"})
     block = _block_row(course.id)
     resource = _resource_row(course.id)
-    session = _FakeSession(
+    session = FakeSession(
         [[course], ["Mathématiques"], ["6e"], [block], [resource], []]
     )
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
@@ -373,7 +325,7 @@ def test_full_detail_lists_modules_without_code():
     course = _course_row()
     block = _block_row(course.id)
     module = _module_row(course.id)
-    session = _FakeSession([[course], [], [], [block], [], [module]])
+    session = FakeSession([[course], [], [], [block], [], [module]])
     response = _client(session).get(f"/api/v1/public/courses/{course.id}")
 
     assert response.status_code == 200
@@ -391,7 +343,7 @@ def test_public_resource_presign():
     course = _course_row()
     resource = _resource_row(course.id)
     storage = _FakeStorage()
-    session = _FakeSession([[course], [resource]])
+    session = FakeSession([[course], [resource]])
     response = _client(session, storage).get(
         f"/api/v1/public/courses/{course.id}/resources/{resource.id}/download",
         params={"disposition": "inline"},
@@ -408,7 +360,7 @@ def test_pending_resource_presign_conflict():
     # Miroir exact du régime prof : on est déjà autorisé sur le cours, 409.
     course = _course_row()
     resource = _resource_row(course.id, status="pending")
-    session = _FakeSession([[course], [resource]])
+    session = FakeSession([[course], [resource]])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}/resources/{resource.id}/download"
     )
@@ -417,7 +369,7 @@ def test_pending_resource_presign_conflict():
 
 def test_resource_from_other_course_not_found():
     course = _course_row()
-    session = _FakeSession([[course], []])
+    session = FakeSession([[course], []])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}/resources/{uuid.uuid4()}/download"
     )
@@ -430,7 +382,7 @@ def test_resource_from_other_course_not_found():
 def test_public_module_code_served():
     course = _course_row()
     module = _module_row(course.id)
-    session = _FakeSession([[course], [module]])
+    session = FakeSession([[course], [module]])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}/modules/{module.id}"
     )
@@ -447,7 +399,7 @@ def test_public_module_code_served():
 
 def test_module_from_other_course_not_found():
     course = _course_row()
-    session = _FakeSession([[course], []])
+    session = FakeSession([[course], []])
     response = _client(session).get(
         f"/api/v1/public/courses/{course.id}/modules/{uuid.uuid4()}"
     )
@@ -462,7 +414,7 @@ def test_teacher_public_course_catalog():
     c1 = _course_row(owner_id=user.id)
     c2 = _course_row(owner_id=user.id, title="Géométrie", description=None)
     # FIFO : user, cours publics, noms matières, noms niveaux, comptes blocs.
-    session = _FakeSession(
+    session = FakeSession(
         [
             [user],
             [c1, c2],
@@ -491,7 +443,7 @@ def test_catalog_teacher_with_avatar():
         avatar_mime="image/jpeg",
         avatar_status="available",
     )
-    session = _FakeSession([[user], []])
+    session = FakeSession([[user], []])
     storage = _FakeStorage()
     response = _client(session, storage=storage).get(
         f"/api/v1/public/professors/{user.id}/courses"
@@ -507,7 +459,7 @@ def test_catalog_teacher_with_avatar():
 
 def test_catalog_unknown_user_empty_list_without_oracle():
     # Utilisateur inexistant : même forme de réponse (200, liste vide).
-    session = _FakeSession([[], []])
+    session = FakeSession([[], []])
     response = _client(session).get(
         f"/api/v1/public/professors/{uuid.uuid4()}/courses"
     )
@@ -517,7 +469,7 @@ def test_catalog_unknown_user_empty_list_without_oracle():
 
 def test_catalog_teacher_without_public_name_anonymous():
     user = _user_row(public_name=None)
-    session = _FakeSession([[user], []])
+    session = FakeSession([[user], []])
     response = _client(session).get(f"/api/v1/public/professors/{user.id}/courses")
     assert response.status_code == 200
     assert response.json() == {"public_name": None, "avatar_url": None, "courses": []}
@@ -557,7 +509,7 @@ def test_public_subject_tree_without_authorization():
     # la route JWT, mais accessible anonymement (facettes de la recherche).
     root = _subject_tree_row("Mathématiques")
     child = _subject_tree_row("Algèbre", depth=1, parent_id=root.id)
-    session = _FakeSession([[root, child]])
+    session = FakeSession([[root, child]])
     response = _client(session).get("/api/v1/public/subjects/tree")
 
     assert response.status_code == 200
@@ -570,7 +522,7 @@ def test_public_subject_tree_without_authorization():
 def test_public_level_tree_without_authorization():
     root = _level_tree_row("Collège")
     child = _level_tree_row("6e", depth=1, parent_id=root.id)
-    session = _FakeSession([[root, child]])
+    session = FakeSession([[root, child]])
     response = _client(session).get("/api/v1/public/education-levels/tree")
 
     assert response.status_code == 200
