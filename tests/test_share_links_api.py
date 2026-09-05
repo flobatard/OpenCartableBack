@@ -12,12 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert, Update
+from sqlalchemy.sql.dml import Delete, Insert
 
-from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import settings
-from app.core.database import get_db
 from app.main import create_app
+from tests.fakes import FakeSession, make_client
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 _NOW_JSON = "2026-07-07T12:00:00Z"
@@ -45,56 +44,6 @@ def _link_row(**overrides):
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
-
-
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT ; écritures tracées sans consommer."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, Insert) and stmt._returning:
-            return _FakeResult(self._select_results.pop(0))
-        if isinstance(stmt, (Insert, Update, Delete)):
-            return _FakeResult([])
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-
-def _client(session) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: session
-    return TestClient(app)
 
 
 _COURSE_ID = uuid.uuid4()
@@ -131,8 +80,8 @@ def test_auth_required(method, path, body):
 )
 def test_other_users_course_not_found(method, path_suffix, body):
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).request(
+    session = FakeSession([[user], []])
+    response = make_client(session).request(
         method, f"/api/v1/courses/{_COURSE_ID}/share-links{path_suffix}", json=body
     )
 
@@ -148,9 +97,9 @@ def test_link_creation_token_and_expiration():
     user = _user_row()
     course = _course_row()
     # FIFO : cours, puis created_at servi par l'insert RETURNING.
-    session = _FakeSession([[user], [course], [_NOW]])
+    session = FakeSession([[user], [course], [_NOW]])
     before = datetime.now(UTC)
-    response = _client(session).post(
+    response = make_client(session).post(
         f"/api/v1/courses/{course.id}/share-links", json={"label": "6eB 2026"}
     )
     after = datetime.now(UTC)
@@ -182,8 +131,8 @@ def test_link_creation_token_and_expiration():
 def test_link_creation_without_label_and_blank_label():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], [_NOW]])
-    response = _client(session).post(
+    session = FakeSession([[user], [course], [_NOW]])
+    response = make_client(session).post(
         f"/api/v1/courses/{course.id}/share-links", json={"label": "   "}
     )
     assert response.status_code == 201
@@ -193,15 +142,15 @@ def test_link_creation_without_label_and_blank_label():
 def test_two_link_creations_distinct_tokens():
     user = _user_row()
     course = _course_row()
-    session1 = _FakeSession([[user], [course], [_NOW]])
-    session2 = _FakeSession([[_user_row()], [course], [_NOW]])
+    session1 = FakeSession([[user], [course], [_NOW]])
+    session2 = FakeSession([[_user_row()], [course], [_NOW]])
     t1 = (
-        _client(session1)
+        make_client(session1)
         .post(f"/api/v1/courses/{course.id}/share-links", json={})
         .json()["token"]
     )
     t2 = (
-        _client(session2)
+        make_client(session2)
         .post(f"/api/v1/courses/{course.id}/share-links", json={})
         .json()["token"]
     )
@@ -217,8 +166,8 @@ def test_list_includes_revoked_links():
     active = _link_row(course_id=course.id)
     revoked_link = _link_row(course_id=course.id, label=None, revoked=True)
     # FIFO : cours (contrôle de propriété), puis liens (tri côté SQL).
-    session = _FakeSession([[user], [course], [active, revoked_link]])
-    response = _client(session).get(f"/api/v1/courses/{course.id}/share-links")
+    session = FakeSession([[user], [course], [active, revoked_link]])
+    response = make_client(session).get(f"/api/v1/courses/{course.id}/share-links")
 
     assert response.status_code == 200
     body = response.json()
@@ -243,8 +192,8 @@ def test_soft_revocation():
     course = _course_row()
     link = _link_row(course_id=course.id)
     # FIFO : cours, puis lien scopé cours.
-    session = _FakeSession([[user], [course], [link]])
-    response = _client(session).delete(
+    session = FakeSession([[user], [course], [link]])
+    response = make_client(session).delete(
         f"/api/v1/courses/{course.id}/share-links/{link.id}"
     )
 
@@ -260,8 +209,8 @@ def test_revocation_idempotent():
     user = _user_row()
     course = _course_row()
     link = _link_row(course_id=course.id, revoked=True)
-    session = _FakeSession([[user], [course], [link]])
-    response = _client(session).delete(
+    session = FakeSession([[user], [course], [link]])
+    response = make_client(session).delete(
         f"/api/v1/courses/{course.id}/share-links/{link.id}"
     )
     assert response.status_code == 204
@@ -271,8 +220,8 @@ def test_revocation_idempotent():
 def test_revocation_unknown_link_or_other_course():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).delete(
+    session = FakeSession([[user], [course], []])
+    response = make_client(session).delete(
         f"/api/v1/courses/{course.id}/share-links/{uuid.uuid4()}"
     )
 
