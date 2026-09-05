@@ -17,25 +17,25 @@ CORS_ORIGINS: []
 # Postgres — EXTERNE à la stack de preprod (cf. docker-compose.preprod.yml :
 # aucun service `db`). Le mot de passe vit dans le .env du serveur ; un Postgres
 # managé peut aussi être branché d'un bloc via DATABASE_URL dans ce .env.
-POSTGRES_USER: <placeholder_postgres_user>
-POSTGRES_HOST: <placeholder_postgres_host>
+POSTGRES_USER: open_cartable
+POSTGRES_HOST: postgres.mesh.h.fbatard.fr
 POSTGRES_PORT: 5432
-POSTGRES_DB: <placeholder_postgres_db>
+POSTGRES_DB: open_cartable
 # Postgres managé/TLS : décommenter.
 # POSTGRES_SSLMODE: require
 
 # Zitadel de preprod. OIDC_AUDIENCE = l'ID de projet Zitadel (2e entrée du
 # claim `aud`), qui doit rester cohérent avec le clientId gravé côté front dans
 # src/environments/environment.preprod.ts.
-OIDC_ISSUER: https://<placeholder_zitadel_host>
-OIDC_AUDIENCE: "<placeholder_oidc_audience>"
+OIDC_ISSUER:  https://zitadel.home.fbatard.fr
+OIDC_AUDIENCE: "380648758204956674"
 
 # Stockage S3 — bucket privé EXTERNE à la stack. Laisser S3_ENDPOINT_URL vide
 # pour AWS S3, ou renseigner l'endpoint d'un S3-compatible (MinIO...).
 # Les clés (S3_ACCESS_KEY/S3_SECRET_KEY) vont dans le .env du serveur.
 # S3_ENDPOINT_URL: https://<placeholder_s3_endpoint>
 S3_REGION: eu-west-3
-S3_BUCKET: <placeholder_s3_bucket>
+S3_BUCKET: opencartable
 
 # Partage public (J2) — durée de vie des liens de partage élèves (jours).
 SHARE_LINK_TTL_DAYS: 270
@@ -43,9 +43,9 @@ SHARE_LINK_TTL_DAYS: 270
 # Client IA (BYO token) — fallback serveur OPTIONNEL quand l'appelant ne
 # fournit pas sa propre config. AI_API_KEY est un secret → .env du serveur.
 # Laisser commenté = pas de fallback (chaque utilisateur apporte sa clé).
-# AI_PROVIDER: <placeholder_ai_provider>
-# AI_MODEL: <placeholder_ai_model>
-# AI_BASE_URL: <placeholder_ai_base_url>
+AI_PROVIDER: mistral
+AI_MODEL: ministral-14b-latest
+AI_BASE_URL: https://api.mistral.ai/v1
 # Quota d'appels au fallback AI_* par utilisateur et par jour (UTC) — priorité
 # à users.ai_daily_call_quota s'il est renseigné ; 0 = illimité. Défaut : 30.
 # AI_DEFAULT_DAILY_QUOTA: 30
