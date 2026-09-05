@@ -1,6 +1,6 @@
-"""Routes publiques élèves (J2) — AUCUN ``Depends(get_current_user)`` ici.
+"""Routes publiques élèves — AUCUN ``Depends(get_current_user)`` ici.
 
-C'est voulu et c'est le contrat de ce package (motif ``app/health/``) :
+C'est voulu et c'est le contrat de ce package (comme ``/health``) :
 l'autorisation est portée par la visibilité du cours et le token de partage
 (query param ``?token=``), vérifiés par ``app/public/service.py`` à chaque
 requête. Ne jamais ajouter de dépendance JWT sur ces routes — et ne jamais
