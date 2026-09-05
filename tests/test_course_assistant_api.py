@@ -24,18 +24,17 @@ from tests.course_assistant_fakes import (
     RESOURCE_ID,
     STREAM_PATH,
     FakeAssistantAI,
-    FakeSession,
     block_row,
     conversation_row,
     course_row,
     inserted_message_rows,
     make_client,
     message_row,
-    parse_sse,
     resource_row,
     stream_session,
     user_row,
 )
+from tests.fakes import FakeSession, parse_sse
 
 # ---------------------------------------------------------------- auth
 

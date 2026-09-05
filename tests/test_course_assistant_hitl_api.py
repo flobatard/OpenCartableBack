@@ -17,7 +17,6 @@ from tests.course_assistant_fakes import (
     RESOURCE_ID,
     STREAM_PATH,
     FakeAssistantAI,
-    FakeSession,
     block_row,
     conversation_row,
     course_row,
@@ -25,11 +24,11 @@ from tests.course_assistant_fakes import (
     make_client,
     message_row,
     module_row,
-    parse_sse,
     resume_session,
     stream_session,
     user_row,
 )
+from tests.fakes import FakeSession, parse_sse
 
 DECISION_PATH = f"{BASE}/conversations/{CONVERSATION_ID}/proposals/call_p/decision"
 

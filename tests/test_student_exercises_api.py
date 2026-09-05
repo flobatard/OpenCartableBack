@@ -22,12 +22,11 @@ from tests.course_assistant_fakes import (
     NOW,
     USER_ID,
     FakeAssistantAI,
-    FakeSession,
     make_client,
-    parse_sse,
     resource_row,
     user_row,
 )
+from tests.fakes import FakeSession, parse_sse
 
 COURSE_ID = uuid.uuid4()
 BLOCK_ID = uuid.uuid4()

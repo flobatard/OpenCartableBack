@@ -1,12 +1,8 @@
-"""Fakes partagés des tests de l'assistant de cours — aucun réseau, Postgres
-ni S3. Pas un module de tests (pas de préfixe ``test_``) : importé par
-``test_course_assistant_api.py`` (CRUD + flux) et
-``test_course_assistant_hitl_api.py`` (contextes d'édition, interrupt/reprise).
+"""Fakes propres aux tests de l'assistant de cours et du tuteur d'exercice.
 
-Motif ``test_ai_api.py`` : fausse session FIFO (l'ordre des ``execute`` de
-chaque fonction de service est un contrat, documenté dans leurs docstrings),
-:class:`FakeAssistantAI` scripté injecté via ``dependency_overrides[get_ai_client]``,
-SSE lu en corps complet via le TestClient.
+Pas un module de tests (pas de préfixe ``test_``) : lignes de données,
+faux client IA scriptable et files FIFO des flux, au-dessus des fakes
+génériques de :mod:`tests.fakes`.
 
 Ordre FIFO du flux de stream (docstring de ``sse_stream``) : [user] (router),
 [course], [conversation], [messages], [user] (cascade ``effective_config``),
@@ -14,19 +10,14 @@ Ordre FIFO du flux de stream (docstring de ``sse_stream``) : [user] (router),
 la reprise (``sse_resume_stream``) : idem SANS la cascade IA.
 """
 
-import json
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert, Update
+from sqlalchemy.sql.dml import Insert
 
-from app.core.ai import get_ai_client
-from app.core.auth import AuthenticatedUser, get_current_user
-from app.core.database import get_db
-from app.core.storage import get_storage
-from app.main import create_app
+from tests.fakes import FakeSession
+from tests.fakes import make_client as _make_client
 
 NOW = datetime.now(UTC)
 USER_ID = uuid.uuid4()
@@ -145,52 +136,6 @@ def resource_row():
     )
 
 
-class FakeResult:
-    def __init__(self, rows, rowcount=1):
-        self._rows = rows
-        self.rowcount = rowcount
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return list(self._rows)
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        return self._rows[0] if self._rows else None
-
-
-class FakeSession:
-    """FIFO des SELECT ; un Insert porteur de RETURNING consomme aussi la file
-    (motif test_courses_api.py) ; les écritures sont tracées."""
-
-    def __init__(self, select_results=(), upsert_rowcount=1):
-        self._select_results = list(select_results)
-        self.upsert_rowcount = upsert_rowcount
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, Insert):
-            if stmt._returning:
-                return FakeResult(self._select_results.pop(0))
-            return FakeResult([], rowcount=self.upsert_rowcount)
-        if isinstance(stmt, (Delete, Update)):
-            return FakeResult([], rowcount=self.upsert_rowcount)
-        return FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):
-        """Filet best-effort du remboursement — jamais atteint en nominal."""
-
-
 class FakeAssistantAI:
     """Faux AIClient pour stream_agent : validation eager scriptable."""
 
@@ -240,27 +185,10 @@ class FakeAssistantAI:
 
 
 def make_client(session, ai_client=None):
-    """TestClient sur ``create_app()`` avec l'auth, la session, le client IA
-    et le storage remplacés ; retourne ``(client, fake_ai)``."""
-    app = create_app()
+    """:func:`tests.fakes.make_client` avec un faux client IA d'assistant ;
+    retourne ``(client, fake_ai)``."""
     fake_ai = ai_client or FakeAssistantAI()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_ai_client] = lambda: fake_ai
-    app.dependency_overrides[get_storage] = lambda: SimpleNamespace()
-    return TestClient(app), fake_ai
-
-
-def parse_sse(body: str):
-    events = []
-    for block in body.split("\n\n"):
-        if not block.strip():
-            continue
-        lines = dict(line.split(": ", 1) for line in block.splitlines())
-        events.append((lines["event"], json.loads(lines["data"])))
-    return events
+    return _make_client(session, ai_client=fake_ai), fake_ai
 
 
 def inserted_message_rows(session):
