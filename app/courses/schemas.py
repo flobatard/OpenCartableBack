@@ -4,9 +4,10 @@
 ``title``/``description``, communes à tous les types), le service pose un
 ``content`` par défaut conforme au contrat de :mod:`app.models.block`.
 Le contenu s'édite ensuite via ``BlockUpdate.content`` (une forme par type
-de bloc : ``TextContent``, ``ExerciseContent``, ``DocumentContent`` ;
-``module`` n'a pas de forme éditable avant le J4) ; le lien d'un bloc
-``document`` vers sa ressource s'édite via ``BlockUpdate.resource_id``.
+de bloc : ``TextContent``, ``ExerciseContent``, ``DocumentContent`` ; le
+content d'un bloc ``module`` n'est pas éditable, son contenu étant le
+module pointé) ; le lien d'un bloc ``document`` vers sa ressource s'édite
+via ``BlockUpdate.resource_id``, celui d'un bloc ``module`` via ``module_id``.
 """
 
 import uuid
@@ -43,7 +44,7 @@ class CourseRead(BaseModel):
     # Écho brut du JSONB stocké (comme BlockRead.content) : {} tant que non
     # personnalisé — le front y applique alors ses défauts.
     preview_settings: dict[str, Any]
-    # Régime d'accès élève (J2) : public | private | draft.
+    # Régime d'accès élève : public | private | draft.
     visibility: str
     created_at: datetime
     updated_at: datetime
@@ -87,7 +88,7 @@ class PreviewSettings(BaseModel):
 
 
 class VisibilityUpdate(BaseModel):
-    """Changement du régime d'accès élève d'un cours (J2).
+    """Changement du régime d'accès élève d'un cours.
 
     Littéraux = constantes VISIBILITY_* de app/models/course.py. Passer un
     cours en ``draft`` suspend ses liens de partage sans les supprimer
@@ -131,7 +132,7 @@ class ExerciseQuestion(BaseModel):
     statement: str = Field(max_length=20_000)
     type: Literal["free_text"] = "free_text"
     # Corrigé du prof, texte simple (pas de markdown) — jamais servi aux
-    # élèves (le J2 filtrera le content des liens publics).
+    # élèves (le régime public reconstruit le content sans lui).
     expected_answer: str = Field(default="", max_length=20_000)
 
 

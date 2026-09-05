@@ -1,6 +1,6 @@
 """Contexte d'édition d'un bloc exercice (``block_exercise``) — HITL par question.
 
-Décision actée (arbitrage utilisateur) : la proposition est **unitaire**, pas
+La proposition est **unitaire**, pas
 un remplacement de l'exercice entier — quatre tools de proposition, une
 opération par appel, une proposition à la fois (le modèle enchaîne les appels
 après chaque décision) :

@@ -29,9 +29,9 @@ class UserProfileRead(BaseModel):
     is_teacher: bool
     is_student: bool
     school_system: str | None
-    # Nom d'affichage des pages publiques (catalogue, J2) ; None = anonyme.
+    # Nom d'affichage des pages publiques (catalogue) ; None = anonyme.
     public_name: str | None
-    # Opt-in à la recherche publique de profs (J3). Le flag seul ne suffit
+    # Opt-in à la recherche publique de profs. Le flag seul ne suffit
     # pas à remonter (voir app/search/service.py).
     searchable: bool
     # URL présignée inline de l'avatar (TTL court, re-mintée à chaque lecture) ;
@@ -49,7 +49,7 @@ class ProfileUpdate(BaseModel):
     # Optionnel : seule donnée d'identité montrée sur les pages publiques
     # (jamais l'email). Blanc = None (catalogue anonyme).
     public_name: str | None = Field(default=None, max_length=100)
-    # Opt-in recherche publique (J3). Défaut False : le PUT est un
+    # Opt-in recherche publique. Défaut False : le PUT est un
     # remplacement complet — un payload sans le champ « décoche ».
     # Toléré sans public_name : la règle de visibilité (searchable AND
     # public_name AND ≥1 cours public) vit dans le service de recherche.

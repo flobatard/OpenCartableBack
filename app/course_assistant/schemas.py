@@ -2,9 +2,9 @@
 
 Règle d'or (motif ``app/public/schemas.py``) : jamais de ``owner_id`` ni de
 donnée interne dans les réponses. ``ConversationCreate.context`` est un
-``Literal`` restreint aux contextes **livrés** — les quatre le sont désormais
-(``course``, ``block_text``, ``block_exercise``, ``module``) ; la résolution
-d'exercice élève, elle, restera hors persistance. La cohérence contexte ↔
+``Literal`` des quatre contextes (``course``, ``block_text``,
+``block_exercise``, ``module``) ; la résolution d'exercice élève n'est pas
+une conversation (:mod:`app.models.exercise_submission`). La cohérence contexte ↔
 cible est validée deux fois : ici (422 Pydantic) et par le CHECK
 ``ck_ai_conversations_target``.
 """

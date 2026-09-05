@@ -144,8 +144,8 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = ""  # SECRET (.env)
     # TTL des URL présignées (secondes). GET dimensionné pour couvrir la
     # LECTURE d'un PDF embarqué : le viewer natif du navigateur fait des range
-    # requests au fil du scroll, un TTL de 5 min coupait la lecture en 403.
-    # Réutilisé par les routes publiques (fenêtre de fuite 30 min assumée, §7 —
+    # requests au fil du scroll, un TTL court coupe la lecture en 403.
+    # Réutilisé par les routes publiques (fenêtre de fuite 30 min assumée —
     # le contrôle d'accès reste la visibilité/le token, vérifiés à chaque presign).
     S3_PRESIGN_PUT_TTL: int = 900
     S3_PRESIGN_GET_TTL: int = 1800
@@ -154,13 +154,13 @@ class Settings(BaseSettings):
     # Plafond d'un avatar utilisateur (5 Mo) — vérifié à la déclaration ET à la
     # confirmation (HEAD) : une URL présignée PUT ne borne pas la taille.
     AVATAR_MAX_BYTES: int = 5_242_880
-    # Export/import de cours (.zip assemblé/parsé par l'API — exception actée
+    # Export/import de cours (.zip assemblé/parsé par l'API — seule exception
     # à la règle « pas de binaire par le backend », cf. app/course_transfer/) :
     # plafond global d'une archive (500 Mo). Par fichier, S3_MAX_UPLOAD_BYTES
     # s'applique. Le plafond dur du corps HTTP relève du nginx d'infra.
     TRANSFER_MAX_ZIP_BYTES: int = 524_288_000
 
-    # Partage public (J2) — durée de vie des liens de partage élèves.
+    # Partage public — durée de vie des liens de partage élèves.
     # 270 jours ≈ 9 mois : couvre une année scolaire. Les presign GET des
     # routes publiques réutilisent S3_PRESIGN_GET_TTL (même exposition).
     SHARE_LINK_TTL_DAYS: int = 270

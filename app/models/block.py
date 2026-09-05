@@ -16,11 +16,11 @@ schéma est un contrat applicatif, par ``type`` :
   "statement": "md", "type": "free_text", "expected_answer": "texte"}]}`` —
   ``statement`` racine = sujet de l'exercice (markdown, mêmes règles que
   ``text``) ; ``expected_answer`` = corrigé du prof en texte simple,
-  qui ne devra JAMAIS être servi aux élèves (le jalon J2 filtrera ce champ
-  du content exposé par les liens publics). Les ``questions[].id`` sont
-  générés côté service et **stables à vie** : les futures soumissions élèves
-  (jalon J2) référenceront ``(block_id, question_id)``, et la review IA aussi.
-  Ne jamais régénérer ces ids à l'édition.
+  qui n'est JAMAIS servi aux élèves (le régime public reconstruit le content
+  sans lui — ``app/public/service.py``). Les ``questions[].id`` sont générés
+  côté service et **stables à vie** : les tentatives des élèves
+  (``exercise_submissions``) et les propositions de l'assistant référencent
+  ``(block_id, question_id)``. Ne jamais régénérer ces ids à l'édition.
 - ``document`` : ``{"caption": str | null, "display": "inline" |
   "download"}`` — pont vers une ressource de la bibliothèque du cours,
   référencée par la **colonne** ``resource_id`` (seul type de bloc autorisé à
@@ -36,7 +36,7 @@ schéma est un contrat applicatif, par ``type`` :
   supprimer le module supprime les blocs qui le pointent (FK ``CASCADE`` —
   même décision que les documents).
 
-``search_vector`` (jalon J3) : tsvector FTS du bloc, config ``french_unaccent``,
+``search_vector`` : tsvector FTS du bloc, config ``french_unaccent``,
 maintenu exclusivement par trigger PostgreSQL (``trg_blocks_search_vector``,
 fonction ``blocks_tsvector`` partagée avec le backfill de la migration) —
 jamais écrit par l'ORM. Construit **champ par champ** : ``title`` (poids B),
@@ -76,7 +76,7 @@ class Block(Base):
         # Couvre aussi la lecture des blocs d'un cours (pas d'index séparé
         # sur course_id).
         Index("ix_blocks_course_id_position", "course_id", "position"),
-        # Index GIN de la FTS (J3). Créé par la migration J3 ; déclaré ici
+        # Index GIN de la FTS, créé par la migration FTS ; déclaré ici
         # pour que la metadata reflète la base (motif course.py : sinon
         # autogenerate propose un drop_index destructeur).
         Index("ix_blocks_search_vector", "search_vector", postgresql_using="gin"),
@@ -125,7 +125,7 @@ class Block(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-    # FTS (J3) : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
+    # FTS : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
     # (voir docstring du module — expected_answer exclu). deferred : aucun
     # service ne le lit.
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR, deferred=True)

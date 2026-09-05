@@ -70,11 +70,11 @@ class User(Base):
     sub: Mapped[str] = mapped_column(String(255))
     # Snapshot du claim, rafraîchi à chaque lecture du profil si différent.
     email: Mapped[str | None] = mapped_column(String(320))
-    # Nom d'affichage public choisi par l'utilisateur (jalon J2) : seule donnée
+    # Nom d'affichage public choisi par l'utilisateur : seule donnée
     # d'identité exposée sur les pages publiques (catalogue des cours d'un
     # prof). Jamais dérivé de l'IdP, jamais l'email. NULL = catalogue anonyme.
     public_name: Mapped[str | None] = mapped_column(String(100))
-    # Opt-in explicite à la recherche publique de professeurs (jalon J3).
+    # Opt-in explicite à la recherche publique de professeurs.
     # Le flag seul ne suffit jamais : un prof ne remonte dans
     # /public/search/teachers que si searchable AND public_name non NULL
     # AND au moins un cours public (règle portée par app/search/service.py).

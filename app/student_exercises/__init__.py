@@ -1,6 +1,6 @@
-"""Tuteur IA de résolution d'exercice, côté élève (dernière brique du J5).
+"""Tuteur IA de résolution d'exercice, côté élève.
 
-Un élève **authentifié** (le régime anonyme n'a pas d'IA — décision actée)
+Un élève **authentifié** (le régime anonyme n'a pas d'IA)
 soumet, question par question, sa réponse ou un message d'aide ; le tuteur
 évalue la réponse contre le corrigé du professeur, juge l'effort fourni,
 guide en s'appuyant sur le cours **sans jamais donner la réponse**, et ne

@@ -1,4 +1,4 @@
-"""Routes de recherche publique (J3) — AUCUN ``Depends(get_current_user)`` ici.
+"""Routes de recherche publique — AUCUN ``Depends(get_current_user)`` ici.
 
 C'est voulu et c'est le contrat du régime public (motif ``app/public/``) :
 la recherche est anonyme par construction — seuls les cours ``public`` et les

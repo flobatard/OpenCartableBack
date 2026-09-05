@@ -1,6 +1,6 @@
 """Contexte d'édition d'un module interactif (``module``) — HITL par fichier.
 
-Décision actée (arbitrage utilisateur) : la proposition porte sur **UN** des
+La proposition porte sur **UN** des
 trois fichiers du module, jamais sur les trois à la fois — trois tools, une
 opération par appel, une proposition à la fois (le modèle enchaîne les appels
 après chaque décision, en annonçant son plan avant le premier) :

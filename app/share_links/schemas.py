@@ -1,7 +1,7 @@
-"""Schémas des liens de partage élèves d'un cours (J2).
+"""Schémas des liens de partage élèves d'un cours.
 
-``ShareLinkRead`` expose le ``token`` en clair (capability URL, décision
-actée dans :mod:`app.models.share_link`) : c'est le front qui construit
+``ShareLinkRead`` expose le ``token`` en clair (capability URL, cf.
+:mod:`app.models.share_link`) : c'est le front qui construit
 l'URL complète (``{siteUrl}/{lang}/shared/{token}``) — le back ne connaît
 pas l'origine de la SPA.
 """

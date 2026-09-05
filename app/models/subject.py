@@ -61,7 +61,7 @@ class Subject(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # Relations prêtes pour le CRUD J1 ; l'API de lecture charge la table
+    # Relations déclarées pour un futur CRUD ; l'API de lecture charge la table
     # à plat et n'y touche pas (lazy-load async interdit).
     parent: Mapped["Subject | None"] = relationship(
         back_populates="children", remote_side=[id]

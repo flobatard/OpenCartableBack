@@ -1,4 +1,4 @@
-"""Messages d'une conversation de l'assistant IA (jalon J5).
+"""Messages d'une conversation de l'assistant IA.
 
 Trois rôles, miroir du ``ChatMessage`` de :mod:`app.core.ai` (les tours
 ``system`` — le contexte du cours — sont recomposés à chaque appel, jamais

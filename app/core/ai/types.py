@@ -1,7 +1,7 @@
 """Types publics de la brique IA — zéro import langchain.
 
-Ces modèles sont l'interface que les futures features (J5 : RAG, résumés,
-quiz, review de copies) importeront via :mod:`app.core.ai`. Ils ne dépendent
+Ces modèles sont l'interface que les features (assistant, tuteur, et demain
+RAG, résumés, quiz…) importent via :mod:`app.core.ai`. Ils ne dépendent
 d'aucun SDK provider : remplacer LangChain ne les toucherait pas.
 """
 

@@ -2,7 +2,7 @@
 
 Table auto-référencée à deux profondeurs : cycle (0, ex. « Collège ») >
 classe (1, ex. « 6e »). Chaque arbre appartient à un système scolaire
-(``system``, « fr » pour l'instant) : les noms de cycles/classes sont des
+(``system``) : les noms de cycles/classes sont des
 noms propres nationaux, jamais traduits. Le rapprochement entre systèmes
 passe par les pivots internationaux ``cite`` (CITE/ISCED 2011, UNESCO,
 NULL quand le nœud couvre plusieurs niveaux CITE — ex. « Supérieur ») et

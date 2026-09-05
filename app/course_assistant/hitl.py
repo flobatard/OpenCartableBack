@@ -1,4 +1,4 @@
-"""Reprises HITL en attente de décision — registre in-memory (décision actée).
+"""Reprises HITL en attente de décision — registre in-memory.
 
 Le flux HITL d'un contexte d'édition passe par l'**interrupt LangGraph** : quand
 l'agent propose (``agent_interrupt`` dans un tool de proposition —
@@ -16,13 +16,13 @@ décision du professeur.
 La **config est réutilisée telle quelle** à la reprise (même provider garanti —
 les ids de tool calls du thread sont propres au provider — pas de nouvelle
 cascade ni de quota : un tour HITL = un appel compté, quel que soit le nombre
-de reprises ; décision actée).
+de reprises).
 
 Contraintes assumées, cohérentes avec le checkpointer InMemory : **mono-
 processus** (la reprise doit arriver sur le worker qui tient le checkpoint) et
 **perdu au redémarrage** — registre et checkpoints disparaissent ensemble.
-Passage à ``AsyncPostgresSaver`` (reprises durables, multi-nœud) acté pour le
-jour du multi-nœud — suivi dans le TODO.md racine. Une entrée jamais reprise
+Le passage à ``AsyncPostgresSaver`` (reprises durables) attend le multi-nœud
+(TODO.md racine). Une entrée jamais reprise
 expire (:data:`PENDING_TTL_SECONDS`, contrôle paresseux) ; l'appelant purge le
 thread checkpointé correspondant (``AIClient.drop_agent_thread``).
 """

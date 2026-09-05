@@ -1,12 +1,11 @@
 """Tentatives d'un élève sur une question d'exercice, et le retour du tuteur IA
-(dernière brique du J5 côté élève — :mod:`app.student_exercises`).
+(:mod:`app.student_exercises`).
 
 **Une ligne par tour** de l'élève sur une question : soit une **réponse**
 soumise à la correction (``kind = 'answer'``), soit un **message** libre
 adressé au tuteur (``kind = 'message'`` — demande d'aide, question sur le
 cours). Le fil d'une question = ses lignes triées ``created_at, id`` ; c'est
-ce fil que le tuteur relit pour juger l'effort de l'élève (décision actée :
-persistance par tentative, révise le « sans persistance » du cadrage initial).
+ce fil que le tuteur relit pour juger l'effort de l'élève.
 
 La ligne est insérée **avant** l'appel provider (durable même si l'appel
 échoue — ``feedback`` reste NULL) et complétée à la clôture du flux :

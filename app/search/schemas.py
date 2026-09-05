@@ -1,11 +1,11 @@
-"""Schémas de la recherche publique (J3) — lecture seule, sans identité.
+"""Schémas de la recherche publique — lecture seule, sans identité.
 
 Même règle d'or que ``app/public/schemas.py`` : ne JAMAIS exposer une donnée
-réservée au prof. Les cartes de cours réutilisent ``PublicCourseRead`` (contrat
-J2 inchangé, même carte côté front) ; un prof n'expose que ``public_name`` et
+réservée au prof. Les cartes de cours réutilisent ``PublicCourseRead`` (même
+carte côté front) ; un prof n'expose que ``public_name`` et
 ses matières enseignées (noms dénormalisés).
 
-Première enveloppe paginée de l'API (précédent J3) : ``{items, total, limit,
+Enveloppe paginée de référence de l'API : ``{items, total, limit,
 offset}`` — ``total`` est le nombre de résultats toute pagination confondue,
 ``limit``/``offset`` sont l'écho des paramètres effectifs de la requête.
 """
@@ -34,7 +34,7 @@ class PublicTeacherRead(BaseModel):
     # n'en a pas — jamais la clé S3 (règle d'or ci-dessus).
     avatar_url: str | None
     # Matières que le prof déclare enseigner (profil « teaching »),
-    # noms dénormalisés triés — motif J2.
+    # noms dénormalisés triés (comme les cartes de cours).
     subjects: list[str]
     public_course_count: int
 

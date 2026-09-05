@@ -1,4 +1,4 @@
-"""Schémas des routes publiques élèves (J2) — lecture seule, sans identité.
+"""Schémas des routes publiques élèves — lecture seule, sans identité.
 
 Règle d'or : ne JAMAIS exposer ici une donnée réservée au prof. Concrètement :
 - ``PublicQuestionRead`` n'a **pas de champ** ``expected_answer`` — le
@@ -6,10 +6,10 @@ Règle d'or : ne JAMAIS exposer ici une donnée réservée au prof. Concrètemen
   dans le service), pas un ``exclude`` fragile ;
 - pas d'``owner_id``, pas d'email, pas de ``s3_key`` ; la seule donnée
   d'identité publique est ``users.public_name`` (choisie par le prof) ;
-- les matières/niveaux sont dénormalisés en **noms** — contrat J2 conservé :
-  les cartes front n'ont aucune résolution d'arbre à faire (les arbres sont
-  aussi exposés en lecture publique depuis le J3, ``/public/*/tree``, pour
-  les facettes de recherche — la dénormalisation reste la forme des cartes).
+- les matières/niveaux sont dénormalisés en **noms** : les cartes front n'ont
+  aucune résolution d'arbre à faire (les arbres sont aussi exposés en lecture
+  publique, ``/public/*/tree``, pour les facettes de recherche — la
+  dénormalisation reste la forme des cartes).
 """
 
 import uuid

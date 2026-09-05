@@ -1,12 +1,12 @@
-"""Liens de partage publics d'un cours (jalon J2).
+"""Liens de partage publics d'un cours.
 
 Un lien = une *capability URL* : le ``token`` opaque (``secrets.token_urlsafe(32)``,
 256 bits d'entropie, URL-safe) est l'unique credential d'accès en lecture seule
 au cours pour les élèves sans compte (Descriptions.md §5.6). Il est stocké
-**en clair** — décision actée : l'UI prof doit pouvoir recopier l'URL à tout
+**en clair** : l'UI prof doit pouvoir recopier l'URL à tout
 moment, le contenu partagé est volontairement diffusable et 256 bits rendent
-le brute-force en ligne impossible. Durcissement possible plus tard : stocker
-un hash SHA-256 et ne montrer le token qu'à la création.
+le brute-force en ligne impossible (alternative durcie, non retenue : hash
+SHA-256 et token montré à la création seulement).
 
 Un cours peut porter plusieurs liens (un par classe, par exemple), chacun
 révocable individuellement (``revoked``, soft delete — le lien reste listé

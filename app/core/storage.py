@@ -6,7 +6,7 @@ l'IdP dans :mod:`app.core.auth` : changer de backend S3 ne doit toucher qu'ici).
 Le bucket n'est jamais public : tout accès passe par une URL présignée mintée
 par l'API — ``PUT`` pour l'upload direct navigateur→S3 (on ne fait pas transiter
 les binaires par le backend, contrainte Pi), ``GET`` à TTL court pour la lecture.
-**Exception actée** : l'export/import de cours (:mod:`app.course_transfer`) lit
+**Seule exception** : l'export/import de cours (:mod:`app.course_transfer`) lit
 et écrit les binaires via l'API (``read_object_into``/``put_object``), volumes
 bornés par ``TRANSFER_MAX_ZIP_BYTES``.
 
@@ -135,8 +135,8 @@ class Storage:
     async def put_object(self, s3_key: str, fileobj: BinaryIO, content_type: str) -> None:
         """Upload d'un binaire (fileobj seekable) vers le bucket.
 
-        Sert l'import de cours (:mod:`app.course_transfer`) — l'exception
-        actée à la règle « les binaires ne transitent jamais par le backend ».
+        Sert l'import de cours (:mod:`app.course_transfer`) — seule exception à
+        la règle « les binaires ne transitent jamais par le backend ».
         """
         await run_in_threadpool(
             self._client.put_object,

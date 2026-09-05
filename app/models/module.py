@@ -1,9 +1,9 @@
-"""Modules interactifs HTML/CSS/JS d'un cours (jalon J4, anticipé).
+"""Modules interactifs HTML/CSS/JS d'un cours.
 
 Un module = trois morceaux de code (``html``, ``css``, ``js``) écrits par le
-prof dans l'éditeur intégré du front et **stockés en base** (décision actée :
-remplace le bundle .zip sur S3 du cadrage initial — aucun objet S3, aucune
-purge storage aux suppressions). Le code est exécuté côté front dans une
+prof dans l'éditeur intégré du front et **stockés en base** (pas de bundle
+S3 — aucun objet S3, aucune purge storage aux suppressions ; cf.
+docs/decisions.md). Le code est exécuté côté front dans une
 ``<iframe sandbox>`` **sans** ``allow-same-origin`` (origine opaque, composée
 via ``srcdoc``) : il n'a jamais accès aux cookies, au localStorage, aux
 tokens ni au DOM de l'app ; seul un pont ``postMessage`` contrôlé

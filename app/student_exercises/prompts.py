@@ -2,7 +2,7 @@
 
 Distinct des fragments de :mod:`app.course_assistant.prompts` (orientés
 professeur : vouvoiement, tools d'édition) — seule la règle des formules est
-reprise en esprit. Le tuteur **tutoie** l'élève (hypothèse actée).
+reprise en esprit. Le tuteur **tutoie** l'élève.
 """
 
 TUTOR_MISSION = """\

@@ -1,4 +1,4 @@
-"""Conversations de l'assistant IA d'un cours (jalon J5).
+"""Conversations de l'assistant IA d'un cours.
 
 Une conversation rattache un fil de messages (:mod:`app.models.ai_message`) à
 un cours, son propriétaire et un **contexte** d'usage — les flux HITL de
@@ -6,11 +6,13 @@ l'assistant diffèrent par contexte mais partagent ce modèle :
 
 - ``course`` : assistant global du cours (critique, exploration, synthèse) ;
 - ``block_text`` / ``block_exercise`` : aide à l'édition d'un bloc (le bloc
-  visé vit dans ``block_id``) — flux HITL décrits par les descripteurs de
-  :mod:`app.course_assistant.editing` (livrés) ;
-- ``module`` : aide à l'édition d'un module (``module_id``) — à venir.
+  visé vit dans ``block_id``) ;
+- ``module`` : aide à l'édition d'un module (``module_id``).
 
-La résolution d'exercice côté élève (5e contexte du cadrage) n'est **pas une
+Les flux HITL des contextes d'édition sont décrits par les descripteurs de
+:mod:`app.course_assistant.editing`.
+
+La résolution d'exercice côté élève n'est **pas une
 conversation** : elle a sa propre table par tentative et par question
 (:mod:`app.models.exercise_submission`, tuteur de :mod:`app.student_exercises`)
 — elle n'apparaît donc pas dans le CHECK.

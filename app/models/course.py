@@ -8,7 +8,7 @@ et viser plusieurs classes. Son contenu vit dans la table ``blocks``
 (cf. :mod:`app.models.block`), ses fichiers S3 dans ``resources``
 (cf. :mod:`app.models.resource`).
 
-La ``visibility`` (jalon J2) pilote le régime d'accès élève (routes publiques
+La ``visibility`` pilote le régime d'accès élève (routes publiques
 ``app/public/``, sans JWT) : ``public`` = accessible par URL directe et listé
 dans le catalogue public du prof ; ``private`` = accessible uniquement via un
 lien de partage valide (cf. :mod:`app.models.share_link`) ; ``draft``
@@ -16,7 +16,7 @@ lien de partage valide (cf. :mod:`app.models.share_link`) ; ``draft``
 liens sont suspendus, pas supprimés). Côté prof, la visibilité ne change
 jamais rien : ses routes restent scopées ``owner_id``.
 
-``search_vector`` (jalon J3) : tsvector de la recherche plein texte,
+``search_vector`` : tsvector de la recherche plein texte,
 title (poids A) + description (poids B), config ``french_unaccent``.
 Maintenu exclusivement par trigger PostgreSQL (``trg_courses_search_vector``,
 fonction ``courses_tsvector`` partagée avec le backfill de la migration) —
@@ -57,7 +57,7 @@ class Course(Base):
             "visibility IN ('public', 'private', 'draft')",
             name="ck_courses_visibility",
         ),
-        # Index GIN de la FTS (J3). Créé par la migration J3 ; déclaré ici
+        # Index GIN de la FTS, créé par la migration FTS ; déclaré ici
         # pour que la metadata reflète la base — sans cette ligne, chaque
         # autogenerate propose un drop_index destructeur (il ne voit que
         # modèles vs base, jamais les migrations).
@@ -93,7 +93,7 @@ class Course(Base):
     visibility: Mapped[str] = mapped_column(
         String(10), default=VISIBILITY_DRAFT, server_default=text("'draft'")
     )
-    # FTS (J3) : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
+    # FTS : maintenu par trigger PostgreSQL, JAMAIS écrit par l'ORM
     # (voir docstring du module). deferred : aucun service ne le lit, inutile
     # de charger le vecteur à chaque select d'entité (contrainte Pi).
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR, deferred=True)

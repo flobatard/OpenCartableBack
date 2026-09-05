@@ -16,7 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import settings
 
-# Types de ressource ouverts au MVP (``module`` = sandbox HTML/JS, jalon J4).
+# Types de ressource. Les modules interactifs ne sont pas des ressources :
+# leur code vit en base (table ``modules``).
 ResourceType = Literal["document", "image", "audio", "video"]
 
 
