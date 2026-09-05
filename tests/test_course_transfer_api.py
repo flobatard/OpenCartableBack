@@ -16,14 +16,12 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert, Update
+from sqlalchemy.sql.dml import Insert
 
-from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import settings
-from app.core.database import get_db
-from app.core.storage import get_storage
 from app.course_transfer.archive import rewrite_refs
 from app.main import create_app
+from tests.fakes import FakeSession, FakeStorage, inserts, make_client
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 
@@ -95,52 +93,7 @@ def _module_row(**overrides):
     return SimpleNamespace(**defaults)
 
 
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT ; écritures tracées sans consommer."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-        self.rollbacks = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, Insert) and stmt._returning:
-            return _FakeResult(self._select_results.pop(0))
-        if isinstance(stmt, (Insert, Update, Delete)):
-            return _FakeResult([])
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):
-        self.rollbacks += 1
-
-
-class _FakeStorage:
+class _FakeStorage(FakeStorage):
     """Faux S3 : lit/écrit des contenus déterministes, trace tout.
 
     ``session`` optionnelle : ``put_object`` mémorise le compteur de commits
@@ -164,27 +117,6 @@ class _FakeStorage:
             raise RuntimeError("S3 en panne")
         commits = self._session.commits if self._session is not None else None
         self.put_objects.append((s3_key, content_type, fileobj.read(), commits))
-
-    async def delete_many(self, s3_keys):
-        self.deleted.extend(s3_keys)
-
-
-def _client(session, storage=None) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
-    return TestClient(app)
-
-
-def _inserts(session, table_name):
-    return [
-        (stmt, params)
-        for stmt, params in session.executed
-        if isinstance(stmt, Insert) and stmt.table.name == table_name
-    ]
 
 
 def _manifest(**overrides):
@@ -288,7 +220,7 @@ def test_export_nominal():
         ),
         _block_row(position=3, type="module", content={}, module_id=module.id),
     ]
-    session = _FakeSession(
+    session = FakeSession(
         [
             [user],
             [course],
@@ -300,7 +232,7 @@ def test_export_nominal():
         ]
     )
     storage = _FakeStorage()
-    response = _client(session, storage).get(f"/api/v1/courses/{course.id}/export")
+    response = make_client(session, storage).get(f"/api/v1/courses/{course.id}/export")
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
@@ -360,16 +292,16 @@ def test_export_nominal():
 
 def test_export_foreign_course_404():
     user = _user_row()
-    session = _FakeSession([[user], []])  # select cours scopé owner → vide
-    response = _client(session).get(f"/api/v1/courses/{uuid.uuid4()}/export")
+    session = FakeSession([[user], []])  # select cours scopé owner → vide
+    response = make_client(session).get(f"/api/v1/courses/{uuid.uuid4()}/export")
     assert response.status_code == 404
 
 
 def test_export_empty_course():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], [], [], [], [], []])
-    response = _client(session).get(f"/api/v1/courses/{course.id}/export")
+    session = FakeSession([[user], [course], [], [], [], [], []])
+    response = make_client(session).get(f"/api/v1/courses/{course.id}/export")
 
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
@@ -387,8 +319,8 @@ def test_export_detaches_document_block_of_unexported_resource():
     course = _course_row()
     block = _block_row(type="document", content={"caption": None, "display": "inline"},
                        resource_id=uuid.uuid4())
-    session = _FakeSession([[user], [course], [], [], [block], [], []])
-    response = _client(session).get(f"/api/v1/courses/{course.id}/export")
+    session = FakeSession([[user], [course], [], [], [block], [], []])
+    response = make_client(session).get(f"/api/v1/courses/{course.id}/export")
 
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
@@ -459,9 +391,9 @@ def test_import_nominal():
     user = _user_row()
     subject_id = uuid.uuid4()
     level_id = uuid.uuid4()
-    session = _FakeSession([[user], [subject_id], [level_id], [(_NOW, _NOW)]])
+    session = FakeSession([[user], [subject_id], [level_id], [(_NOW, _NOW)]])
     storage = _FakeStorage(session=session)
-    response = _post_import(_client(session, storage), content)
+    response = _post_import(make_client(session, storage), content)
 
     assert response.status_code == 201
     body = response.json()
@@ -473,17 +405,17 @@ def test_import_nominal():
     assert body["education_level_ids"] == [str(level_id)]
 
     # Classement remappé par code.
-    [(_, subject_m2m)] = _inserts(session, "course_subjects")
+    [(_, subject_m2m)] = inserts(session, "course_subjects")
     assert subject_m2m == [{"course_id": uuid.UUID(body["id"]), "subject_id": subject_id}]
-    [(_, level_m2m)] = _inserts(session, "course_education_levels")
+    [(_, level_m2m)] = inserts(session, "course_education_levels")
     assert level_m2m[0]["education_level_id"] == level_id
 
     # Modules et ressources : nouveaux uuid, statut available, clé S3 neuve.
-    [(_, modules)] = _inserts(session, "modules")
+    [(_, modules)] = inserts(session, "modules")
     assert modules[0]["title"] == "Grapheur"
     new_module_id = modules[0]["id"]
     assert str(new_module_id) != old_module_id
-    [(_, resources)] = _inserts(session, "resources")
+    [(_, resources)] = inserts(session, "resources")
     new_resource_id = resources[0]["id"]
     assert str(new_resource_id) != old_resource_id
     assert resources[0]["status"] == "available"
@@ -494,7 +426,7 @@ def test_import_nominal():
     # Blocs : positions réécrites, colonnes remappées, refs oc-* réécrites
     # dans markdown/statement/questions[].statement — expected_answer intacte,
     # questions[].id verbatim.
-    [(_, blocks)] = _inserts(session, "blocks")
+    [(_, blocks)] = inserts(session, "blocks")
     assert [b["position"] for b in blocks] == [0, 1, 2, 3]
     assert blocks[0]["content"]["markdown"] == f"![i](oc-resource:{new_resource_id})"
     exercise = blocks[1]["content"]
@@ -527,13 +459,13 @@ def test_import_unknown_codes_ignored():
         },
     )
     user = _user_row()
-    session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
-    response = _post_import(_client(session), _zip_bytes(manifest))
+    session = FakeSession([[user], [], [], [(_NOW, _NOW)]])
+    response = _post_import(make_client(session), _zip_bytes(manifest))
 
     assert response.status_code == 201
     assert response.json()["subject_ids"] == []
-    assert _inserts(session, "course_subjects") == []
-    assert _inserts(session, "course_education_levels") == []
+    assert inserts(session, "course_subjects") == []
+    assert inserts(session, "course_education_levels") == []
 
 
 def test_import_unknown_ref_left_verbatim():
@@ -542,11 +474,11 @@ def test_import_unknown_ref_left_verbatim():
         blocks=[{"position": 0, "type": "text", "content": {"markdown": ref}}]
     )
     user = _user_row()
-    session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
-    response = _post_import(_client(session), _zip_bytes(manifest))
+    session = FakeSession([[user], [], [], [(_NOW, _NOW)]])
+    response = _post_import(make_client(session), _zip_bytes(manifest))
 
     assert response.status_code == 201
-    [(_, blocks)] = _inserts(session, "blocks")
+    [(_, blocks)] = inserts(session, "blocks")
     assert blocks[0]["content"]["markdown"] == ref
 
 
@@ -561,11 +493,11 @@ def test_import_question_without_id_receives_one():
         ]
     )
     user = _user_row()
-    session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
-    response = _post_import(_client(session), _zip_bytes(manifest))
+    session = FakeSession([[user], [], [], [(_NOW, _NOW)]])
+    response = _post_import(make_client(session), _zip_bytes(manifest))
 
     assert response.status_code == 201
-    [(_, blocks)] = _inserts(session, "blocks")
+    [(_, blocks)] = inserts(session, "blocks")
     question = blocks[0]["content"]["questions"][0]
     assert uuid.UUID(question["id"])  # id frais, jamais None en base
     assert question["type"] == "free_text"
@@ -631,16 +563,16 @@ def test_import_v1_archive_normalized_to_english():
     content = _zip_bytes(manifest_v1, binaries=[(old_resource_id, b"12345")])
 
     user = _user_row()
-    session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
+    session = FakeSession([[user], [], [], [(_NOW, _NOW)]])
     storage = _FakeStorage(session=session)
-    response = _post_import(_client(session, storage), content)
+    response = _post_import(make_client(session, storage), content)
 
     assert response.status_code == 201
     body = response.json()
     assert body["title"] == "Cours hérité"
     assert body["block_count"] == 4
 
-    [(_, blocks)] = _inserts(session, "blocks")
+    [(_, blocks)] = inserts(session, "blocks")
     assert [b["type"] for b in blocks] == ["text", "exercise", "document", "module"]
     assert blocks[1]["title"] == "Exo"
     exercise = blocks[1]["content"]
@@ -653,10 +585,10 @@ def test_import_v1_archive_normalized_to_english():
     assert question["expected_answer"] == "Par récurrence."
     assert blocks[2]["content"] == {"caption": "Schéma", "display": "download"}
 
-    [(_, resources)] = _inserts(session, "resources")
+    [(_, resources)] = inserts(session, "resources")
     assert resources[0]["original_name"] == "img.png"
     assert resources[0]["size"] == 5
-    [(_, modules)] = _inserts(session, "modules")
+    [(_, modules)] = inserts(session, "modules")
     assert modules[0]["title"] == "Grapheur"
 
 
@@ -758,23 +690,23 @@ def test_import_invalid_archive_422(name, content):
             zf.writestr("autre.json", b"{}")
         content = buf.getvalue()
     user = _user_row()
-    session = _FakeSession([[user]])
-    response = _post_import(_client(session), content)
+    session = FakeSession([[user]])
+    response = _post_import(make_client(session), content)
 
     assert response.status_code == 422
     # Rien d'écrit : la validation précède tout execute du service.
-    assert _inserts(session, "courses") == []
+    assert inserts(session, "courses") == []
     assert session.commits == 1  # get_or_create_by_sub uniquement
 
 
 def test_import_archive_too_large_413(monkeypatch):
     monkeypatch.setattr(settings, "TRANSFER_MAX_ZIP_BYTES", 10)
     user = _user_row()
-    session = _FakeSession([[user]])
-    response = _post_import(_client(session), _zip_bytes(_manifest()))
+    session = FakeSession([[user]])
+    response = _post_import(make_client(session), _zip_bytes(_manifest()))
 
     assert response.status_code == 413
-    assert _inserts(session, "courses") == []
+    assert inserts(session, "courses") == []
 
 
 def test_import_s3_failure_503():
@@ -789,10 +721,10 @@ def test_import_s3_failure_503():
     )
     content = _zip_bytes(manifest, binaries=[(rid_a, b"aaa"), (rid_b, b"bbb")])
     user = _user_row()
-    session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
+    session = FakeSession([[user], [], [], [(_NOW, _NOW)]])
     # Le premier put passe, le second lève.
     storage = _FakeStorage(session=session, put_raises_from=1)
-    response = _post_import(_client(session, storage), content)
+    response = _post_import(make_client(session, storage), content)
 
     assert response.status_code == 503
     assert session.rollbacks == 1
