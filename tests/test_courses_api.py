@@ -73,6 +73,7 @@ _PREVIEW = {
         ("GET", "/api/v1/courses", None),
         ("POST", "/api/v1/courses", {"title": "x"}),
         ("GET", f"/api/v1/courses/{_COURSE_ID}", None),
+        ("PATCH", f"/api/v1/courses/{_COURSE_ID}", {"title": "x"}),
         ("PUT", f"/api/v1/courses/{_COURSE_ID}/preview", _PREVIEW),
         ("POST", f"/api/v1/courses/{_COURSE_ID}/blocks", {"type": "text"}),
         ("PUT", f"/api/v1/courses/{_COURSE_ID}/blocks/order", {"block_ids": []}),
@@ -1075,6 +1076,183 @@ def test_update_preview_settings():
     assert updates(session) == []  # pas d'Update Core
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
+
+
+def test_update_course_title():
+    user = _user_row()
+    course = _course_row(description="Inchangée")
+    session = FakeSession([[user], [course]])  # auth, puis get_owned_course
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}", json={"title": "  Suites et limites  "}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(course.id)
+    assert body["title"] == "Suites et limites"  # titre trimé
+    assert body["description"] == "Inchangée"  # champ absent du payload : intact
+    assert course.title == "Suites et limites"  # mutation d'attribut ORM
+    assert course.description == "Inchangée"
+    assert updates(session) == []  # pas d'Update Core
+    assert course.updated_at != _NOW  # le cours remonte dans la liste
+    assert session.commits >= 1
+
+
+def test_update_course_replaces_the_classification():
+    user = _user_row()
+    course = _course_row()
+    s1, s2, l1 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    # auth, cours, lookup matières, lookup niveaux (les delete/insert ne consomment pas).
+    session = FakeSession([[user], [course], [s1, s2], [l1]])
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}",
+        json={
+            "subject_ids": [str(s1), str(s2), str(s1)],  # doublon dédoublonné
+            "education_level_ids": [str(l1)],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["subject_ids"] == [str(s1), str(s2)]
+    assert body["education_level_ids"] == [str(l1)]
+    assert body["title"] == "Suites numériques"  # champs éditoriaux intacts
+    # Remplacement : un delete par table de liaison, puis les insert.
+    assert [stmt.table.name for stmt, _ in deletes(session)] == [
+        "course_subjects",
+        "course_education_levels",
+    ]
+    [(_, subject_params)] = inserts(session, "course_subjects")
+    assert [p["subject_id"] for p in subject_params] == [s1, s2]
+    [(_, level_params)] = inserts(session, "course_education_levels")
+    assert [p["education_level_id"] for p in level_params] == [l1]
+    assert course.updated_at != _NOW
+    assert session.commits >= 1
+
+
+def test_update_course_empty_lists_clear_the_classification():
+    user = _user_row()
+    course = _course_row()
+    session = FakeSession([[user], [course], [], []])  # lookups sur listes vides
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}",
+        json={"subject_ids": [], "education_level_ids": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["subject_ids"] == []
+    assert len(deletes(session)) == 2  # les deux tables de liaison sont vidées
+    # Aucun executemany sur liste vide (erreur SQLAlchemy sinon).
+    assert inserts(session, "course_subjects") == []
+    assert inserts(session, "course_education_levels") == []
+
+
+def test_update_course_without_classification_keys_leaves_it_untouched():
+    user = _user_row()
+    course = _course_row()
+    session = FakeSession([[user], [course]])  # aucun lookup de taxonomie
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}", json={"title": "Renommé"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # null = « pas touché » (jamais [], qui voudrait dire « vidé »).
+    assert body["subject_ids"] is None
+    assert body["education_level_ids"] is None
+    assert deletes(session) == []
+    assert inserts(session, "course_subjects") == []
+
+
+def test_update_course_unknown_subject_writes_nothing():
+    user = _user_row()
+    course = _course_row()
+    session = FakeSession([[user], [course], []])  # lookup matières vide
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}",
+        json={"title": "Renommé", "subject_ids": [str(uuid.uuid4())]},
+    )
+
+    assert response.status_code == 422
+    assert "Matières inconnues" in response.json()["detail"]
+    # Les lookups passent avant toute écriture : le cours est intact.
+    assert deletes(session) == []
+    assert course.title == "Suites numériques"
+    assert course.updated_at == _NOW  # pas même le bump de updated_at
+
+
+def test_update_course_unknown_level_writes_nothing():
+    user = _user_row()
+    course = _course_row()
+    session = FakeSession([[user], [course], []])  # lookup niveaux vide
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}", json={"education_level_ids": [str(uuid.uuid4())]}
+    )
+
+    assert response.status_code == 422
+    assert "Niveaux d'étude inconnus" in response.json()["detail"]
+    assert deletes(session) == []
+    assert course.updated_at == _NOW
+
+
+def test_update_course_description_only_keeps_title():
+    user = _user_row()
+    course = _course_row(description="Ancienne")
+    session = FakeSession([[user], [course]])
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}", json={"description": "Nouvelle"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Suites numériques"  # titre non touché
+    assert course.title == "Suites numériques"
+    assert course.description == "Nouvelle"
+
+
+def test_update_course_clears_description_with_explicit_null():
+    user = _user_row()
+    course = _course_row(description="À effacer")
+    session = FakeSession([[user], [course]])
+    response = make_client(session).patch(
+        f"/api/v1/courses/{course.id}", json={"description": None}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["description"] is None
+    assert course.description is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},  # aucun champ à modifier
+        {"title": "   "},  # titre blanc
+        {"title": None},  # titre non effaçable (colonne NOT NULL)
+        {"title": "x" * 301},  # trop long
+        {"description": "d" * 2001},  # trop longue
+        {"title": "x", "visibility": "public"},  # clé inconnue (extra=forbid)
+        {"subject_ids": None},  # null refusé : [] est la façon de tout retirer
+        {"education_level_ids": None},
+        {"subject_ids": ["pas-un-uuid"]},
+    ],
+)
+def test_update_course_invalid_payload_without_db_access(payload):
+    session = FakeSession()
+    response = make_client(session).patch(f"/api/v1/courses/{uuid.uuid4()}", json=payload)
+
+    assert response.status_code == 422
+    assert session.executed == []
+
+
+def test_update_course_not_owned():
+    user = _user_row()
+    session = FakeSession([[user], []])  # select cours scopé owner → vide
+    response = make_client(session).patch(
+        f"/api/v1/courses/{uuid.uuid4()}", json={"title": "Renommé"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Cours introuvable"
 
 
 def test_update_visibility():

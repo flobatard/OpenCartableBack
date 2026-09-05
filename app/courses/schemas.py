@@ -65,6 +65,70 @@ class CourseDetailRead(CourseRead):
     blocks: list[BlockRead]
 
 
+class CourseUpdate(BaseModel):
+    """Édition partielle d'un cours : titre, description, classement.
+
+    Seuls les champs effectivement fournis sont modifiés
+    (``model_fields_set``, comme ``BlockUpdate``) : une ``description``
+    explicitement à ``null`` l'efface, un champ absent la laisse inchangée. Le
+    titre, lui, ne s'efface jamais (colonne NOT NULL) — ``null`` explicite ou
+    titre blanc → 422. ``subject_ids``/``education_level_ids`` ont une
+    sémantique de **remplacement** (comme les questions d'un exercice) : la
+    liste fournie devient le classement du cours, ``[]`` le vide, ``null`` est
+    refusé (c'est ``[]`` qui efface). Un id inconnu → 422, comme à la création.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=300)
+    description: str | None = Field(default=None, max_length=2000)
+    subject_ids: list[uuid.UUID] | None = None
+    education_level_ids: list[uuid.UUID] | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, v: str | None) -> str | None:
+        if v is None:
+            return None  # rejeté par _non_nullable_fields (titre non effaçable)
+        v = v.strip()
+        if not v:
+            raise ValueError("Le titre ne peut pas être vide")
+        return v
+
+    @model_validator(mode="after")
+    def _non_nullable_fields(self) -> "CourseUpdate":
+        fields = self.model_fields_set
+        if not fields:
+            raise ValueError("Fournir au moins un champ à modifier")
+        if "title" in fields and self.title is None:
+            raise ValueError("Le titre ne peut pas être vide")
+        if "subject_ids" in fields and self.subject_ids is None:
+            raise ValueError("subject_ids attend une liste (vide pour tout retirer)")
+        if "education_level_ids" in fields and self.education_level_ids is None:
+            raise ValueError("education_level_ids attend une liste (vide pour tout retirer)")
+        return self
+
+
+class CourseMetaRead(BaseModel):
+    """Écho des champs éditoriaux d'un cours après un ``PATCH /courses/{id}``.
+
+    Volontairement plus étroit que ``CourseRead`` : le nombre de blocs et les
+    réglages n'ont pas bougé, les servir coûterait des requêtes de plus. Le
+    front y patche ses signaux ``list``/``detail`` (``updated_at`` inclus : le
+    cours vient de remonter en tête de liste). ``subject_ids`` et
+    ``education_level_ids`` valent ``null`` quand le PATCH ne les portait pas
+    (classement inchangé, non relu en base) — jamais ``[]``, qui signifie
+    « classement vidé ».
+    """
+
+    id: uuid.UUID
+    title: str
+    description: str | None
+    subject_ids: list[uuid.UUID] | None
+    education_level_ids: list[uuid.UUID] | None
+    updated_at: datetime
+
+
 class PreviewSettings(BaseModel):
     """Réglages d'affichage de la preview d'un cours (typographie / mise en page).
 

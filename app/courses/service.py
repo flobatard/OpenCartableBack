@@ -1,4 +1,4 @@
-"""Cours du prof : liste, création, détail, suppression et réglages.
+"""Cours du prof : liste, création, détail, édition, suppression et réglages.
 
 La structure des blocs vit dans :mod:`app.courses.blocks`, les lectures
 partagées avec d'autres paquets dans :mod:`app.courses.queries`. Tout est
@@ -25,7 +25,9 @@ from app.courses.queries import (
 from app.courses.schemas import (
     CourseCreate,
     CourseDetailRead,
+    CourseMetaRead,
     CourseRead,
+    CourseUpdate,
     PreviewSettings,
     VisibilityUpdate,
 )
@@ -45,6 +47,28 @@ from app.models.user import User
 def _dedupe(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
     """Dédoublonne en préservant l'ordre de première apparition."""
     return list(dict.fromkeys(ids))
+
+
+async def _check_subjects(db: AsyncSession, subject_ids: list[uuid.UUID]) -> None:
+    """Un ``execute`` : refuse (422) les matières absentes de la taxonomie."""
+    known = set(
+        (await db.execute(select(Subject.id).where(Subject.id.in_(subject_ids)))).scalars().all()
+    )
+    unknown = set(subject_ids) - known
+    if unknown:
+        raise invalid(f"Matières inconnues : {sorted(map(str, unknown))}")
+
+
+async def _check_education_levels(db: AsyncSession, level_ids: list[uuid.UUID]) -> None:
+    """Un ``execute`` : refuse (422) les niveaux absents de la taxonomie."""
+    known = set(
+        (await db.execute(select(EducationLevel.id).where(EducationLevel.id.in_(level_ids))))
+        .scalars()
+        .all()
+    )
+    unknown = set(level_ids) - known
+    if unknown:
+        raise invalid(f"Niveaux d'étude inconnus : {sorted(map(str, unknown))}")
 
 
 def _course_read(
@@ -105,25 +129,8 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
     subject_ids = _dedupe(payload.subject_ids)
     education_level_ids = _dedupe(payload.education_level_ids)
 
-    known_subjects = set(
-        (await db.execute(select(Subject.id).where(Subject.id.in_(subject_ids)))).scalars().all()
-    )
-    unknown_subjects = set(subject_ids) - known_subjects
-    if unknown_subjects:
-        raise invalid(f"Matières inconnues : {sorted(map(str, unknown_subjects))}")
-
-    known_levels = set(
-        (
-            await db.execute(
-                select(EducationLevel.id).where(EducationLevel.id.in_(education_level_ids))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    unknown_levels = set(education_level_ids) - known_levels
-    if unknown_levels:
-        raise invalid(f"Niveaux d'étude inconnus : {sorted(map(str, unknown_levels))}")
+    await _check_subjects(db, subject_ids)
+    await _check_education_levels(db, education_level_ids)
 
     course_id = uuid.uuid4()
     created_at, updated_at = (
@@ -209,6 +216,74 @@ async def get_course_detail(
     )
     base = _course_read(course, subject_ids, education_level_ids, len(blocks))
     return CourseDetailRead(**base.model_dump(), blocks=[block_read(b) for b in blocks])
+
+
+async def update_course(
+    db: AsyncSession, user: User, course_id: uuid.UUID, payload: CourseUpdate
+) -> CourseMetaRead:
+    """Édite un cours du prof — titre, description, classement (404 si autrui).
+
+    PATCH partiel : seuls les champs présents dans le payload sont appliqués
+    (``model_fields_set``) — une ``description`` à ``null`` l'efface, un champ
+    absent ne touche à rien. Ordre des execute : 1) cours (contrôle de
+    propriété) ; puis, seulement pour les listes fournies : 2) lookup matières,
+    3) lookup niveaux — les DELETE/INSERT des tables de liaison ne consomment
+    pas la file. Les lookups passent AVANT toute écriture : un id inconnu est
+    un 422 qui n'a rien réécrit.
+
+    Le classement se remplace en entier (delete puis insert du cours) : c'est
+    la sémantique du payload, et les tables de liaison n'ont pas de
+    qualificatif à préserver. Le cours est « touché » (updated_at) pour
+    remonter dans la liste, et la réponse est construite AVANT le commit.
+    ``search_vector`` se réindexe seul (trigger côté base), rien à écrire ici.
+    """
+    course = await get_owned_course(db, user, course_id)
+    fields = payload.model_fields_set
+
+    subject_ids = _dedupe(payload.subject_ids or []) if "subject_ids" in fields else None
+    level_ids = (
+        _dedupe(payload.education_level_ids or [])
+        if "education_level_ids" in fields
+        else None
+    )
+    if subject_ids is not None:
+        await _check_subjects(db, subject_ids)
+    if level_ids is not None:
+        await _check_education_levels(db, level_ids)
+
+    if "title" in fields:
+        course.title = payload.title
+    if "description" in fields:
+        course.description = payload.description
+    if subject_ids is not None:
+        await db.execute(delete(course_subjects).where(course_subjects.c.course_id == course.id))
+        if subject_ids:
+            await db.execute(
+                course_subjects.insert(),
+                [{"course_id": course.id, "subject_id": sid} for sid in subject_ids],
+            )
+    if level_ids is not None:
+        await db.execute(
+            delete(course_education_levels).where(
+                course_education_levels.c.course_id == course.id
+            )
+        )
+        if level_ids:
+            await db.execute(
+                course_education_levels.insert(),
+                [{"course_id": course.id, "education_level_id": lid} for lid in level_ids],
+            )
+    touch(course)
+    updated = CourseMetaRead(
+        id=course.id,
+        title=course.title,
+        description=course.description,
+        subject_ids=subject_ids,
+        education_level_ids=level_ids,
+        updated_at=course.updated_at,
+    )
+    await db.commit()
+    return updated
 
 
 async def delete_course(

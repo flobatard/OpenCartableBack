@@ -14,7 +14,9 @@ from app.courses.schemas import (
     BlockUpdate,
     CourseCreate,
     CourseDetailRead,
+    CourseMetaRead,
     CourseRead,
+    CourseUpdate,
     PreviewSettings,
     VisibilityUpdate,
 )
@@ -55,6 +57,18 @@ async def read_course(
     """Détail d'un cours avec ses blocs ordonnés."""
     user = await users_service.get_or_create_by_sub(db, auth)
     return await service.get_course_detail(db, user, course_id)
+
+
+@router.patch("/courses/{course_id}", response_model=CourseMetaRead)
+async def update_course(
+    course_id: uuid.UUID,
+    payload: CourseUpdate,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CourseMetaRead:
+    """Renomme un cours et/ou réécrit sa description (PATCH partiel)."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.update_course(db, user, course_id, payload)
 
 
 @router.put("/courses/{course_id}/preview", response_model=PreviewSettings)
