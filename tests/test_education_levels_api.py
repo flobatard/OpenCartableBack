@@ -5,10 +5,8 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from app.core.auth import AuthenticatedUser, get_current_user
-from app.core.database import get_db
 from app.education_levels.service import build_tree
-from app.main import create_app
+from tests.fakes import FakeSession, make_client
 
 
 def _row(name, depth, parent_id=None, position=0, cite=None, age_min=None, age_max=None):
@@ -26,32 +24,8 @@ def _row(name, depth, parent_id=None, position=0, cite=None, age_min=None, age_m
     )
 
 
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-
-class _FakeSession:
-    def __init__(self, rows):
-        self._rows = rows
-
-    async def execute(self, stmt):
-        return _FakeResult(self._rows)
-
-
 def _client_with_overrides(rows) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: _FakeSession(rows)
-    return TestClient(app)
+    return make_client(FakeSession([rows]))
 
 
 def test_tree_requires_auth(client: TestClient):
