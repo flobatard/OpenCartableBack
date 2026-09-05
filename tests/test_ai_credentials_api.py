@@ -287,7 +287,7 @@ def test_connection_with_explicit_key():
 
 def test_connection_uses_stored_key_when_omitted():
     ai = _FakeAIClient()
-    response = make_client(FakeSession([[_user_with_key()]]), ai).post(
+    response = make_client(FakeSession([[_user_with_key()]]), ai_client=ai).post(
         TEST_URL, json={"provider": "anthropic", "model": "claude-opus-5"}
     )
     assert response.status_code == 200
@@ -297,7 +297,7 @@ def test_connection_uses_stored_key_when_omitted():
 
 def test_connection_ollama_without_key():
     ai = _FakeAIClient()
-    response = make_client(FakeSession([[_user_row()]]), ai).post(
+    response = make_client(FakeSession([[_user_row()]]), ai_client=ai).post(
         TEST_URL, json={"provider": "ollama", "model": "llama3.2", "base_url": "http://pi:11434"}
     )
     assert response.status_code == 200
@@ -307,7 +307,7 @@ def test_connection_ollama_without_key():
 
 def test_connection_requires_key_when_none_stored():
     ai = _FakeAIClient()
-    response = make_client(FakeSession([[_user_row()]]), ai).post(
+    response = make_client(FakeSession([[_user_row()]]), ai_client=ai).post(
         TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5"}
     )
     assert response.status_code == 422
@@ -319,7 +319,7 @@ def test_connection_unreadable_credential():
     user = _user_with_key()
     user.ai_encryption_salt = crypto.new_salt()  # sel ≠ celui du blob
     ai = _FakeAIClient()
-    response = make_client(FakeSession([[user]]), ai).post(
+    response = make_client(FakeSession([[user]]), ai_client=ai).post(
         TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5"}
     )
     assert response.status_code == 422
@@ -329,7 +329,7 @@ def test_connection_unreadable_credential():
 def test_connection_provider_error_passthrough():
     """L'HTTPException traduite par app/core/ai remonte telle quelle (400 clé refusée)."""
     ai = _FakeAIClient(error=HTTPException(400, detail="Clé API refusée par le fournisseur IA"))
-    response = make_client(FakeSession([[_user_row()]]), ai).post(
+    response = make_client(FakeSession([[_user_row()]]), ai_client=ai).post(
         TEST_URL, json={"provider": "openai", "model": "gpt-4o", "api_key": API_KEY}
     )
     assert response.status_code == 400
@@ -384,7 +384,9 @@ def test_models_ollama_without_key(fake_list_models):
 
 
 def test_models_requires_key_when_none_stored(fake_list_models):
-    response = make_client(FakeSession([[_user_row()]])).post(MODELS_URL, json={"provider": "google"})
+    response = make_client(FakeSession([[_user_row()]])).post(
+        MODELS_URL, json={"provider": "google"}
+    )
     assert response.status_code == 422
     assert fake_list_models == []
 

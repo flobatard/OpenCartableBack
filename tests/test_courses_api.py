@@ -325,7 +325,9 @@ def test_add_first_block_position_zero():
     user = _user_row()
     course = _course_row()
     session = FakeSession([[user], [course], [0]])  # coalesce(max+1, 0) sur cours vide
-    response = make_client(session).post(f"/api/v1/courses/{course.id}/blocks", json={"type": "text"})
+    response = make_client(session).post(
+        f"/api/v1/courses/{course.id}/blocks", json={"type": "text"}
+    )
 
     assert response.status_code == 201
     assert response.json()["position"] == 0
@@ -1041,7 +1043,9 @@ def test_reorder_duplicates_without_db_access():
     b1 = uuid.uuid4()
     session = FakeSession()
     payload = {"block_ids": [str(b1), str(b1)]}
-    response = make_client(session).put(f"/api/v1/courses/{uuid.uuid4()}/blocks/order", json=payload)
+    response = make_client(session).put(
+        f"/api/v1/courses/{uuid.uuid4()}/blocks/order", json=payload
+    )
 
     assert response.status_code == 422
     assert session.executed == []

@@ -383,7 +383,7 @@ def test_delete_resource_purges_s3_after_commit():
     resource = _resource_row(course_id=course.id, status="available")
     session = FakeSession([[user], [course], [resource]])
 
-    class _StorageAfterCommit(_FakeStorage):
+    class _StorageAfterCommit(FakeStorage):
         # La purge S3 doit intervenir APRÈS le commit (motif delete_course) :
         # jamais de réf DB pointant un objet absent.
         async def delete_many(self, s3_keys):

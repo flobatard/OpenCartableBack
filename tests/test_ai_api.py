@@ -219,7 +219,7 @@ def test_stream_without_config_unreadable_credential_422_eager(monkeypatch) -> N
 # -------------------------------------- quota quotidien de l'IA par défaut
 
 
-def _quota_upserts(session: _FakeSession) -> list:
+def _quota_upserts(session: FakeSession) -> list:
     """Les upserts du compteur quotidien (INSERT … ON CONFLICT sur ai_daily_usage)."""
     return [
         stmt
@@ -228,7 +228,7 @@ def _quota_upserts(session: _FakeSession) -> list:
     ]
 
 
-def _refunds(session: _FakeSession) -> list:
+def _refunds(session: FakeSession) -> list:
     """Les updates de remboursement du quota (UPDATE ai_daily_usage)."""
     return [
         stmt
