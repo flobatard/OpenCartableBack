@@ -35,6 +35,7 @@ from app.models.ai_message import AIMessage
 from app.models.block import Block
 from app.models.course import Course
 from app.models.module import Module
+from app.models.resource import Resource
 from app.models.user import User
 
 CONVERSATION_LIST_LIMIT = 100
@@ -103,6 +104,48 @@ async def load_messages(db: AsyncSession, conversation: AIConversation) -> list[
         .scalars()
         .all()
     )
+
+
+async def load_snapshot(
+    db: AsyncSession, course: Course
+) -> tuple[list[Block], list[Resource], list[Module]]:
+    """Instantané du cours pour un tour d'IA : blocs (tri ``position, id``),
+    ressources et modules (tri ``created_at desc, id``) — trois execute, dans
+    cet ordre (contrat FIFO). Partagé avec le tuteur d'exercice."""
+    blocks = list(
+        (
+            await db.execute(
+                select(Block)
+                .where(Block.course_id == course.id)
+                .order_by(Block.position, Block.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    resources = list(
+        (
+            await db.execute(
+                select(Resource)
+                .where(Resource.course_id == course.id)
+                .order_by(Resource.created_at.desc(), Resource.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    modules = list(
+        (
+            await db.execute(
+                select(Module)
+                .where(Module.course_id == course.id)
+                .order_by(Module.created_at.desc(), Module.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return blocks, resources, modules
 
 
 async def list_conversations(

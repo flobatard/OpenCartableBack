@@ -29,33 +29,28 @@ insérée + commitée AVANT l'appel provider ; à la clôture (``done`` ou erreu
 mid-stream), un UPDATE pose ``feedback`` (texte streamé, partiel sur erreur),
 ``verdict``/``effort``/``revealed`` et l'usage. Quota (IA par défaut de
 l'élève) : remboursé sur erreur eager ou avant le premier token — règles de
-:mod:`app.ai_credentials`.
+:mod:`app.ai_credentials`. La boucle d'encodage est celle de
+:mod:`app.course_assistant.turn_encoder`.
 """
 
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import HTTPException
 from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai_credentials.service import (
-    effective_config,
-    refund_default_quota,
-    refund_on_error,
-)
-from app.core.ai import AIClient, AIToolCall, AIToolResult, AIToolSpec, ChatMessage
+from app.ai_credentials.service import effective_config, refund_on_error
+from app.core.ai import AIClient, AIStreamEvent, AIToolCall, AIToolResult, AIToolSpec, ChatMessage
 from app.core.auth import AuthenticatedUser
 from app.core.http import invalid
-from app.core.sse import sse_event
 from app.core.storage import Storage
 from app.course_assistant.context import build_refs
 from app.course_assistant.editing.base import tool_error
-from app.course_assistant.refs import CitationRewriter
-from app.course_assistant.streaming import TOOL_RESULT_EXCERPT_CHARS, _load_snapshot
+from app.course_assistant.service import load_snapshot
 from app.course_assistant.tools import build_tool_executor, build_tool_specs
+from app.course_assistant.turn_encoder import encode_turn
 from app.models.exercise_submission import (
     EFFORT_SUFFICIENT,
     EFFORTS,
@@ -199,10 +194,10 @@ async def sse_stream(
     payload: SubmissionCreate,
 ) -> AsyncIterator[str]:
     """Prépare le flux SSE d'un tour (docstring du module). Tout ce qui peut
-    échouer en vraie HTTPException est résolu ICI, avant la
-    ``StreamingResponse`` : accès au cours/bloc/question (404), plafond du fil
-    (422), cascade IA + quota de l'élève (422/429/503 — remboursé sur erreur
-    eager), validation eager de ``stream_agent``.
+    échouer en vraie HTTPException est résolu ICI, avant la réponse : accès au
+    cours/bloc/question (404), plafond du fil (422), cascade IA + quota de
+    l'élève (422/429/503 — remboursé sur erreur eager), validation eager de
+    ``stream_agent``.
 
     Ordre des execute : 1) cours (régime public, 1–2), 2) bloc exercice, 3)
     tours de la question, [cascade ``effective_config`` : ses propres
@@ -217,7 +212,7 @@ async def sse_stream(
 
     config, ticket = await effective_config(db, auth, None)
 
-    blocks, resources, modules = await _load_snapshot(db, course)
+    blocks, resources, modules = await load_snapshot(db, course)
     # Redaction structurelle : aucun corrigé dans l'instantané (contexte ET
     # tools) — seul celui de la question cible est joint au prompt.
     redacted = redact_blocks(blocks)
@@ -264,114 +259,66 @@ async def sse_stream(
             user_id=auth.sub,
         )
 
-    return _encode_turn(
+    sink = _TutorTurn(
         db=db,
-        events=events,
-        refs=refs,
         holder=holder,
         submission_id=submission_id,
         expected_answer=question.get("expected_answer"),
-        ticket=ticket,
     )
+    return encode_turn(events, db=db, refs=refs, ticket=ticket, sink=sink)
 
 
-async def _encode_turn(
-    *,
-    db: AsyncSession,
-    events: AsyncIterator[Any],
-    refs: Any,
-    holder: VerdictHolder,
-    submission_id: uuid.UUID,
-    expected_answer: str | None,
-    ticket: Any,
-) -> AsyncIterator[str]:
-    """Encode le flux agent en SSE et complète la ligne du tour à la clôture
-    (la session ``db`` reste utilisable : dépendance yield refermée après
-    l'envoi complet)."""
-    tokens_emitted = False
-    all_text: list[str] = []
-    rewriter = CitationRewriter(refs)
+@dataclass
+class _TutorTurn:
+    """Sink d'un tour de tuteur : le retour streamé complète la ligne du tour
+    à la clôture (``done`` ou erreur mid-stream). Aucun tool HITL : un
+    ``interrupt`` éventuel est ignoré."""
 
-    def _emit_text(text: str) -> str | None:
-        if not text:
-            return None
-        all_text.append(text)
-        return sse_event("token", {"delta": text})
+    db: AsyncSession
+    holder: VerdictHolder
+    submission_id: uuid.UUID
+    expected_answer: str | None
+    _all_text: list[str] = field(default_factory=list)
 
-    async def _finalize(usage: dict[str, Any] | None) -> None:
-        await db.execute(
+    def text(self, delta: str) -> None:
+        self._all_text.append(delta)
+
+    def tool_call(self, call: AIToolCall) -> dict[str, Any]:
+        return call.arguments
+
+    def tool_result(self, event: AIStreamEvent) -> None:
+        return None
+
+    async def interrupt(self, event: AIStreamEvent) -> None:
+        return None
+
+    async def done(self, usage: dict[str, Any] | None) -> dict[str, Any]:
+        await self._finalize(usage)
+        return {
+            "submission_id": str(self.submission_id),
+            "verdict": self.holder.verdict,
+            "effort": self.holder.effort,
+            "revealed": self.holder.reveal,
+            "expected_answer": (
+                (self.expected_answer or None) if self.holder.reveal else None
+            ),
+            "usage": usage,
+        }
+
+    async def failed(self) -> None:
+        await self._finalize(None)
+
+    async def _finalize(self, usage: dict[str, Any] | None) -> None:
+        await self.db.execute(
             update(ExerciseSubmission)
-            .where(ExerciseSubmission.id == submission_id)
+            .where(ExerciseSubmission.id == self.submission_id)
             .values(
-                feedback="".join(all_text),
-                verdict=holder.verdict,
-                effort=holder.effort,
-                revealed=holder.reveal,
+                feedback="".join(self._all_text),
+                verdict=self.holder.verdict,
+                effort=self.holder.effort,
+                revealed=self.holder.reveal,
                 input_tokens=(usage or {}).get("input_tokens"),
                 output_tokens=(usage or {}).get("output_tokens"),
             )
         )
-        await db.commit()
-
-    try:
-        async for event in events:
-            if event.type == "token":
-                tokens_emitted = True
-                sse = _emit_text(rewriter.feed(event.delta))
-                if sse is not None:
-                    yield sse
-            elif event.type == "thinking":
-                yield sse_event("thinking", {"delta": event.delta})
-            elif event.type == "tool_call":
-                held = _emit_text(rewriter.flush())
-                if held is not None:
-                    yield held
-                call = event.tool_call
-                yield sse_event(
-                    "tool_call", {"id": call.id, "name": call.name, "args": call.arguments}
-                )
-            elif event.type == "tool_result":
-                held = _emit_text(rewriter.flush())
-                if held is not None:
-                    yield held
-                yield sse_event(
-                    "tool_result",
-                    {
-                        "id": event.tool_call.id,
-                        "name": event.tool_call.name,
-                        "is_error": bool(event.tool_result_error),
-                        "excerpt": event.delta[:TOOL_RESULT_EXCERPT_CHARS],
-                        "length": len(event.delta),
-                    },
-                )
-            elif event.type == "done":
-                held = _emit_text(rewriter.flush())
-                if held is not None:
-                    yield held
-                usage = event.usage.model_dump() if event.usage else None
-                await _finalize(usage)
-                yield sse_event(
-                    "done",
-                    {
-                        "submission_id": str(submission_id),
-                        "verdict": holder.verdict,
-                        "effort": holder.effort,
-                        "revealed": holder.reveal,
-                        "expected_answer": (
-                            (expected_answer or None) if holder.reveal else None
-                        ),
-                        "usage": usage,
-                    },
-                )
-            # ``interrupt`` n'existe pas ici (aucun tool HITL) : ignoré.
-    except HTTPException as exc:
-        if ticket is not None and not tokens_emitted:
-            await refund_default_quota(db, ticket)
-        held = _emit_text(rewriter.flush())
-        if held is not None:
-            yield held
-        try:
-            await _finalize(None)
-        except Exception:  # noqa: BLE001 — best-effort assumé
-            pass
-        yield sse_event("error", {"status": exc.status_code, "detail": exc.detail})
+        await self.db.commit()

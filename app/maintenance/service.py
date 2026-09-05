@@ -46,7 +46,7 @@ MIN_USAGE_RETENTION_DAYS = 2
 
 # Ce qu'on garde d'un résultat d'outil allégé : exactement l'extrait que le
 # front affichait déjà pendant le flux (TOOL_RESULT_EXCERPT_CHARS de
-# app/course_assistant/streaming.py). L'affichage déplié ne change donc pas.
+# app/course_assistant/turn_encoder.py). L'affichage déplié ne change donc pas.
 TOOL_CONTENT_KEEP_CHARS = 400
 TOOL_CONTENT_MARKER = (
     "\n\n[Résultat d'outil allégé par la purge : seul le début est conservé. "

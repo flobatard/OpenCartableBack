@@ -9,54 +9,45 @@ Contrat SSE — extension du contrat de référence de :mod:`app.core.sse` :
     event: tool_call     data: {"id": "…", "name": "read_block", "args": {…}}
     event: tool_result   data: {"id": "…", "name": "…", "is_error": false,
                                 "excerpt": "…", "length": 12345}
+    event: interrupt     data: {"tool_call_id": "…", "message_ids": ["…"]}
     event: done          data: {"usage": {…}|null, "user_message_id": "…",
                                 "message_ids": ["…"], "sources": {…},
                                 "title": "…"|null}
     event: error         data: {"status": 503, "detail": "…"}
 
-S'y ajoute, dans un **contexte d'édition** (flux HITL — descripteurs de
-:mod:`app.course_assistant.editing`), l'événement terminal :
-
-.. code-block:: text
-
-    event: interrupt     data: {"tool_call_id": "…", "message_ids": ["…"]}
-
-émis quand l'agent appelle un tool de proposition : le run est FIGÉ
-(interrupt LangGraph, état au checkpointer InMemory du client — cf.
+``interrupt`` n'existe que dans un **contexte d'édition** (flux HITL,
+descripteurs de :mod:`app.course_assistant.editing`) : l'agent a appelé un
+tool de proposition, le run est figé (checkpointer du client IA, cf.
 ``hitl.py``), le tour partiel est persisté et le flux se ferme SANS ``done``.
-La reprise est le **flux SSE de la route de décision**
-(``POST .../proposals/{tool_call_id}/decision`` → :func:`sse_resume_stream`,
+La reprise est le flux SSE de la route de décision (:func:`sse_resume_stream`,
 même contrat : ``tool_result``…``done``, ou un nouvel ``interrupt``). La
 proposition voyage dans les ``args`` du ``tool_call`` (relayés en entier,
-contrairement aux résultats), références courtes réécrites en UUID à
-l'émission par le descripteur (``rewrite_args``).
+références courtes réécrites en UUID par le descripteur).
 
-Le contenu COMPLET des résultats d'outils ne part jamais sur le flux
-(potentiellement 40k caractères de PDF) — il est persisté et servi par le
-détail de conversation ; seul un **extrait borné** l'accompagne
-(:data:`TOOL_RESULT_EXCERPT_CHARS` premiers caractères + longueur totale —
-un message d'échec tient toujours dedans) pour l'affichage déplié des appels
-d'outils côté front. ``done`` porte les ids des messages persistés du tour
-(le front réconcilie sans refetch) et le titre si posé à ce tour.
+Le contenu complet des résultats d'outils ne part jamais sur le flux : seul un
+extrait borné l'accompagne (:data:`TOOL_RESULT_EXCERPT_CHARS`), le détail de
+conversation sert le reste. ``done`` porte les ids des messages persistés du
+tour (le front réconcilie sans refetch) et le titre s'il a été posé.
 
-Persistance du tour (rôles ``assistant``/``tool``, motif documenté dans
-:mod:`app.models.ai_message`) : chaque round du modèle devient un segment
-``assistant`` (texte + ``tool_calls``) suivi de ses lignes ``tool`` ; le
-segment final porte ``sources`` (citations validées) et l'usage. Le message
-``user`` est persisté AVANT l'appel provider (durable même si l'appel
-échoue) ; sur erreur mid-stream, les rounds déjà complets et le texte partiel
-sont persistés (l'appel est compté dès le premier token — décision actée).
+Persistance (:mod:`app.models.ai_message`) : le message ``user`` est inséré
+AVANT l'appel provider (durable même si l'appel échoue) ; le tour — segments
+``assistant`` (texte + ``tool_calls``) suivis de leurs lignes ``tool`` — est
+inséré à la clôture, le segment final portant ``sources`` et l'usage ; sur
+erreur mid-stream, rounds complets et texte partiel sont persistés (l'appel
+est compté dès le premier token). La boucle d'encodage est partagée avec le
+tuteur d'exercice (:mod:`app.course_assistant.turn_encoder`) : ce module ne
+porte que la préparation des tours et leur persistance (:class:`_AssistantTurn`).
 
-Comme partout, tout est scopé au propriétaire (404 jamais 403) et l'ordre des
-``execute`` de chaque fonction est un contrat des tests (fausse session FIFO).
+Tout est scopé au propriétaire (404 jamais 403) ; l'ordre des ``execute`` de
+chaque fonction est un contrat des tests (fausse session FIFO).
 """
 
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import HTTPException
-from sqlalchemy import insert, select
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_credentials.service import (
@@ -64,12 +55,11 @@ from app.ai_credentials.service import (
     refund_default_quota,
     refund_on_error,
 )
-from app.core.ai import AIClient, ChatMessage
+from app.core.ai import AIClient, AIStreamEvent, AIToolCall, ChatMessage
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
 from app.core.database import touch
 from app.core.http import invalid, not_found
-from app.core.sse import sse_event
 from app.core.storage import Storage
 from app.course_assistant import hitl
 from app.course_assistant.context import (
@@ -80,16 +70,15 @@ from app.course_assistant.context import (
     replay_messages,
 )
 from app.course_assistant.editing import TARGET_MODULE, EditContext, edit_context_for
-from app.course_assistant.refs import CitationRewriter
+from app.course_assistant.refs import CourseRefs
 from app.course_assistant.schemas import MessageCreate, ProposalDecisionCreate
-from app.course_assistant.service import load_conversation, load_messages
+from app.course_assistant.service import load_conversation, load_messages, load_snapshot
 from app.course_assistant.tools import build_tool_executor, build_tool_specs
+from app.course_assistant.turn_encoder import TOOL_RESULT_EXCERPT_CHARS as TOOL_RESULT_EXCERPT_CHARS
+from app.course_assistant.turn_encoder import encode_turn
 from app.courses.queries import get_owned_course
 from app.models.ai_conversation import AIConversation
 from app.models.ai_message import ROLE_ASSISTANT, ROLE_TOOL, ROLE_USER, AIMessage
-from app.models.block import Block
-from app.models.module import Module
-from app.models.resource import Resource
 from app.models.user import User
 
 _TRACE_NAME = "course-assistant"
@@ -98,50 +87,6 @@ _TRACE_NAME = "course-assistant"
 MAX_MESSAGES_PER_CONVERSATION = 300
 TITLE_TRUNCATE_CHARS = 80
 MAX_TOOL_ROUNDS = 5
-
-# Extrait d'un résultat d'outil relayé sur le flux (le contenu complet, lui,
-# n'est servi que par le détail de conversation) — même valeur côté front.
-TOOL_RESULT_EXCERPT_CHARS = 400
-
-
-async def _load_snapshot(db: AsyncSession, course) -> tuple[list, list, list]:
-    """Instantané du cours pour un tour : blocs (tri ``position, id``),
-    ressources et modules (tri ``created_at desc, id``) — trois execute, dans
-    cet ordre (contrat FIFO)."""
-    blocks = list(
-        (
-            await db.execute(
-                select(Block)
-                .where(Block.course_id == course.id)
-                .order_by(Block.position, Block.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    resources = list(
-        (
-            await db.execute(
-                select(Resource)
-                .where(Resource.course_id == course.id)
-                .order_by(Resource.created_at.desc(), Resource.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    modules = list(
-        (
-            await db.execute(
-                select(Module)
-                .where(Module.course_id == course.id)
-                .order_by(Module.created_at.desc(), Module.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return blocks, resources, modules
 
 
 def _resolve_focus(
@@ -173,30 +118,23 @@ async def sse_stream(
     """Prépare le flux SSE d'un tour d'assistant (docstring du module).
 
     Tout ce qui peut échouer en « vraie » HTTPException est résolu ICI, avant
-    que la route ne retourne la ``StreamingResponse`` : propriété (404),
-    conversation (404), plafond de messages (422), cascade IA + quota
-    (422/429/503 — remboursé sur erreur eager), validation eager de
-    ``stream_agent``.
+    que la route ne retourne la réponse : propriété (404), conversation (404),
+    plafond de messages (422), cascade IA + quota (422/429/503 — remboursé sur
+    erreur eager), validation eager de ``stream_agent``.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) conversation
     (scopée), 3) messages existants (historique + plafond), [cascade
-    ``effective_config`` : ses propres execute], 4) blocs (tri ``position,
-    id``), 5) ressources (tri ``created_at desc, id``), 6) modules (idem),
-    7) insert du message user (position suivante ; titre posé au premier
-    message ; ``updated_at`` bumpé) puis commit. Le generator retourné insère
-    ensuite les messages du tour (un execute + commit à la clôture).
+    ``effective_config`` : ses propres execute], 4) blocs, 5) ressources,
+    6) modules, 7) insert du message user (position suivante ; titre posé au
+    premier message ; ``updated_at`` bumpé) puis commit. Le generator retourné
+    insère ensuite les messages du tour (un execute + commit à la clôture).
 
     Contexte d'édition (même ordre d'execute) : la cible éditée — bloc ou
-    module selon le descripteur — est retrouvée dans l'instantané déjà chargé
-    (404 défensif si elle a disparu), mise en avant dans le system prompt
-    (``focus_block``/``focus_module``), le run est **checkpointé**
-    (``thread_id`` — InMemorySaver du client) et les tools de proposition du
-    descripteur sont exposés — la proposition voyage dans les args du
-    ``tool_call`` (références réécrites en UUID, relayés complets sur le flux
-    et persistés dans ``tool_calls``), puis le run est **figé** (interrupt
-    LangGraph) : le flux émet ``interrupt`` et se ferme, la reprise passe par
-    :func:`sse_resume_stream` (route de décision). Un nouveau message alors
-    qu'une proposition attendait abandonne la reprise.
+    module selon le descripteur — est retrouvée dans l'instantané (404
+    défensif si elle a disparu), mise en avant dans le system prompt, le run
+    est **checkpointé** (``thread_id``) et les tools de proposition du
+    descripteur sont exposés. Un nouveau message alors qu'une proposition
+    attendait abandonne la reprise (registre + thread purgés).
     """
     course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
@@ -210,28 +148,20 @@ async def sse_stream(
     config, ticket = await effective_config(db, auth, None)
     provider = config.provider.value if config is not None else settings.AI_PROVIDER
 
-    blocks, resources, modules = await _load_snapshot(db, course)
+    blocks, resources, modules = await load_snapshot(db, course)
 
-    # Contexte d'édition : la cible éditée (bloc ou module) est retrouvée dans
-    # l'instantané déjà chargé (404 défensif : la FK CASCADE rend la cible
-    # absente théorique).
     edit = edit_context_for(conversation.context)
     focus_block, focus_module = _resolve_focus(edit, conversation, blocks, modules)
     if edit is not None and focus_block is None and focus_module is None:
-        # Le quota a déjà été réservé par la cascade : remboursé (motif de
-        # l'erreur eager de stream_agent ci-dessous).
+        # Le quota a déjà été réservé par la cascade : remboursé.
         if ticket is not None:
             await refund_default_quota(db, ticket)
         raise not_found(
             "Module introuvable" if edit.target == TARGET_MODULE else "Bloc introuvable"
         )
-    # Instantané du cours en références courtes (B1/R1/M1 — et Q1… pour les
-    # questions du bloc exercice édité) : le modèle ne manipule jamais d'UUID
-    # — cf. app/course_assistant/refs.py.
+    # Instantané en références courtes (B1/R1/M1 — et Q1… pour les questions
+    # du bloc exercice édité) : le modèle ne manipule jamais d'UUID.
     refs = build_refs(blocks, resources, modules, focus_block=focus_block)
-    # Contexte d'édition : run checkpointé (thread) pour permettre l'interrupt
-    # HITL des tools de proposition ; un nouveau message alors qu'une
-    # proposition attendait abandonne la reprise (registre + thread purgés).
     thread_id: str | None = None
     if edit is not None:
         thread_id = str(uuid.uuid4())
@@ -252,8 +182,8 @@ async def sse_stream(
 
     executor = build_tool_executor(storage, refs, edit=edit)
 
-    # Message user durable AVANT l'appel provider (le front garde sa saisie de
-    # toute façon ; un échec provider ne perd pas la question).
+    # Message user durable AVANT l'appel provider (un échec provider ne perd
+    # pas la question).
     user_message_id = uuid.uuid4()
     await db.execute(
         insert(AIMessage).values(
@@ -283,10 +213,9 @@ async def sse_stream(
             user_id=auth.sub,
         )
 
-    return _encode_turn(
+    sink = _AssistantTurn(
         client=client,
         db=db,
-        events=events,
         conversation=conversation,
         refs=refs,
         edit=edit,
@@ -294,10 +223,10 @@ async def sse_stream(
         config=config,
         thread_id=thread_id,
         base_position=len(existing) + 1,
-        ticket=ticket,
         user_message_id=user_message_id,
         title_set=title_set,
     )
+    return encode_turn(events, db=db, refs=refs, ticket=ticket, sink=sink)
 
 
 async def sse_resume_stream(
@@ -321,10 +250,10 @@ async def sse_resume_stream(
     404 si rien n'attend (proposition inconnue, déjà tranchée, expirée, ou
     perdue — redémarrage). La **config de la reprise est celle du tour
     d'origine** (registre in-process — même provider garanti, pas de nouvelle
-    cascade ni de quota : un tour HITL = un appel compté, décision actée) ;
-    pas de nouveau message user, les positions continuent le tour persisté.
-    Le graphe est rebâti avec les tools du **même contexte d'édition** (celui
-    de la conversation — contrat de ``stream_agent``).
+    cascade ni de quota : un tour HITL = un appel compté) ; pas de nouveau
+    message user, les positions continuent le tour persisté. Le graphe est
+    rebâti avec les tools du **même contexte d'édition** (contrat de
+    ``stream_agent``).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) conversation
     (scopée), 3) messages existants (position suivante), 4) blocs, 5)
@@ -342,11 +271,10 @@ async def sse_resume_stream(
         raise not_found("Aucune proposition en attente pour cet appel")
     existing = await load_messages(db, conversation)
 
-    blocks, resources, modules = await _load_snapshot(db, course)
-    # La cible éditée (absente = supprimée pendant la revue ; la conversation
-    # partant en cascade avec elle, le cas est théorique — pas de question
-    # numérotée, le tool répondra par une erreur actionnable) et la
-    # numérotation Q… du tour d'origine, rejouée pour la suite du tour.
+    blocks, resources, modules = await load_snapshot(db, course)
+    # La cible éditée (absente = supprimée pendant la revue, cas théorique :
+    # le tool répondra par une erreur actionnable) et la numérotation Q… du
+    # tour d'origine, rejouée pour la suite du tour.
     focus_block, _ = _resolve_focus(edit, conversation, blocks, modules)
     refs = build_refs(
         blocks,
@@ -374,10 +302,9 @@ async def sse_resume_stream(
         client.drop_agent_thread(pending.thread_id)
         raise
 
-    return _encode_turn(
+    sink = _AssistantTurn(
         client=client,
         db=db,
-        events=events,
         conversation=conversation,
         refs=refs,
         edit=edit,
@@ -385,98 +312,150 @@ async def sse_resume_stream(
         config=pending.config,
         thread_id=pending.thread_id,
         base_position=len(existing),
-        ticket=None,
         user_message_id=None,
         title_set=None,
     )
+    return encode_turn(events, db=db, refs=refs, ticket=None, sink=sink)
 
 
-async def _encode_turn(
-    *,
-    client: AIClient,
-    db: AsyncSession,
-    events: AsyncIterator[Any],
-    conversation: AIConversation,
-    refs: Any,
-    edit: EditContext | None,
-    provider: str,
-    config: Any,
-    thread_id: str | None,
-    base_position: int,
-    ticket: Any,
-    user_message_id: uuid.UUID | None,
-    title_set: str | None,
-) -> AsyncIterator[str]:
-    """Encode un flux agent en SSE et persiste le tour — partagé par
-    ``sse_stream`` (tour complet ou jusqu'à l'interrupt) et
-    ``sse_resume_stream`` (suite du tour, ``user_message_id``/``ticket``
-    ``None``). La session ``db`` reste utilisable ici : les dépendances yield
-    de FastAPI ne sont refermées qu'après l'envoi complet du flux.
+@dataclass
+class _AssistantTurn:
+    """Sink d'un tour d'assistant : accumule les segments et les persiste.
 
-    Sur ``interrupt`` (proposition HITL) : le tour PARTIEL est persisté
-    (segment assistant porteur du ``tool_call``, sans tour ``tool`` — un
-    abandon le laissera en round incomplet, replié au replay), la reprise est
-    enregistrée au registre (``hitl``) et le flux se clôt SANS ``done``. Sur
-    ``done``/``error``, le thread checkpointé est purgé (best-effort).
+    Un round du modèle = un segment ``assistant`` (texte + ``tool_calls``)
+    clos par l'arrivée du premier ``tool_result``, suivi de ses lignes
+    ``tool``. Sur ``interrupt``, le tour PARTIEL est persisté (segment porteur
+    du ``tool_call``, sans ligne ``tool`` — un abandon le laissera en round
+    incomplet, replié au replay) et la reprise est enregistrée au registre
+    ``hitl``. Sur ``done``/erreur, le thread checkpointé est purgé.
     """
-    block_ids = refs.ids("block")
-    resource_ids = refs.ids("resource")
-    tokens_emitted = False
-    all_text: list[str] = []
-    turn_rows: list[dict[str, Any]] = []
-    segment_text: list[str] = []
-    segment_tool_calls: list[dict[str, Any]] = []
-    # Citations oc-block:B3 / oc-resource:R2 réécrites en UUID au fil du
-    # flux : le texte streamé est celui persisté (et celui des sources).
-    rewriter = CitationRewriter(refs)
 
-    def _emit_text(text: str) -> str | None:
-        """Texte prêt à partir (citations résolues) : accumulé, ou None."""
-        if not text:
-            return None
-        segment_text.append(text)
-        all_text.append(text)
-        return sse_event("token", {"delta": text})
+    client: AIClient
+    db: AsyncSession
+    conversation: AIConversation
+    refs: CourseRefs
+    edit: EditContext | None
+    provider: str
+    config: Any
+    thread_id: str | None
+    base_position: int
+    user_message_id: uuid.UUID | None
+    title_set: str | None
+    _all_text: list[str] = field(default_factory=list)
+    _turn_rows: list[dict[str, Any]] = field(default_factory=list)
+    _segment_text: list[str] = field(default_factory=list)
+    _segment_tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def _flush_segment() -> str | None:
-        """Clôt le segment assistant courant ; retourne l'éventuel
-        événement ``token`` du texte retenu par le rewriter (à yield
-        AVANT tout événement suivant)."""
-        sse = _emit_text(rewriter.flush())
-        if segment_text or segment_tool_calls:
-            turn_rows.append(
+    def text(self, delta: str) -> None:
+        self._segment_text.append(delta)
+        self._all_text.append(delta)
+
+    def tool_call(self, call: AIToolCall) -> dict[str, Any]:
+        # Proposition d'édition : références courtes des args réécrites en UUID
+        # par le descripteur AVANT relais et persistance — le payload reçu par
+        # le front est directement applicable.
+        arguments = call.arguments
+        tool = self.edit.tool(call.name) if self.edit is not None else None
+        if tool is not None:
+            arguments = tool.rewrite_args(arguments, self.refs)
+        self._segment_tool_calls.append({"id": call.id, "name": call.name, "arguments": arguments})
+        return arguments
+
+    def tool_result(self, event: AIStreamEvent) -> None:
+        self._close_segment()
+        self._turn_rows.append(
+            {
+                "role": ROLE_TOOL,
+                "content": event.delta,
+                "tool_call_id": event.tool_call.id or "?",
+                "is_error": bool(event.tool_result_error),
+            }
+        )
+
+    async def interrupt(self, event: AIStreamEvent) -> dict[str, Any]:
+        self._close_segment()
+        ids = await self._persist(None, None)
+        tool_call_id = (event.interrupt_value or {}).get("tool_call_id") or "?"
+        # Numérotation Q… des questions du bloc édité, rejouée à la reprise
+        # (références stables le temps du tour).
+        question_refs = {e.ref: str(e.id) for e in self.refs.entries["question"]}
+        replaced = hitl.register(
+            self.conversation.id,
+            hitl.PendingProposal(
+                thread_id=self.thread_id or "",
+                tool_call_id=tool_call_id,
+                provider=self.provider,
+                config=self.config,
+                question_refs=question_refs or None,
+            ),
+        )
+        if replaced is not None:
+            self.client.drop_agent_thread(replaced.thread_id)
+        return {"tool_call_id": tool_call_id, "message_ids": [str(i) for i in ids]}
+
+    async def done(self, usage: dict[str, Any] | None) -> dict[str, Any]:
+        self._close_segment()
+        sources = extract_sources(
+            "".join(self._all_text), self.refs.ids("block"), self.refs.ids("resource")
+        )
+        ids = await self._persist(sources, usage)
+        self._drop_thread()
+        return {
+            "usage": usage,
+            "user_message_id": (
+                str(self.user_message_id) if self.user_message_id is not None else None
+            ),
+            "message_ids": [str(i) for i in ids],
+            "sources": sources,
+            "title": self.title_set,
+        }
+
+    async def failed(self) -> None:
+        self._close_segment()
+        try:
+            await self._persist(None, None)
+        finally:
+            self._drop_thread()
+
+    def _close_segment(self) -> None:
+        if self._segment_text or self._segment_tool_calls:
+            self._turn_rows.append(
                 {
                     "role": ROLE_ASSISTANT,
-                    "content": "".join(segment_text),
-                    "tool_calls": list(segment_tool_calls),
-                    "provider": provider,
+                    "content": "".join(self._segment_text),
+                    "tool_calls": list(self._segment_tool_calls),
+                    "provider": self.provider,
                 }
             )
-            segment_text.clear()
-            segment_tool_calls.clear()
-        return sse
+            self._segment_text.clear()
+            self._segment_tool_calls.clear()
 
-    async def _persist_turn(
-        sources: dict[str, Any] | None, usage: dict[str, Any] | None
+    def _drop_thread(self) -> None:
+        if self.thread_id is not None:
+            self.client.drop_agent_thread(self.thread_id)
+
+    async def _persist(
+        self, sources: dict[str, Any] | None, usage: dict[str, Any] | None
     ) -> list[uuid.UUID]:
         """Insère les lignes du tour (un execute), bump + commit."""
-        if not turn_rows:
+        rows = self._turn_rows
+        if not rows:
             return []
         if sources is not None:
-            turn_rows[-1]["sources"] = sources
-        if usage is not None and turn_rows[-1]["role"] == ROLE_ASSISTANT:
-            turn_rows[-1]["input_tokens"] = usage.get("input_tokens")
-            turn_rows[-1]["output_tokens"] = usage.get("output_tokens")
-        ids = [uuid.uuid4() for _ in turn_rows]
+            rows[-1]["sources"] = sources
+        if usage is not None and rows[-1]["role"] == ROLE_ASSISTANT:
+            rows[-1]["input_tokens"] = usage.get("input_tokens")
+            rows[-1]["output_tokens"] = usage.get("output_tokens")
+        ids = [uuid.uuid4() for _ in rows]
         # Clés homogènes obligatoires (executemany Core) : chaque ligne est
         # normalisée sur le jeu complet de colonnes.
-        await db.execute(
+        await self.db.execute(
             insert(AIMessage),
             [
                 {
                     "id": row_id,
-                    "conversation_id": conversation.id,
-                    "position": base_position + i,
+                    "conversation_id": self.conversation.id,
+                    "position": self.base_position + i,
                     "role": row["role"],
                     "content": row.get("content", ""),
                     "tool_calls": row.get("tool_calls", []),
@@ -487,134 +466,9 @@ async def _encode_turn(
                     "input_tokens": row.get("input_tokens"),
                     "output_tokens": row.get("output_tokens"),
                 }
-                for i, (row_id, row) in enumerate(zip(ids, turn_rows, strict=True))
+                for i, (row_id, row) in enumerate(zip(ids, rows, strict=True))
             ],
         )
-        touch(conversation)
-        await db.commit()
+        touch(self.conversation)
+        await self.db.commit()
         return ids
-
-    try:
-        async for event in events:
-            if event.type == "token":
-                tokens_emitted = True
-                sse = _emit_text(rewriter.feed(event.delta))
-                if sse is not None:
-                    yield sse
-            elif event.type == "thinking":
-                yield sse_event("thinking", {"delta": event.delta})
-            elif event.type == "tool_call":
-                # Le texte retenu par le rewriter part avant l'appel d'outil
-                # (ordre d'affichage côté front).
-                held = _emit_text(rewriter.flush())
-                if held is not None:
-                    yield held
-                call = event.tool_call
-                # Proposition d'édition : références courtes des args réécrites
-                # en UUID par le descripteur AVANT relais et persistance — le
-                # payload reçu par le front est directement applicable.
-                arguments = call.arguments
-                tool = edit.tool(call.name) if edit is not None else None
-                if tool is not None:
-                    arguments = tool.rewrite_args(arguments, refs)
-                segment_tool_calls.append(
-                    {"id": call.id, "name": call.name, "arguments": arguments}
-                )
-                yield sse_event(
-                    "tool_call",
-                    {"id": call.id, "name": call.name, "args": arguments},
-                )
-            elif event.type == "tool_result":
-                # Le segment assistant porteur des tool_calls est clos par
-                # l'arrivée du premier résultat.
-                held = _flush_segment()
-                if held is not None:
-                    yield held
-                turn_rows.append(
-                    {
-                        "role": ROLE_TOOL,
-                        "content": event.delta,
-                        "tool_call_id": event.tool_call.id or "?",
-                        "is_error": bool(event.tool_result_error),
-                    }
-                )
-                yield sse_event(
-                    "tool_result",
-                    {
-                        "id": event.tool_call.id,
-                        "name": event.tool_call.name,
-                        "is_error": bool(event.tool_result_error),
-                        "excerpt": event.delta[:TOOL_RESULT_EXCERPT_CHARS],
-                        "length": len(event.delta),
-                    },
-                )
-            elif event.type == "interrupt":
-                # Proposition HITL : tour partiel persisté, reprise enregistrée,
-                # flux clos SANS done (docstring). Le quota du tour reste
-                # consommé (l'appel provider a eu lieu).
-                held = _flush_segment()
-                if held is not None:
-                    yield held
-                ids = await _persist_turn(None, None)
-                tool_call_id = (event.interrupt_value or {}).get("tool_call_id") or "?"
-                # Numérotation Q… des questions du bloc édité, rejouée à la
-                # reprise (références stables le temps du tour).
-                question_refs = {e.ref: str(e.id) for e in refs.entries["question"]}
-                replaced = hitl.register(
-                    conversation.id,
-                    hitl.PendingProposal(
-                        thread_id=thread_id or "",
-                        tool_call_id=tool_call_id,
-                        provider=provider,
-                        config=config,
-                        question_refs=question_refs or None,
-                    ),
-                )
-                if replaced is not None:
-                    client.drop_agent_thread(replaced.thread_id)
-                yield sse_event(
-                    "interrupt",
-                    {
-                        "tool_call_id": tool_call_id,
-                        "message_ids": [str(i) for i in ids],
-                    },
-                )
-                return
-            else:  # done
-                held = _flush_segment()
-                if held is not None:
-                    yield held
-                sources = extract_sources("".join(all_text), block_ids, resource_ids)
-                usage = event.usage.model_dump() if event.usage else None
-                ids = await _persist_turn(sources, usage)
-                if thread_id is not None:
-                    client.drop_agent_thread(thread_id)
-                yield sse_event(
-                    "done",
-                    {
-                        "usage": usage,
-                        "user_message_id": (
-                            str(user_message_id) if user_message_id is not None else None
-                        ),
-                        "message_ids": [str(i) for i in ids],
-                        "sources": sources,
-                        "title": title_set,
-                    },
-                )
-    except HTTPException as exc:
-        # Trop tard pour changer le status HTTP (200 parti) : remboursement
-        # si l'erreur précède le premier token, persistance du partiel
-        # (best-effort : ne jamais masquer l'erreur provider), puis
-        # événement error portant le status du mapping app/core/ai/errors.
-        if ticket is not None and not tokens_emitted:
-            await refund_default_quota(db, ticket)
-        held = _flush_segment()
-        if held is not None:
-            yield held
-        try:
-            await _persist_turn(None, None)
-        except Exception:  # noqa: BLE001 — best-effort assumé
-            pass
-        if thread_id is not None:
-            client.drop_agent_thread(thread_id)
-        yield sse_event("error", {"status": exc.status_code, "detail": exc.detail})
