@@ -18,12 +18,12 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import postgresql
 
-from app.search.service import (
-    _courses_count_stmt,
-    _courses_page_stmt,
-    _teachers_count_stmt,
-    _teachers_page_stmt,
-    _tsquery,
+from app.search.queries import (
+    courses_count_stmt,
+    courses_page_stmt,
+    teachers_count_stmt,
+    teachers_page_stmt,
+    tsquery,
 )
 from tests.fakes import FakeSession, make_client
 
@@ -230,8 +230,8 @@ def _sql(stmt) -> str:
 
 
 def test_sql_courses_fts_and_visibility():
-    tsq = _tsquery("pythagore")
-    compiled = _compiled(_courses_page_stmt(tsq, None, None, 20, 0))
+    tsq = tsquery("pythagore")
+    compiled = _compiled(courses_page_stmt(tsq, None, None, 20, 0))
     sql = str(compiled)
     assert "websearch_to_tsquery" in sql
     # Le nom de la config voyage en bind param (type REGCONFIG).
@@ -245,8 +245,8 @@ def test_sql_courses_fts_and_visibility():
 
 
 def test_sql_courses_count_filters_like_page():
-    tsq = _tsquery("pythagore")
-    sql = _sql(_courses_count_stmt(tsq, [uuid.uuid4()], [uuid.uuid4()]))
+    tsq = tsquery("pythagore")
+    sql = _sql(courses_count_stmt(tsq, [uuid.uuid4()], [uuid.uuid4()]))
     assert "count(" in sql
     assert "course_subjects" in sql
     assert "course_education_levels" in sql
@@ -254,8 +254,8 @@ def test_sql_courses_count_filters_like_page():
 
 
 def test_sql_teachers_visibility_criteria():
-    tsq = _tsquery("ada")
-    compiled = _compiled(_teachers_page_stmt(tsq, None, None, 20, 0))
+    tsq = tsquery("ada")
+    compiled = _compiled(teachers_page_stmt(tsq, None, None, 20, 0))
     sql = str(compiled)
     assert "searchable" in sql  # opt-in explicite
     assert "public_name IS NOT NULL" in sql
@@ -271,7 +271,7 @@ def test_sql_teachers_visibility_criteria():
 
 
 def test_sql_teachers_count_without_q():
-    sql = _sql(_teachers_count_stmt(None, None, None))
+    sql = _sql(teachers_count_stmt(None, None, None))
     assert "websearch_to_tsquery" not in sql
     assert "searchable" in sql
     assert "avatar_s3_key" not in sql  # le count ne sélectionne pas les colonnes

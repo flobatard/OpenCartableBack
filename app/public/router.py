@@ -2,7 +2,7 @@
 
 C'est voulu et c'est le contrat de ce package (comme ``/health``) :
 l'autorisation est portée par la visibilité du cours et le token de partage
-(query param ``?token=``), vérifiés par ``app/public/service.py`` à chaque
+(query param ``?token=``), vérifiés par :mod:`app.public.access` à chaque
 requête. Ne jamais ajouter de dépendance JWT sur ces routes — et ne jamais
 y exposer de donnée réservée au prof (voir schemas.py).
 
@@ -23,6 +23,7 @@ from app.core.storage import Storage, get_storage
 from app.education_levels import service as education_levels_service
 from app.education_levels.schemas import EducationLevelRead
 from app.public import service
+from app.public.access import get_course_for_token, get_public_course
 from app.public.schemas import (
     PublicCourseDetailRead,
     PublicDownloadRead,
@@ -41,7 +42,7 @@ async def read_shared_course(
     db: AsyncSession = Depends(get_db),
 ) -> PublicCourseDetailRead:
     """Détail complet filtré du cours pointé par un lien de partage."""
-    course = await service.get_course_for_token(db, token)
+    course = await get_course_for_token(db, token)
     return await service.course_detail_public(db, course)
 
 
@@ -52,7 +53,7 @@ async def read_public_course(
     db: AsyncSession = Depends(get_db),
 ) -> PublicCourseDetailRead:
     """Détail complet filtré d'un cours public (ou privé avec ``?token=``)."""
-    course = await service.get_public_course(db, course_id, token)
+    course = await get_public_course(db, course_id, token)
     return await service.course_detail_public(db, course)
 
 
@@ -69,7 +70,7 @@ async def download_public_resource(
     storage: Storage = Depends(get_storage),
 ) -> PublicDownloadRead:
     """URL présignée de lecture d'une ressource du cours (bucket jamais public)."""
-    course = await service.get_public_course(db, course_id, token)
+    course = await get_public_course(db, course_id, token)
     return await service.presign_download_public(
         db, course, resource_id, storage, inline=disposition == "inline"
     )
@@ -83,7 +84,7 @@ async def read_public_module(
     db: AsyncSession = Depends(get_db),
 ) -> PublicModuleRead:
     """Code d'un module interactif du cours (exécuté en iframe sandbox)."""
-    course = await service.get_public_course(db, course_id, token)
+    course = await get_public_course(db, course_id, token)
     return await service.get_module_public(db, course, module_id)
 
 
@@ -101,7 +102,7 @@ async def list_professor_public_courses(
 async def read_public_subject_tree(
     db: AsyncSession = Depends(get_db),
 ) -> list[SubjectRead]:
-    """Arbre des matières, lecture publique (facettes de recherche, J3) —
+    """Arbre des matières, lecture publique (facettes de recherche) —
     délégation pure, réponse strictement identique à ``GET /subjects/tree``."""
     return await subjects_service.get_subject_tree(db)
 
@@ -110,6 +111,6 @@ async def read_public_subject_tree(
 async def read_public_education_level_tree(
     db: AsyncSession = Depends(get_db),
 ) -> list[EducationLevelRead]:
-    """Arbre des niveaux d'étude, lecture publique (facettes de recherche,
-    J3) — délégation pure, identique à ``GET /education-levels/tree``."""
+    """Arbre des niveaux d'étude, lecture publique (facettes de
+    recherche) — délégation pure, identique à ``GET /education-levels/tree``."""
     return await education_levels_service.get_education_level_tree(db)

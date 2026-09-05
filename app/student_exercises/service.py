@@ -2,7 +2,7 @@
 
 Autorisation en deux temps, routes élève : le JWT identifie l'élève
 (``get_or_create_by_sub`` dans le router), puis l'accès au COURS est celui du
-régime public — :func:`app.public.service.get_public_course` (visibilité +
+régime public — :func:`app.public.access.get_public_course` (visibilité +
 token de partage ``?token=``, 404 uniforme). Le bloc doit être un exercice du
 cours et la question exister dans son content (404 sinon).
 
@@ -25,7 +25,7 @@ from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import Course
 from app.models.exercise_submission import ExerciseSubmission
 from app.models.user import User
-from app.public.service import get_public_course
+from app.public.access import get_public_course
 from app.student_exercises.context import find_question
 from app.student_exercises.schemas import (
     QuestionThreadRead,

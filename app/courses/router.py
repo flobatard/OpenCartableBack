@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
 from app.core.storage import Storage, get_storage
-from app.courses import service
+from app.courses import blocks, service
 from app.courses.schemas import (
     BlockCreate,
     BlockOrderUpdate,
@@ -106,7 +106,7 @@ async def add_block(
 ) -> BlockRead:
     """Ajoute un bloc vide en fin de cours (son contenu s'éditera plus tard)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    return await service.add_block(db, user, course_id, payload)
+    return await blocks.add_block(db, user, course_id, payload)
 
 
 # À garder déclaré avant un futur PUT /courses/{course_id}/blocks/{block_id} :
@@ -120,7 +120,7 @@ async def reorder_blocks(
 ) -> None:
     """Réécrit l'ordre complet des blocs du cours (positions 0..n-1)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    await service.reorder_blocks(db, user, course_id, payload)
+    await blocks.reorder_blocks(db, user, course_id, payload)
 
 
 @router.patch("/courses/{course_id}/blocks/{block_id}", response_model=BlockRead)
@@ -133,7 +133,7 @@ async def update_block(
 ) -> BlockRead:
     """Édite un bloc : titre/description, contenu et/ou ressource pointée (document)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    return await service.update_block(db, user, course_id, block_id, payload)
+    return await blocks.update_block(db, user, course_id, block_id, payload)
 
 
 @router.delete(
@@ -147,4 +147,4 @@ async def delete_block(
 ) -> None:
     """Supprime un bloc du cours (les ressources de la bibliothèque restent)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    await service.delete_block(db, user, course_id, block_id)
+    await blocks.delete_block(db, user, course_id, block_id)

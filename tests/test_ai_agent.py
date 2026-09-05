@@ -31,7 +31,7 @@ from app.core.ai import (
     agent_interrupt,
 )
 from app.core.ai import client as client_module
-from app.core.ai.client import _to_langchain_messages
+from app.core.ai.messages import to_langchain_messages
 
 MESSAGES = [ChatMessage(role="user", content="Bonjour")]
 CONFIG = AIRequestConfig(provider=AIProvider.OLLAMA, model="llama3.2")
@@ -443,7 +443,7 @@ def test_history_conversion_tool_turns() -> None:
         ChatMessage(role="tool", content="Introuvable", tool_call_id="call_2", is_error=True),
         ChatMessage(role="assistant", content="Réponse"),
     ]
-    converted = _to_langchain_messages(history)
+    converted = to_langchain_messages(history)
     assert converted[1].tool_calls == [
         {"name": "read_block", "args": {"block_id": "b1"}, "id": "call_1", "type": "tool_call"}
     ]

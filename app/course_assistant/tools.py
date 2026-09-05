@@ -14,7 +14,7 @@ Quatre tools (specs neutres :class:`AIToolSpec`, exécuteur async passé à
   bibliothèque (formats :data:`IMAGE_MIMES`, plafond :data:`IMAGE_MAX_BYTES`)
   — même lecture S3 sous threadpool (:func:`read_image_sync`), image jointe
   au résultat via :class:`AIToolImage` (le client la transmet dans un message
-  utilisateur, cf. ``app/core/ai/client.py``) ; le ``content`` persisté reste
+  utilisateur, cf. ``app/core/ai/agent.py``) ; le ``content`` persisté reste
   une note texte — l'image n'est jamais rejouée aux tours suivants ;
 - ``read_module`` : lit le code HTML/CSS/JS d'un module interactif (en base,
   aucun accès S3 ; :func:`format_module`, plafonné).
@@ -56,9 +56,9 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.core.ai import AIToolCall, AIToolImage, AIToolResult, AIToolSpec
 from app.core.storage import Storage
-from app.course_assistant.context import format_block, format_module
 from app.course_assistant.editing.base import EditContext
 from app.course_assistant.refs import CourseRefs
+from app.course_assistant.render import format_block, format_module
 from app.models.resource import STATUS_AVAILABLE
 
 PDF_MIME = "application/pdf"

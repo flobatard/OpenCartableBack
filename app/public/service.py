@@ -1,42 +1,25 @@
-"""Régime d'accès élève : autorisation par visibilité + token de partage.
+"""Lectures du régime d'accès élève : détail filtré, presign, catalogue.
 
-C'est la **seconde dépendance d'autorisation** de l'API (Descriptions.md §5.1),
-distincte de ``get_current_user`` : aucune identité, aucun JWT, aucun appel
-Zitadel — un token de partage opaque (capability URL) et la ``visibility``
-du cours décident seuls de l'accès, vérifiés À CHAQUE requête :
-
-- cours ``public``  → accessible sans token (le token, s'il est fourni,
-  est ignoré) ;
-- cours ``draft``   → 404 toujours, même avec un lien valide (les liens
-  sont suspendus, pas supprimés) ;
-- cours ``private`` → token requis, lié à CE cours, non révoqué, non expiré.
-
-Sémantique d'erreur : **404 uniformément** (token inconnu/révoqué/expiré,
-cours introuvable/en cours de rédaction) — un 410 serait un oracle
-confirmant qu'un lien a existé, incohérent avec la doctrine du repo
-(« introuvable, jamais interdit »). Seule exception : presign d'une
-ressource ``pending`` → 409, miroir exact du régime prof (on est alors
-déjà autorisé sur le cours, aucune fuite).
-
-Tout est en lecture seule : aucune fonction ne commit. L'ordre des
-``execute`` de chaque fonction est stable et rejoué par une fausse session
-FIFO (tests/test_public_api.py) ; l'expiration est comparée EN PYTHON
-(pas en SQL) pour rester testable ainsi.
+L'autorisation (visibilité + token de partage, 404 uniforme) vit dans
+:mod:`app.public.access` ; ce module ne fait que lire un cours déjà autorisé
+et n'expose JAMAIS une donnée réservée au prof (règle d'or de ``schemas.py`` :
+pas de ``expected_answer``, de ``s3_key``, d'``owner_id`` ni d'e-mail — le
+content des blocs ``exercise`` est RECONSTRUIT par :func:`public_content`).
+Tout est en lecture seule : aucune fonction ne commit. L'ordre des ``execute``
+de chaque fonction est un contrat des tests (fausse session FIFO). Seule
+exception au 404 uniforme : presign d'une ressource ``pending`` → 409 (on est
+alors déjà autorisé sur le cours, aucune fuite).
 """
 
 import uuid
-from datetime import UTC, datetime
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.http import not_found
 from app.core.storage import Storage
 from app.courses.queries import block_counts_by_course, taxonomy_names_by_course
 from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
-    VISIBILITY_DRAFT,
     VISIBILITY_PUBLIC,
     Course,
     course_education_levels,
@@ -45,9 +28,9 @@ from app.models.course import (
 from app.models.education_level import EducationLevel
 from app.models.module import Module
 from app.models.resource import STATUS_AVAILABLE, Resource
-from app.models.share_link import ShareLink
 from app.models.subject import Subject
 from app.models.user import User
+from app.public.access import course_not_found
 from app.public.schemas import (
     PublicBlockRead,
     PublicCourseDetailRead,
@@ -60,21 +43,6 @@ from app.public.schemas import (
 )
 from app.resources.service import download_url_for
 from app.users.service import avatar_url_for
-
-
-def _not_found() -> HTTPException:
-    # Détail unique et volontairement vague : ne pas distinguer « cours
-    # inexistant », « lien révoqué », « lien expiré », « cours dépublié ».
-    return not_found("Cours introuvable")
-
-
-def _link_valid(link: ShareLink | None) -> bool:
-    """Un lien ouvre l'accès s'il existe, n'est pas révoqué et n'a pas expiré."""
-    return (
-        link is not None
-        and not link.revoked
-        and link.expires_at > datetime.now(UTC)
-    )
 
 
 def public_content(type_: str, content: dict) -> dict:
@@ -136,66 +104,6 @@ def _course_read(
         preview_settings=course.preview_settings,
         updated_at=course.updated_at,
     )
-
-
-async def get_public_course(
-    db: AsyncSession, course_id: uuid.UUID, token: str | None
-) -> Course:
-    """Autorise l'accès élève à un cours désigné par son id (voir module).
-
-    Ordre des execute : 1) cours ; puis UNIQUEMENT si le cours est
-    ``private`` et qu'un token est fourni : 2) lien (scopé à CE cours —
-    un token du cours A n'ouvre jamais le cours B).
-    """
-    course = (
-        (await db.execute(select(Course).where(Course.id == course_id)))
-        .scalars()
-        .one_or_none()
-    )
-    if course is None or course.visibility == VISIBILITY_DRAFT:
-        raise _not_found()
-    if course.visibility == VISIBILITY_PUBLIC:
-        return course
-    if token is None:
-        raise _not_found()
-    link = (
-        (
-            await db.execute(
-                select(ShareLink).where(
-                    ShareLink.course_id == course.id, ShareLink.token == token
-                )
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if not _link_valid(link):
-        raise _not_found()
-    return course
-
-
-async def get_course_for_token(db: AsyncSession, token: str) -> Course:
-    """Résout un lien de partage vers son cours (entrée ``/shared/{token}``).
-
-    Ordre des execute : 1) lien par token, 2) cours du lien. Un lien valide
-    sur un cours ``public`` reste valide (le prof a élargi l'accès) ; un
-    cours ``draft`` est introuvable même avec un lien valide.
-    """
-    link = (
-        (await db.execute(select(ShareLink).where(ShareLink.token == token)))
-        .scalars()
-        .one_or_none()
-    )
-    if not _link_valid(link):
-        raise _not_found()
-    course = (
-        (await db.execute(select(Course).where(Course.id == link.course_id)))
-        .scalars()
-        .one_or_none()
-    )
-    if course is None or course.visibility == VISIBILITY_DRAFT:
-        raise _not_found()
-    return course
 
 
 async def course_detail_public(db: AsyncSession, course: Course) -> PublicCourseDetailRead:
@@ -312,7 +220,7 @@ async def presign_download_public(
         .one_or_none()
     )
     if resource is None:
-        raise _not_found()
+        raise course_not_found()
     download_url, expires_in = download_url_for(resource, storage, inline=inline)
     return PublicDownloadRead(download_url=download_url, expires_in=expires_in)
 
@@ -336,7 +244,7 @@ async def get_module_public(
         .one_or_none()
     )
     if module is None:
-        raise _not_found()
+        raise course_not_found()
     return PublicModuleRead(
         id=module.id, title=module.title, html=module.html, css=module.css, js=module.js
     )

@@ -16,7 +16,7 @@ from starlette.background import BackgroundTask
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
 from app.core.storage import Storage, get_storage
-from app.course_transfer import service
+from app.course_transfer import export, importer
 from app.courses.schemas import CourseRead
 from app.users import service as users_service
 
@@ -34,7 +34,7 @@ async def export_course(
 ) -> StreamingResponse:
     """Archive ``.zip`` du cours : ``manifest.json`` + binaires des ressources."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    filename, tmp = await service.export_course(db, user, course_id, storage)
+    filename, tmp = await export.export_course(db, user, course_id, storage)
     tmp.seek(0, 2)
     length = tmp.tell()
     tmp.seek(0)
@@ -69,4 +69,4 @@ async def import_course(
 ) -> CourseRead:
     """Recrée un cours complet depuis une archive d'export (toujours un nouveau cours)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    return await service.import_course(db, user, file, storage)
+    return await importer.import_course(db, user, file, storage)

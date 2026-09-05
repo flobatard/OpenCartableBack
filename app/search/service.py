@@ -1,4 +1,5 @@
-"""Recherche publique (J3) : FTS Postgres sur les cours publics et les profs.
+"""Recherche publique : cours publics et profs cherchables, par texte libre
+et facettes.
 
 Règle d'or : seuls les cours ``visibility = 'public'`` remontent, et un prof
 ne remonte que si ``searchable`` (opt-in explicite) AND ``public_name`` non
@@ -7,215 +8,42 @@ même régime que ``app/public/`` (aucun JWT, aucun oracle : une facette
 inconnue renvoie une page vide, jamais une erreur — une URL partagée avec un
 id périmé doit rester servable).
 
-FTS : config ``french_unaccent`` (extension ``unaccent``, migration J3),
-``websearch_to_tsquery`` (syntaxe utilisateur libre, injection-safe par
-construction). Les vecteurs sont **stockés** (``courses.search_vector`` poids
-titre A / description B ; ``blocks.search_vector`` poids titre B / contenu C,
-sans jamais ``expected_answer``) et maintenus par triggers — voir les
-docstrings de ``app/models/{course,block}.py``. Les deux vecteurs sont
-combinés à la requête (cours OU un de ses blocs), pas consolidés. Le vecteur
-des profs est calculé à la volée (table minuscule, texte dépendant des M2M).
-
 Facettes : matière = sous-arbre entier via le ``code`` (chemin slug complet,
 préfixe unique — 2 petits selects, pas de CTE récursive) ; niveau = nœud +
 enfants directs (l'arbre a 2 profondeurs max). Les descendants sont résolus
-en amont puis filtrés par ``IN`` (les index inverses des M2M servent ça,
-cf. ``app/models/course.py``).
+en amont puis filtrés par ``IN`` (index inverses des M2M, cf.
+``app/models/course.py``). Les requêtes elles-mêmes sont les builders purs de
+:mod:`app.search.queries`.
 
-L'ordre des ``execute`` de chaque fonction est stable et rejoué par une
-fausse session FIFO (tests/test_search_api.py) ; les builders ``_*_stmt``
-sont purs et testés sur leur SQL compilé (seul moyen de valider la FTS sans
-Postgres).
+L'ordre des ``execute`` de chaque fonction est un contrat des tests (fausse
+session FIFO).
 """
 
 import uuid
 
-from sqlalchemy import Select, exists, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.storage import Storage
 from app.courses.queries import block_counts_by_course, taxonomy_names_by_course
-from app.models.block import Block
-from app.models.course import VISIBILITY_PUBLIC, Course, course_education_levels, course_subjects
+from app.models.course import VISIBILITY_PUBLIC, Course
 from app.models.education_level import EducationLevel
 from app.models.subject import Subject
-from app.models.user import (
-    CONTEXT_TEACHING,
-    User,
-    user_education_levels,
-    user_subjects,
-)
+from app.models.user import CONTEXT_TEACHING, user_subjects
 from app.public.service import _course_read
+from app.search.queries import (
+    courses_count_stmt,
+    courses_page_stmt,
+    teachers_count_stmt,
+    teachers_page_stmt,
+    tsquery,
+)
 from app.search.schemas import (
     PublicTeacherRead,
     SearchCoursesPage,
     SearchTeachersPage,
 )
 from app.users.service import avatar_url_for
-
-# Config FTS créée par la migration J3 (schéma public, résolue via search_path).
-FTS_CONFIG = "french_unaccent"
-
-
-def _tsquery(q: str):
-    """``websearch_to_tsquery`` : syntaxe libre (guillemets, OR, -), jamais
-    d'erreur de parsing, et ``q`` voyage en bind param — injection-safe."""
-    return func.websearch_to_tsquery(FTS_CONFIG, q)
-
-
-# ---------------------------------------------------------------------------
-# Builders purs (testables sur leur SQL compilé)
-# ---------------------------------------------------------------------------
-
-
-def _courses_filters(tsq, subject_ids, level_ids) -> list:
-    filters: list = [Course.visibility == VISIBILITY_PUBLIC]
-    if subject_ids is not None:
-        filters.append(
-            exists(
-                select(1).where(
-                    course_subjects.c.course_id == Course.id,
-                    course_subjects.c.subject_id.in_(subject_ids),
-                )
-            )
-        )
-    if level_ids is not None:
-        filters.append(
-            exists(
-                select(1).where(
-                    course_education_levels.c.course_id == Course.id,
-                    course_education_levels.c.education_level_id.in_(level_ids),
-                )
-            )
-        )
-    if tsq is not None:
-        blocks_match = exists(
-            select(1).where(
-                Block.course_id == Course.id,
-                Block.search_vector.bool_op("@@")(tsq),
-            )
-        )
-        filters.append(or_(Course.search_vector.bool_op("@@")(tsq), blocks_match))
-    return filters
-
-
-def _courses_rank(tsq):
-    """Pertinence d'un cours : son propre vecteur + la meilleure de ses
-    correspondances de blocs, pondérée 0.5 (heuristique de départ)."""
-    block_rank = (
-        select(func.max(func.ts_rank(Block.search_vector, tsq)))
-        .where(
-            Block.course_id == Course.id,
-            Block.search_vector.bool_op("@@")(tsq),
-        )
-        .scalar_subquery()
-    )
-    return func.coalesce(func.ts_rank(Course.search_vector, tsq), 0.0) + (
-        0.5 * func.coalesce(block_rank, 0.0)
-    )
-
-
-def _courses_count_stmt(tsq, subject_ids, level_ids) -> Select:
-    return (
-        select(func.count())
-        .select_from(Course)
-        .where(*_courses_filters(tsq, subject_ids, level_ids))
-    )
-
-
-def _courses_page_stmt(tsq, subject_ids, level_ids, limit: int, offset: int) -> Select:
-    stmt = select(Course).where(*_courses_filters(tsq, subject_ids, level_ids))
-    if tsq is not None:
-        stmt = stmt.order_by(
-            _courses_rank(tsq).desc(), Course.updated_at.desc(), Course.id
-        )
-    else:
-        # Sans texte libre, la recherche est un catalogue : du plus récent
-        # au plus ancien (tri de référence du repo).
-        stmt = stmt.order_by(Course.updated_at.desc(), Course.id)
-    return stmt.limit(limit).offset(offset)
-
-
-def _teachers_vector():
-    """tsvector du prof, calculé à la volée : nom public + noms des matières
-    qu'il déclare enseigner (profil « teaching »)."""
-    subjects_agg = (
-        select(func.string_agg(Subject.name, " "))
-        .select_from(
-            user_subjects.join(Subject, Subject.id == user_subjects.c.subject_id)
-        )
-        .where(
-            user_subjects.c.user_id == User.id,
-            user_subjects.c.context == CONTEXT_TEACHING,
-        )
-        .scalar_subquery()
-    )
-    return func.to_tsvector(FTS_CONFIG, func.concat_ws(" ", User.public_name, subjects_agg))
-
-
-def _teachers_filters(tsq, subject_ids, level_ids) -> list:
-    filters: list = [
-        User.searchable.is_(True),
-        User.public_name.is_not(None),
-        # Jamais de profil sans contenu : au moins un cours public.
-        exists(
-            select(1).where(
-                Course.owner_id == User.id,
-                Course.visibility == VISIBILITY_PUBLIC,
-            )
-        ),
-    ]
-    if subject_ids is not None:
-        filters.append(
-            exists(
-                select(1).where(
-                    user_subjects.c.user_id == User.id,
-                    user_subjects.c.context == CONTEXT_TEACHING,
-                    user_subjects.c.subject_id.in_(subject_ids),
-                )
-            )
-        )
-    if level_ids is not None:
-        filters.append(
-            exists(
-                select(1).where(
-                    user_education_levels.c.user_id == User.id,
-                    user_education_levels.c.context == CONTEXT_TEACHING,
-                    user_education_levels.c.education_level_id.in_(level_ids),
-                )
-            )
-        )
-    if tsq is not None:
-        filters.append(_teachers_vector().bool_op("@@")(tsq))
-    return filters
-
-
-def _teachers_count_stmt(tsq, subject_ids, level_ids) -> Select:
-    return (
-        select(func.count())
-        .select_from(User)
-        .where(*_teachers_filters(tsq, subject_ids, level_ids))
-    )
-
-
-def _teachers_page_stmt(tsq, subject_ids, level_ids, limit: int, offset: int) -> Select:
-    # avatar_s3_key/avatar_status ne sortent jamais de l'API : ils servent à
-    # minter l'avatar_url présignée (le mime est inutile au presign GET).
-    stmt = select(
-        User.id, User.public_name, User.avatar_s3_key, User.avatar_status
-    ).where(*_teachers_filters(tsq, subject_ids, level_ids))
-    if tsq is not None:
-        stmt = stmt.order_by(
-            func.ts_rank(_teachers_vector(), tsq).desc(), User.public_name, User.id
-        )
-    else:
-        stmt = stmt.order_by(User.public_name, User.id)
-    return stmt.limit(limit).offset(offset)
-
-
-# ---------------------------------------------------------------------------
-# Résolution des facettes (sous-arbres → listes d'ids, None = pas de filtre)
-# ---------------------------------------------------------------------------
 
 
 async def _subject_filter_ids(
@@ -270,11 +98,6 @@ async def _level_filter_ids(
     return list(ids) or None
 
 
-# ---------------------------------------------------------------------------
-# Services
-# ---------------------------------------------------------------------------
-
-
 async def search_courses(
     db: AsyncSession,
     *,
@@ -290,8 +113,7 @@ async def search_courses(
     matière inconnue ⇒ page vide immédiate, aucun autre execute ; si
     ``education_level_id`` : 3) ids — inconnu ⇒ page vide ; puis 4) count,
     5) page (cours triés rank/updated_at) ; et si items : 6) noms de
-    matières, 7) noms de niveaux, 8) comptes de blocs (assemblage identique
-    à ``list_public_courses_by_professor``).
+    matières, 7) noms de niveaux, 8) comptes de blocs.
     """
     q = (q or "").strip() or None  # websearch_to_tsquery('') ne matche rien
     subject_ids: list[uuid.UUID] | None = None
@@ -305,12 +127,10 @@ async def search_courses(
         if level_ids is None:
             return SearchCoursesPage(items=[], total=0, limit=limit, offset=offset)
 
-    tsq = _tsquery(q) if q else None
-    total = (
-        await db.execute(_courses_count_stmt(tsq, subject_ids, level_ids))
-    ).scalar_one()
+    tsq = tsquery(q) if q else None
+    total = (await db.execute(courses_count_stmt(tsq, subject_ids, level_ids))).scalar_one()
     courses = (
-        (await db.execute(_courses_page_stmt(tsq, subject_ids, level_ids, limit, offset)))
+        (await db.execute(courses_page_stmt(tsq, subject_ids, level_ids, limit, offset)))
         .scalars()
         .all()
     )
@@ -361,12 +181,10 @@ async def search_teachers(
         if level_ids is None:
             return SearchTeachersPage(items=[], total=0, limit=limit, offset=offset)
 
-    tsq = _tsquery(q) if q else None
-    total = (
-        await db.execute(_teachers_count_stmt(tsq, subject_ids, level_ids))
-    ).scalar_one()
+    tsq = tsquery(q) if q else None
+    total = (await db.execute(teachers_count_stmt(tsq, subject_ids, level_ids))).scalar_one()
     rows = (
-        await db.execute(_teachers_page_stmt(tsq, subject_ids, level_ids, limit, offset))
+        await db.execute(teachers_page_stmt(tsq, subject_ids, level_ids, limit, offset))
     ).all()
     if not rows:
         return SearchTeachersPage(items=[], total=total, limit=limit, offset=offset)

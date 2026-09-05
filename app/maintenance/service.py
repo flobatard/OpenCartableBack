@@ -217,7 +217,7 @@ async def reconcile_s3_orphans(
     tenu en mémoire.
 
     La **grâce est une sécurité, pas un confort** : l'import de cours pousse ses
-    objets AVANT son commit (:mod:`app.course_transfer.service`), et un upload
+    objets AVANT son commit (:mod:`app.course_transfer.importer`), et un upload
     de ressource/avatar vit entre son presign et sa confirmation — pendant ces
     fenêtres un objet légitime n'a pas (encore) de ligne. Une grâce de plusieurs
     jours les couvre toutes largement.

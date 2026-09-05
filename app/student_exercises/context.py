@@ -14,8 +14,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.core.ai import ChatMessage
-from app.course_assistant.context import assemble_context, format_block
+from app.course_assistant.context import assemble_context
 from app.course_assistant.refs import CourseRefs
+from app.course_assistant.render import format_block
 from app.models.exercise_submission import KIND_ANSWER
 from app.public.service import public_content
 from app.student_exercises.prompts import TUTOR_SYSTEM_PROMPT

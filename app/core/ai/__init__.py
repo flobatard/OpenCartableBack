@@ -3,9 +3,9 @@
 **Seuls les modules de ce package sont autorisés à importer ``langchain*``,
 ``langgraph`` et ``langfuse``** (même exigence de remplaçabilité que boto3
 dans :mod:`app.core.storage` et l'IdP dans :mod:`app.core.auth` : changer de
-stack IA ne doit toucher qu'ici). Les features consommatrices (J5 : assistant
-de cours, RAG, résumés, quiz, review de copies) n'importent que les noms
-ré-exportés ci-dessous.
+stack IA ne doit toucher qu'ici). Les features consommatrices (assistant de
+cours, tuteur d'exercice, et demain RAG, résumés, quiz…) n'importent que les
+noms ré-exportés ci-dessous.
 
 Contrats :
 
@@ -29,7 +29,8 @@ Contrats :
   les settings ``LANGFUSE_*``.
 """
 
-from app.core.ai.client import AIClient, agent_interrupt, get_ai_client
+from app.core.ai.agent import agent_interrupt
+from app.core.ai.client import AIClient, get_ai_client
 from app.core.ai.model_catalog import PROVIDERS_WITH_MODEL_LISTING, list_models
 from app.core.ai.observability import shutdown_langfuse
 from app.core.ai.types import (

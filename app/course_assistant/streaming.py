@@ -62,15 +62,10 @@ from app.core.database import touch
 from app.core.http import invalid, not_found
 from app.core.storage import Storage
 from app.course_assistant import hitl
-from app.course_assistant.context import (
-    TRUNCATED_HISTORY_NOTICE,
-    build_course_context,
-    build_refs,
-    extract_sources,
-    replay_messages,
-)
+from app.course_assistant.context import build_course_context, build_refs, extract_sources
 from app.course_assistant.editing import TARGET_MODULE, EditContext, edit_context_for
 from app.course_assistant.refs import CourseRefs
+from app.course_assistant.replay import TRUNCATED_HISTORY_NOTICE, replay_messages
 from app.course_assistant.schemas import MessageCreate, ProposalDecisionCreate
 from app.course_assistant.service import load_conversation, load_messages, load_snapshot
 from app.course_assistant.tools import build_tool_executor, build_tool_specs

@@ -12,14 +12,7 @@ from pypdf import PdfWriter
 from app.core.ai import AIToolCall
 from app.course_assistant import hitl
 from app.course_assistant import tools as tools_module
-from app.course_assistant.context import (
-    build_course_context,
-    build_refs,
-    extract_sources,
-    format_block,
-    format_module,
-    replay_messages,
-)
+from app.course_assistant.context import build_course_context, build_refs, extract_sources
 from app.course_assistant.editing import base as editing_base
 from app.course_assistant.editing.block_exercise import (
     BLOCK_EXERCISE,
@@ -43,6 +36,8 @@ from app.course_assistant.editing.module import (
     PROPOSE_HTML_EDIT,
     PROPOSE_JS_EDIT,
 )
+from app.course_assistant.render import format_block, format_module
+from app.course_assistant.replay import replay_messages
 from app.course_assistant.tools import (
     IMAGE_MAX_BYTES,
     PDF_MAX_BYTES,
