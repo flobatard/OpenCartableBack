@@ -13,12 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert, Update
+from sqlalchemy.sql.dml import Update
 
-from app.core.auth import AuthenticatedUser, get_current_user
-from app.core.database import get_db
 from app.main import create_app
 from app.modules.schemas import MAX_CODE_LENGTH
+from tests.fakes import FakeSession, deletes, inserts, make_client
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 # Sérialisation JSON de _NOW par FastAPI (suffixe « Z », pas « +00:00 »).
@@ -48,68 +47,6 @@ def _module_row(**overrides):
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
-
-
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT ; écritures tracées sans consommer."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, Insert) and stmt._returning:
-            return _FakeResult(self._select_results.pop(0))
-        if isinstance(stmt, (Insert, Update, Delete)):
-            return _FakeResult([])
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-
-def _client(session) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: session
-    return TestClient(app)
-
-
-def _inserts(session, table_name):
-    return [
-        (stmt, params)
-        for stmt, params in session.executed
-        if isinstance(stmt, Insert) and stmt.table.name == table_name
-    ]
-
-
-def _deletes(session):
-    return [stmt for stmt, _ in session.executed if isinstance(stmt, Delete)]
 
 
 _COURSE_ID = uuid.uuid4()
@@ -153,8 +90,8 @@ def test_auth_required(method, path, body):
 def test_foreign_course_not_found(method, path_suffix, body):
     # Le select scopé owner_id ne retourne rien : 404, jamais 403.
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).request(
+    session = FakeSession([[user], []])
+    response = make_client(session).request(
         method, f"/api/v1/courses/{_COURSE_ID}/modules{path_suffix}", json=body
     )
 
@@ -172,8 +109,8 @@ def test_list_modules_without_code():
     m1 = _module_row(course_id=course.id)
     m2 = _module_row(course_id=course.id, title="Simulation")
     # FIFO : cours (contrôle de propriété), puis modules (tri côté SQL).
-    session = _FakeSession([[user], [course], [m1, m2]])
-    response = _client(session).get(f"/api/v1/courses/{course.id}/modules")
+    session = FakeSession([[user], [course], [m1, m2]])
+    response = make_client(session).get(f"/api/v1/courses/{course.id}/modules")
 
     assert response.status_code == 200
     body = response.json()
@@ -195,9 +132,9 @@ def test_create_module_ok():
     user = _user_row()
     course = _course_row()
     # FIFO : cours, puis timestamps servis par l'insert RETURNING.
-    session = _FakeSession([[user], [course], [(_NOW, _NOW)]])
+    session = FakeSession([[user], [course], [(_NOW, _NOW)]])
     payload = {"title": "Quiz", "html": "<p>Q1</p>", "css": "", "js": "let a = 1"}
-    response = _client(session).post(
+    response = make_client(session).post(
         f"/api/v1/courses/{course.id}/modules", json=payload
     )
 
@@ -209,7 +146,7 @@ def test_create_module_ok():
     assert body["css"] == ""
     assert body["js"] == "let a = 1"
 
-    [(stmt, _)] = _inserts(session, "modules")
+    [(stmt, _)] = inserts(session, "modules")
     values = stmt.compile().params
     assert values["title"] == "Quiz"
     assert values["html"] == "<p>Q1</p>"
@@ -220,8 +157,8 @@ def test_create_module_ok():
 def test_create_module_empty_code_by_default():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], [(_NOW, _NOW)]])
-    response = _client(session).post(
+    session = FakeSession([[user], [course], [(_NOW, _NOW)]])
+    response = make_client(session).post(
         f"/api/v1/courses/{course.id}/modules", json={"title": "Quiz"}
     )
 
@@ -242,8 +179,8 @@ def test_create_module_empty_code_by_default():
     ],
 )
 def test_create_module_invalid_payload_without_db_access(payload):
-    session = _FakeSession()
-    response = _client(session).post(
+    session = FakeSession()
+    response = make_client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/modules", json=payload
     )
     assert response.status_code == 422
@@ -258,8 +195,8 @@ def test_module_detail_with_code():
     course = _course_row()
     module = _module_row(course_id=course.id)
     # FIFO : cours, puis module scopé cours.
-    session = _FakeSession([[user], [course], [module]])
-    response = _client(session).get(
+    session = FakeSession([[user], [course], [module]])
+    response = make_client(session).get(
         f"/api/v1/courses/{course.id}/modules/{module.id}"
     )
 
@@ -279,8 +216,8 @@ def test_module_detail_with_code():
 def test_module_detail_unknown_or_other_course():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).get(
+    session = FakeSession([[user], [course], []])
+    response = make_client(session).get(
         f"/api/v1/courses/{course.id}/modules/{uuid.uuid4()}"
     )
 
@@ -295,8 +232,8 @@ def test_patch_title_only():
     user = _user_row()
     course = _course_row()
     module = _module_row(course_id=course.id)
-    session = _FakeSession([[user], [course], [module]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [module]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/modules/{module.id}",
         json={"title": "Quiz renommé"},
     )
@@ -318,8 +255,8 @@ def test_patch_code_only():
     user = _user_row()
     course = _course_row()
     module = _module_row(course_id=course.id)
-    session = _FakeSession([[user], [course], [module]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [module]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/modules/{module.id}",
         json={"html": "<p>V2</p>", "css": "", "js": "let b = 2"},
     )
@@ -352,8 +289,8 @@ def test_patch_code_only():
     ],
 )
 def test_patch_invalid_payload_without_db_access(payload):
-    session = _FakeSession()
-    response = _client(session).patch(
+    session = FakeSession()
+    response = make_client(session).patch(
         f"/api/v1/courses/{uuid.uuid4()}/modules/{uuid.uuid4()}", json=payload
     )
     assert response.status_code == 422
@@ -363,8 +300,8 @@ def test_patch_invalid_payload_without_db_access(payload):
 def test_patch_unknown_or_other_course_module():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], []])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/modules/{uuid.uuid4()}",
         json={"title": "Quiz"},
     )
@@ -382,13 +319,13 @@ def test_delete_module():
     course = _course_row()
     module = _module_row(course_id=course.id)
     # FIFO : cours, module (scopé cours), puis delete (non consommant).
-    session = _FakeSession([[user], [course], [module]])
-    response = _client(session).delete(
+    session = FakeSession([[user], [course], [module]])
+    response = make_client(session).delete(
         f"/api/v1/courses/{course.id}/modules/{module.id}"
     )
 
     assert response.status_code == 204
-    assert len(_deletes(session)) == 1
+    assert len(deletes(session)) == 1
     # Les blocs module pointeurs partent par FK CASCADE : aucun execute
     # supplémentaire, et rien à purger côté storage (code en base).
     assert course.updated_at != _NOW
@@ -398,10 +335,10 @@ def test_delete_module():
 def test_delete_unknown_module():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).delete(
+    session = FakeSession([[user], [course], []])
+    response = make_client(session).delete(
         f"/api/v1/courses/{course.id}/modules/{uuid.uuid4()}"
     )
 
     assert response.status_code == 404
-    assert _deletes(session) == []
+    assert deletes(session) == []
