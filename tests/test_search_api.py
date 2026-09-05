@@ -18,9 +18,6 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import postgresql
 
-from app.core.database import get_db
-from app.core.storage import get_storage
-from app.main import create_app
 from app.search.service import (
     _courses_count_stmt,
     _courses_page_stmt,
@@ -28,6 +25,7 @@ from app.search.service import (
     _teachers_page_stmt,
     _tsquery,
 )
+from tests.fakes import FakeSession, make_client
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 
@@ -46,63 +44,16 @@ def _course_row(**overrides):
     return SimpleNamespace(**defaults)
 
 
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-    def scalar_one(self):
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT (lecture seule : rien d'autre à tracer)."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-
-class _FakeStorage:
-    """Faux client S3 : seul presign_get sert ici (avatar_url des profs)."""
-
-    def presign_get(self, s3_key, original_name, inline=False):
-        return f"https://s3.test/get/{s3_key}"
-
-
 def _client(session) -> TestClient:
     # PAS d'override de get_current_user : ces routes vivent sans lui.
-    app = create_app()
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_storage] = lambda: _FakeStorage()
-    return TestClient(app)
+    return make_client(session, authenticated=False)
 
 
 # --- Contrat HTTP : régime public, pagination, assemblage ----------------------
 
 
 def test_search_courses_responds_without_authorization():
-    session = _FakeSession([[0], []])
+    session = FakeSession([[0], []])
     response = _client(session).get("/api/v1/public/search/courses")
     assert response.status_code == 200
     assert "WWW-Authenticate" not in response.headers
@@ -113,7 +64,7 @@ def test_search_courses_page_assembled():
     c1 = _course_row()
     c2 = _course_row(title="Racines carrées", description=None)
     # FIFO : count, page, noms matières, noms niveaux, comptes de blocs.
-    session = _FakeSession(
+    session = FakeSession(
         [
             [12],
             [c1, c2],
@@ -142,7 +93,7 @@ def test_search_courses_page_assembled():
 
 
 def test_search_courses_no_result_two_executes():
-    session = _FakeSession([[0], []])
+    session = FakeSession([[0], []])
     response = _client(session).get(
         "/api/v1/public/search/courses", params={"q": "introuvable"}
     )
@@ -155,7 +106,7 @@ def test_search_courses_no_result_two_executes():
 def test_unknown_subject_facet_empty_page_without_oracle():
     # Id de matière inconnu : 200 + page vide immédiate (pas de 422 — une URL
     # partagée avec une facette périmée doit rester servable), un seul execute.
-    session = _FakeSession([[]])
+    session = FakeSession([[]])
     response = _client(session).get(
         "/api/v1/public/search/courses", params={"subject_id": str(uuid.uuid4())}
     )
@@ -168,7 +119,7 @@ def test_subject_facet_resolves_subtree_by_code():
     sid = uuid.uuid4()
     child_id = uuid.uuid4()
     # FIFO : code de la matière, ids du sous-arbre, count, page (vide).
-    session = _FakeSession([["mathematiques.algebre"], [sid, child_id], [0], []])
+    session = FakeSession([["mathematiques.algebre"], [sid, child_id], [0], []])
     response = _client(session).get(
         "/api/v1/public/search/courses", params={"subject_id": str(sid)}
     )
@@ -182,7 +133,7 @@ def test_subject_facet_resolves_subtree_by_code():
 
 
 def test_unknown_level_facet_empty_page_without_oracle():
-    session = _FakeSession([[]])
+    session = FakeSession([[]])
     response = _client(session).get(
         "/api/v1/public/search/courses",
         params={"education_level_id": str(uuid.uuid4())},
@@ -194,7 +145,7 @@ def test_unknown_level_facet_empty_page_without_oracle():
 
 def test_search_without_q_is_a_catalog():
     # Facettes seules (ou rien) : autorisé — tri par updated_at, pas de FTS.
-    session = _FakeSession([[0], []])
+    session = FakeSession([[0], []])
     response = _client(session).get("/api/v1/public/search/courses")
     assert response.status_code == 200
     page_sql = str(session.executed[1][0].compile(dialect=postgresql.dialect()))
@@ -204,7 +155,7 @@ def test_search_without_q_is_a_catalog():
 
 def test_blank_q_treated_as_absent():
     # websearch_to_tsquery('') ne matcherait rien : un q blanc est neutralisé.
-    session = _FakeSession([[0], []])
+    session = FakeSession([[0], []])
     response = _client(session).get(
         "/api/v1/public/search/courses", params={"q": "   "}
     )
@@ -214,11 +165,11 @@ def test_blank_q_treated_as_absent():
 
 
 def test_pagination_bounds_validated():
-    response = _client(_FakeSession()).get(
+    response = _client(FakeSession()).get(
         "/api/v1/public/search/courses", params={"limit": 51}
     )
     assert response.status_code == 422
-    response = _client(_FakeSession()).get(
+    response = _client(FakeSession()).get(
         "/api/v1/public/search/courses", params={"offset": -1}
     )
     assert response.status_code == 422
@@ -228,7 +179,7 @@ def test_search_teachers_page_assembled():
     uid1, uid2 = uuid.uuid4(), uuid.uuid4()
     # FIFO : count, page (id, public_name, avatar_s3_key, avatar_status),
     # matières enseignées, comptes de cours publics.
-    session = _FakeSession(
+    session = FakeSession(
         [
             [2],
             [
@@ -260,7 +211,7 @@ def test_search_teachers_page_assembled():
 
 
 def test_search_teachers_no_result():
-    session = _FakeSession([[0], []])
+    session = FakeSession([[0], []])
     response = _client(session).get("/api/v1/public/search/teachers")
     assert response.status_code == 200
     assert response.json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
