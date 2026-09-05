@@ -13,12 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert, Update
 
-from app.core.auth import AuthenticatedUser, get_current_user
-from app.core.database import get_db
-from app.core.storage import get_storage
-from app.main import create_app
+from tests.fakes import FakeSession, FakeStorage, deletes, inserts, make_client, updates
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 
@@ -55,83 +51,6 @@ def _block_row(**overrides):
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
-
-
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT ; écritures tracées sans consommer."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, Insert) and stmt._returning:
-            return _FakeResult(self._select_results.pop(0))
-        if isinstance(stmt, (Insert, Update, Delete)):
-            return _FakeResult([])
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-
-class _FakeStorage:
-    """Faux client S3 : n'enregistre que les clés supprimées (pas de réseau)."""
-
-    def __init__(self):
-        self.deleted: list[str] = []
-
-    async def delete_many(self, s3_keys):
-        self.deleted.extend(s3_keys)
-
-
-def _client(session, storage=None) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
-    return TestClient(app)
-
-
-def _inserts(session, table_name):
-    return [
-        (stmt, params)
-        for stmt, params in session.executed
-        if isinstance(stmt, Insert) and stmt.table.name == table_name
-    ]
-
-
-def _updates(session):
-    return [(stmt, params) for stmt, params in session.executed if isinstance(stmt, Update)]
-
-
-def _deletes(session):
-    return [(stmt, params) for stmt, params in session.executed if isinstance(stmt, Delete)]
 
 
 _COURSE_ID = uuid.uuid4()
@@ -174,8 +93,8 @@ def test_routes_require_auth(client: TestClient, method, path, body):
 
 def test_empty_list_short_circuits():
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).get("/api/v1/courses")
+    session = FakeSession([[user], []])
+    response = make_client(session).get("/api/v1/courses")
 
     assert response.status_code == 200
     assert response.json() == []
@@ -187,7 +106,7 @@ def test_list_dispatches_classification_and_counts():
     user = _user_row()
     c1, c2 = _course_row(), _course_row(description="Avec description")
     s1, s2, l1 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession(
+    session = FakeSession(
         [
             [user],
             [c1, c2],
@@ -196,7 +115,7 @@ def test_list_dispatches_classification_and_counts():
             [(c1.id, 3)],
         ]
     )
-    response = _client(session).get("/api/v1/courses")
+    response = make_client(session).get("/api/v1/courses")
 
     assert response.status_code == 200
     body = response.json()
@@ -212,14 +131,14 @@ def test_list_dispatches_classification_and_counts():
 def test_create_happy_path():
     user = _user_row()
     s1, s2, l1 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], [s1, s2], [l1], [(_NOW, _NOW)]])
+    session = FakeSession([[user], [s1, s2], [l1], [(_NOW, _NOW)]])
     payload = {
         "title": "  Suites numériques  ",
         "description": "Premier chapitre",
         "subject_ids": [str(s1), str(s2)],
         "education_level_ids": [str(l1)],
     }
-    response = _client(session).post("/api/v1/courses", json=payload)
+    response = make_client(session).post("/api/v1/courses", json=payload)
 
     assert response.status_code == 201
     body = response.json()
@@ -231,54 +150,54 @@ def test_create_happy_path():
     assert body["block_count"] == 0
     assert body["created_at"] and body["updated_at"]
 
-    [(stmt_course, _)] = _inserts(session, "courses")
+    [(stmt_course, _)] = inserts(session, "courses")
     assert stmt_course._returning  # timestamps server_default relus en RETURNING
-    [(_, subject_params)] = _inserts(session, "course_subjects")
+    [(_, subject_params)] = inserts(session, "course_subjects")
     assert [p["subject_id"] for p in subject_params] == [s1, s2]
-    [(_, level_params)] = _inserts(session, "course_education_levels")
+    [(_, level_params)] = inserts(session, "course_education_levels")
     assert [p["education_level_id"] for p in level_params] == [l1]
     assert session.commits >= 1
 
 
 def test_create_without_classification():
     user = _user_row()
-    session = _FakeSession([[user], [], [], [(_NOW, _NOW)]])
-    response = _client(session).post("/api/v1/courses", json={"title": "Sans classement"})
+    session = FakeSession([[user], [], [], [(_NOW, _NOW)]])
+    response = make_client(session).post("/api/v1/courses", json={"title": "Sans classement"})
 
     assert response.status_code == 201
     body = response.json()
     assert body["subject_ids"] == []
     assert body["education_level_ids"] == []
     # Aucun executemany sur liste vide (erreur SQLAlchemy sinon).
-    assert _inserts(session, "course_subjects") == []
-    assert _inserts(session, "course_education_levels") == []
+    assert inserts(session, "course_subjects") == []
+    assert inserts(session, "course_education_levels") == []
 
 
 def test_create_unknown_subject():
     user = _user_row()
-    session = _FakeSession([[user], []])  # lookup matières vide
+    session = FakeSession([[user], []])  # lookup matières vide
     payload = {"title": "x", "subject_ids": [str(uuid.uuid4())]}
-    response = _client(session).post("/api/v1/courses", json=payload)
+    response = make_client(session).post("/api/v1/courses", json=payload)
 
     assert response.status_code == 422
     assert "Matières inconnues" in response.json()["detail"]
-    assert _inserts(session, "courses") == []
+    assert inserts(session, "courses") == []
 
 
 def test_create_unknown_education_level():
     user = _user_row()
     s1 = uuid.uuid4()
-    session = _FakeSession([[user], [s1], []])  # lookup niveaux vide
+    session = FakeSession([[user], [s1], []])  # lookup niveaux vide
     payload = {
         "title": "x",
         "subject_ids": [str(s1)],
         "education_level_ids": [str(uuid.uuid4())],
     }
-    response = _client(session).post("/api/v1/courses", json=payload)
+    response = make_client(session).post("/api/v1/courses", json=payload)
 
     assert response.status_code == 422
     assert "Niveaux d'étude inconnus" in response.json()["detail"]
-    assert _inserts(session, "courses") == []
+    assert inserts(session, "courses") == []
 
 
 @pytest.mark.parametrize(
@@ -292,8 +211,8 @@ def test_create_unknown_education_level():
     ],
 )
 def test_create_invalid_payload_without_db_access(payload):
-    session = _FakeSession()
-    response = _client(session).post("/api/v1/courses", json=payload)
+    session = FakeSession()
+    response = make_client(session).post("/api/v1/courses", json=payload)
     assert response.status_code == 422
     assert session.executed == []
 
@@ -301,20 +220,20 @@ def test_create_invalid_payload_without_db_access(payload):
 def test_create_deduplicates_ids():
     user = _user_row()
     s1 = uuid.uuid4()
-    session = _FakeSession([[user], [s1], [], [(_NOW, _NOW)]])
+    session = FakeSession([[user], [s1], [], [(_NOW, _NOW)]])
     payload = {"title": "x", "subject_ids": [str(s1), str(s1)]}
-    response = _client(session).post("/api/v1/courses", json=payload)
+    response = make_client(session).post("/api/v1/courses", json=payload)
 
     assert response.status_code == 201
     assert response.json()["subject_ids"] == [str(s1)]
-    [(_, params)] = _inserts(session, "course_subjects")
+    [(_, params)] = inserts(session, "course_subjects")
     assert len(params) == 1
 
 
 def test_detail_course_not_owned():
     user = _user_row()
-    session = _FakeSession([[user], []])  # select cours scopé owner → vide
-    response = _client(session).get(f"/api/v1/courses/{uuid.uuid4()}")
+    session = FakeSession([[user], []])  # select cours scopé owner → vide
+    response = make_client(session).get(f"/api/v1/courses/{uuid.uuid4()}")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
@@ -331,8 +250,8 @@ def test_detail_with_ordered_blocks():
         content={"caption": "Schéma", "display": "inline"},
         resource_id=uuid.uuid4(),
     )
-    session = _FakeSession([[user], [course], [s1], [l1], [b1, b2]])
-    response = _client(session).get(f"/api/v1/courses/{course.id}")
+    session = FakeSession([[user], [course], [s1], [l1], [b1, b2]])
+    response = make_client(session).get(f"/api/v1/courses/{course.id}")
 
     assert response.status_code == 200
     body = response.json()
@@ -365,8 +284,8 @@ def test_detail_with_ordered_blocks():
 def test_add_block_default_content(block_type, content):
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], [3]])  # position suivante servie : 3
-    response = _client(session).post(
+    session = FakeSession([[user], [course], [3]])  # position suivante servie : 3
+    response = make_client(session).post(
         f"/api/v1/courses/{course.id}/blocks", json={"type": block_type}
     )
 
@@ -380,7 +299,7 @@ def test_add_block_default_content(block_type, content):
     assert body["position"] == 3
     assert body["resource_id"] is None
     assert body["module_id"] is None
-    assert len(_inserts(session, "blocks")) == 1
+    assert len(inserts(session, "blocks")) == 1
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
 
@@ -388,15 +307,15 @@ def test_add_block_default_content(block_type, content):
 def test_add_block_with_title_and_description():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], [0]])
+    session = FakeSession([[user], [course], [0]])
     payload = {"type": "text", "title": "Introduction", "description": "Bref rappel"}
-    response = _client(session).post(f"/api/v1/courses/{course.id}/blocks", json=payload)
+    response = make_client(session).post(f"/api/v1/courses/{course.id}/blocks", json=payload)
 
     assert response.status_code == 201
     body = response.json()
     assert body["title"] == "Introduction"
     assert body["description"] == "Bref rappel"
-    [(stmt, _)] = _inserts(session, "blocks")
+    [(stmt, _)] = inserts(session, "blocks")
     values = stmt.compile().params
     assert values["title"] == "Introduction"
     assert values["description"] == "Bref rappel"
@@ -405,8 +324,8 @@ def test_add_block_with_title_and_description():
 def test_add_first_block_position_zero():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], [0]])  # coalesce(max+1, 0) sur cours vide
-    response = _client(session).post(f"/api/v1/courses/{course.id}/blocks", json={"type": "text"})
+    session = FakeSession([[user], [course], [0]])  # coalesce(max+1, 0) sur cours vide
+    response = make_client(session).post(f"/api/v1/courses/{course.id}/blocks", json={"type": "text"})
 
     assert response.status_code == 201
     assert response.json()["position"] == 0
@@ -417,8 +336,8 @@ def test_add_block_rejected_type_without_db_access(block_type):
     # « ressource » et « lien » sont des types supprimés (les ressources sont
     # une bibliothèque indépendante, les liens vivent dans le markdown) : le
     # schéma BlockCreate ne les accepte pas.
-    session = _FakeSession()
-    response = _client(session).post(
+    session = FakeSession()
+    response = make_client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/blocks", json={"type": block_type}
     )
     assert response.status_code == 422
@@ -429,9 +348,9 @@ def test_edit_text_block_content():
     user = _user_row()
     course = _course_row()
     block = _block_row()
-    session = _FakeSession([[user], [course], [block]])
+    session = FakeSession([[user], [course], [block]])
     payload = {"content": {"markdown": "## Suites\nDéfinition d'une suite."}}
-    response = _client(session).patch(
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
     )
 
@@ -448,7 +367,7 @@ def test_edit_text_block_content():
     }
     # Écriture via l'unité de travail ORM (mutation d'attribut), pas d'Update Core.
     assert block.content == {"markdown": "## Suites\nDéfinition d'une suite."}
-    assert _updates(session) == []
+    assert updates(session) == []
     assert course.updated_at != _NOW
     assert session.commits >= 1
 
@@ -458,9 +377,9 @@ def test_edit_title_and_description_on_non_text_block():
     user = _user_row()
     course = _course_row()
     block = _block_row(type="module", content={})
-    session = _FakeSession([[user], [course], [block]])
+    session = FakeSession([[user], [course], [block]])
     payload = {"title": "Vidéo complémentaire", "description": "Pour aller plus loin"}
-    response = _client(session).patch(
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
     )
 
@@ -478,8 +397,8 @@ def test_edit_clears_title_and_description_with_null():
     user = _user_row()
     course = _course_row()
     block = _block_row(title="Ancien titre", description="Ancienne description")
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"title": None, "description": None},
     )
@@ -491,8 +410,8 @@ def test_edit_clears_title_and_description_with_null():
 
 
 def test_edit_empty_payload_rejected():
-    session = _FakeSession()
-    response = _client(session).patch(
+    session = FakeSession()
+    response = make_client(session).patch(
         f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}", json={}
     )
 
@@ -502,8 +421,8 @@ def test_edit_empty_payload_rejected():
 
 def test_edit_course_not_owned():
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).patch(
+    session = FakeSession([[user], []])
+    response = make_client(session).patch(
         f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}",
         json={"content": {"markdown": "x"}},
     )
@@ -515,8 +434,8 @@ def test_edit_course_not_owned():
 def test_edit_content_block_not_found():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], []])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{uuid.uuid4()}",
         json={"content": {"markdown": "x"}},
     )
@@ -532,8 +451,8 @@ def test_edit_text_content_on_module_block_rejected():
     course = _course_row()
     initial_content = {}
     block = _block_row(type="module", content=initial_content)
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"content": {"markdown": "x"}},
     )
@@ -551,8 +470,8 @@ def test_edit_exercise_content_on_text_block_rejected():
     user = _user_row()
     course = _course_row()
     block = _block_row()
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"content": {"statement": "", "questions": []}},
     )
@@ -603,8 +522,8 @@ _QUESTION_ID = str(uuid.uuid4())
     ],
 )
 def test_edit_content_invalid_payload_without_db_access(payload):
-    session = _FakeSession()
-    response = _client(session).patch(
+    session = FakeSession()
+    response = make_client(session).patch(
         f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}", json=payload
     )
     assert response.status_code == 422
@@ -623,8 +542,8 @@ def test_edit_empty_exercise_block_content():
     user = _user_row()
     course = _course_row()
     block = _exercise_row()
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"content": {"statement": "", "questions": []}},
     )
@@ -640,7 +559,7 @@ def test_edit_exercise_block_new_questions_receive_an_id():
     user = _user_row()
     course = _course_row()
     block = _exercise_row()
-    session = _FakeSession([[user], [course], [block]])
+    session = FakeSession([[user], [course], [block]])
     payload = {
         "content": {
             "statement": "## Sujet\nSoit $u_n$ une suite.",
@@ -650,7 +569,7 @@ def test_edit_exercise_block_new_questions_receive_an_id():
             ],
         }
     }
-    response = _client(session).patch(
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
     )
 
@@ -683,7 +602,7 @@ def test_edit_exercise_block_preserves_provided_ids():
             ],
         }
     )
-    session = _FakeSession([[user], [course], [block]])
+    session = FakeSession([[user], [course], [block]])
     payload = {
         "content": {
             "statement": "Sujet",
@@ -693,7 +612,7 @@ def test_edit_exercise_block_preserves_provided_ids():
             ],
         }
     }
-    response = _client(session).patch(
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
     )
 
@@ -720,14 +639,14 @@ def test_edit_exercise_block_deletes_absent_questions():
             ],
         }
     )
-    session = _FakeSession([[user], [course], [block]])
+    session = FakeSession([[user], [course], [block]])
     payload = {
         "content": {
             "statement": "Sujet",
             "questions": [{"id": kept_id, "statement": "Q1"}],
         }
     }
-    response = _client(session).patch(
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
     )
 
@@ -743,14 +662,14 @@ def test_edit_exercise_block_unknown_id_rejected():
     course = _course_row()
     initial_content = {"statement": "", "questions": []}
     block = _exercise_row(content=dict(initial_content))
-    session = _FakeSession([[user], [course], [block]])
+    session = FakeSession([[user], [course], [block]])
     payload = {
         "content": {
             "statement": "x",
             "questions": [{"id": str(uuid.uuid4()), "statement": "Q forgée"}],
         }
     }
-    response = _client(session).patch(
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json=payload
     )
 
@@ -790,8 +709,8 @@ def test_edit_document_block_attaches_resource():
     block = _document_row()
     resource = _resource_row(course_id=course.id)
     # FIFO : cours, bloc, puis ressource (select déclenché par resource_id non nul).
-    session = _FakeSession([[user], [course], [block], [resource]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block], [resource]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"resource_id": str(resource.id)},
     )
@@ -810,8 +729,8 @@ def test_edit_document_block_detaches_with_null():
     user = _user_row()
     course = _course_row()
     block = _document_row(resource_id=uuid.uuid4())
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json={"resource_id": None}
     )
 
@@ -826,8 +745,8 @@ def test_edit_document_block_unknown_or_foreign_resource():
     user = _user_row()
     course = _course_row()
     block = _document_row()
-    session = _FakeSession([[user], [course], [block], []])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block], []])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"resource_id": str(uuid.uuid4())},
     )
@@ -844,8 +763,8 @@ def test_edit_document_block_pending_resource_rejected():
     course = _course_row()
     block = _document_row()
     resource = _resource_row(course_id=course.id, status="pending")
-    session = _FakeSession([[user], [course], [block], [resource]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block], [resource]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"resource_id": str(resource.id)},
     )
@@ -861,8 +780,8 @@ def test_edit_resource_id_on_non_document_block_rejected():
     user = _user_row()
     course = _course_row()
     block = _block_row()  # type text
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"resource_id": str(uuid.uuid4())},
     )
@@ -901,8 +820,8 @@ def test_edit_module_block_attaches_module():
     block = _module_block_row()
     module = _module_row(course_id=course.id)
     # FIFO : cours, bloc, puis module (select déclenché par module_id non nul).
-    session = _FakeSession([[user], [course], [block], [module]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block], [module]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"module_id": str(module.id)},
     )
@@ -921,8 +840,8 @@ def test_edit_module_block_detaches_with_null():
     user = _user_row()
     course = _course_row()
     block = _module_block_row(module_id=uuid.uuid4())
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json={"module_id": None}
     )
 
@@ -937,8 +856,8 @@ def test_edit_module_block_unknown_or_foreign_module():
     user = _user_row()
     course = _course_row()
     block = _module_block_row()
-    session = _FakeSession([[user], [course], [block], []])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block], []])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"module_id": str(uuid.uuid4())},
     )
@@ -955,8 +874,8 @@ def test_edit_module_id_on_non_module_block_rejected():
     user = _user_row()
     course = _course_row()
     block = _block_row()  # type text
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"module_id": str(uuid.uuid4())},
     )
@@ -972,8 +891,8 @@ def test_edit_document_block_content():
     user = _user_row()
     course = _course_row()
     block = _document_row()
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}",
         json={"content": {"caption": "Figure 1", "display": "download"}},
     )
@@ -993,8 +912,8 @@ def test_edit_document_content_on_text_block_rejected():
     user = _user_row()
     course = _course_row()
     block = _block_row()  # type text
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/blocks/{block.id}", json={"content": {}}
     )
 
@@ -1008,11 +927,11 @@ def test_delete_block():
     user = _user_row()
     course = _course_row()
     block = _block_row()  # type text : delete direct du bloc
-    session = _FakeSession([[user], [course], [block]])
-    response = _client(session).delete(f"/api/v1/courses/{course.id}/blocks/{block.id}")
+    session = FakeSession([[user], [course], [block]])
+    response = make_client(session).delete(f"/api/v1/courses/{course.id}/blocks/{block.id}")
 
     assert response.status_code == 204
-    [(stmt, _)] = _deletes(session)
+    [(stmt, _)] = deletes(session)
     assert stmt.table.name == "blocks"
     assert course.updated_at != _NOW
 
@@ -1027,14 +946,14 @@ def test_delete_document_block_touches_neither_resources_nor_s3():
         content={"caption": None, "display": "inline"},
         resource_id=uuid.uuid4(),
     )
-    session = _FakeSession([[user], [course], [block]])
-    storage = _FakeStorage()
-    response = _client(session, storage).delete(
+    session = FakeSession([[user], [course], [block]])
+    storage = FakeStorage()
+    response = make_client(session, storage).delete(
         f"/api/v1/courses/{course.id}/blocks/{block.id}"
     )
 
     assert response.status_code == 204
-    [(stmt, _)] = _deletes(session)
+    [(stmt, _)] = deletes(session)
     assert stmt.table.name == "blocks"  # jamais de delete resources ici
     assert storage.deleted == []
     assert course.updated_at != _NOW
@@ -1043,33 +962,33 @@ def test_delete_document_block_touches_neither_resources_nor_s3():
 def test_delete_missing_block():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])  # bloc absent du cours
-    response = _client(session).delete(f"/api/v1/courses/{course.id}/blocks/{uuid.uuid4()}")
+    session = FakeSession([[user], [course], []])  # bloc absent du cours
+    response = make_client(session).delete(f"/api/v1/courses/{course.id}/blocks/{uuid.uuid4()}")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Bloc introuvable"
-    assert _deletes(session) == []
+    assert deletes(session) == []
 
 
 def test_delete_block_course_not_owned():
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).delete(f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}")
+    session = FakeSession([[user], []])
+    response = make_client(session).delete(f"/api/v1/courses/{uuid.uuid4()}/blocks/{uuid.uuid4()}")
 
     assert response.status_code == 404
-    assert _deletes(session) == []
+    assert deletes(session) == []
 
 
 def test_delete_course():
     user = _user_row()
     course = _course_row()
     # 3e résultat FIFO : les clés S3 des ressources du cours (à purger du bucket).
-    session = _FakeSession([[user], [course], ["abc/doc.pdf", "def/img.png"]])
-    storage = _FakeStorage()
-    response = _client(session, storage).delete(f"/api/v1/courses/{course.id}")
+    session = FakeSession([[user], [course], ["abc/doc.pdf", "def/img.png"]])
+    storage = FakeStorage()
+    response = make_client(session, storage).delete(f"/api/v1/courses/{course.id}")
 
     assert response.status_code == 204
-    [(stmt, _)] = _deletes(session)
+    [(stmt, _)] = deletes(session)
     assert stmt.table.name == "courses"  # cascade FK : blocs/ressources/classement
     assert session.commits >= 1
     # Les objets S3 sont supprimés après le commit (hors cascade DB).
@@ -1078,24 +997,24 @@ def test_delete_course():
 
 def test_delete_course_not_owned_404():
     user = _user_row()
-    session = _FakeSession([[user], []])  # select cours scopé owner → vide
-    response = _client(session).delete(f"/api/v1/courses/{uuid.uuid4()}")
+    session = FakeSession([[user], []])  # select cours scopé owner → vide
+    response = make_client(session).delete(f"/api/v1/courses/{uuid.uuid4()}")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
-    assert _deletes(session) == []
+    assert deletes(session) == []
 
 
 def test_reorder_rewrites_positions():
     user = _user_row()
     course = _course_row()
     b1, b2, b3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], [course], [b1, b2, b3]])
+    session = FakeSession([[user], [course], [b1, b2, b3]])
     payload = {"block_ids": [str(b3), str(b1), str(b2)]}
-    response = _client(session).put(f"/api/v1/courses/{course.id}/blocks/order", json=payload)
+    response = make_client(session).put(f"/api/v1/courses/{course.id}/blocks/order", json=payload)
 
     assert response.status_code == 204
-    [(stmt, params)] = _updates(session)  # un seul executemany
+    [(stmt, params)] = updates(session)  # un seul executemany
     assert stmt.table.name == "blocks"
     assert params == [
         {"b_id": b3, "b_position": 0},
@@ -1109,20 +1028,20 @@ def test_reorder_incomplete_or_foreign_list():
     user = _user_row()
     course = _course_row()
     b1, b2 = uuid.uuid4(), uuid.uuid4()
-    session = _FakeSession([[user], [course], [b1, b2]])
+    session = FakeSession([[user], [course], [b1, b2]])
     payload = {"block_ids": [str(b1), str(uuid.uuid4())]}  # b2 manquant + id étranger
-    response = _client(session).put(f"/api/v1/courses/{course.id}/blocks/order", json=payload)
+    response = make_client(session).put(f"/api/v1/courses/{course.id}/blocks/order", json=payload)
 
     assert response.status_code == 422
     assert "exactement les blocs" in response.json()["detail"]
-    assert _updates(session) == []
+    assert updates(session) == []
 
 
 def test_reorder_duplicates_without_db_access():
     b1 = uuid.uuid4()
-    session = _FakeSession()
+    session = FakeSession()
     payload = {"block_ids": [str(b1), str(b1)]}
-    response = _client(session).put(f"/api/v1/courses/{uuid.uuid4()}/blocks/order", json=payload)
+    response = make_client(session).put(f"/api/v1/courses/{uuid.uuid4()}/blocks/order", json=payload)
 
     assert response.status_code == 422
     assert session.executed == []
@@ -1131,25 +1050,25 @@ def test_reorder_duplicates_without_db_access():
 def test_reorder_empty_course():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).put(
+    session = FakeSession([[user], [course], []])
+    response = make_client(session).put(
         f"/api/v1/courses/{course.id}/blocks/order", json={"block_ids": []}
     )
 
     assert response.status_code == 204
-    assert _updates(session) == []
+    assert updates(session) == []
 
 
 def test_update_preview_settings():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course]])  # auth, puis _get_owned_course
-    response = _client(session).put(f"/api/v1/courses/{course.id}/preview", json=_PREVIEW)
+    session = FakeSession([[user], [course]])  # auth, puis _get_owned_course
+    response = make_client(session).put(f"/api/v1/courses/{course.id}/preview", json=_PREVIEW)
 
     assert response.status_code == 200
     assert response.json() == _PREVIEW  # écho camelCase des réglages enregistrés
     assert course.preview_settings == _PREVIEW  # mutation d'attribut ORM
-    assert _updates(session) == []  # pas d'Update Core
+    assert updates(session) == []  # pas d'Update Core
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
 
@@ -1157,23 +1076,23 @@ def test_update_preview_settings():
 def test_update_visibility():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course]])  # auth, puis _get_owned_course
-    response = _client(session).put(
+    session = FakeSession([[user], [course]])  # auth, puis _get_owned_course
+    response = make_client(session).put(
         f"/api/v1/courses/{course.id}/visibility", json={"visibility": "private"}
     )
 
     assert response.status_code == 200
     assert response.json() == {"visibility": "private"}
     assert course.visibility == "private"  # mutation d'attribut ORM
-    assert _updates(session) == []  # pas d'Update Core
+    assert updates(session) == []  # pas d'Update Core
     assert course.updated_at != _NOW  # le cours remonte dans la liste
     assert session.commits >= 1
 
 
 @pytest.mark.parametrize("visibility", ["publique", "en_cours", "", None])
 def test_update_visibility_unknown_value_without_db_access(visibility):
-    session = _FakeSession()
-    response = _client(session).put(
+    session = FakeSession()
+    response = make_client(session).put(
         f"/api/v1/courses/{uuid.uuid4()}/visibility", json={"visibility": visibility}
     )
     assert response.status_code == 422
@@ -1182,8 +1101,8 @@ def test_update_visibility_unknown_value_without_db_access(visibility):
 
 def test_update_visibility_course_not_owned():
     user = _user_row()
-    session = _FakeSession([[user], []])  # select cours scopé owner → vide
-    response = _client(session).put(
+    session = FakeSession([[user], []])  # select cours scopé owner → vide
+    response = make_client(session).put(
         f"/api/v1/courses/{uuid.uuid4()}/visibility", json={"visibility": "public"}
     )
 
@@ -1194,8 +1113,8 @@ def test_update_visibility_course_not_owned():
 def test_read_exposes_visibility():
     user = _user_row()
     course = _course_row(visibility="public")
-    session = _FakeSession([[user], [course], [], [], []])
-    response = _client(session).get(f"/api/v1/courses/{course.id}")
+    session = FakeSession([[user], [course], [], [], []])
+    response = make_client(session).get(f"/api/v1/courses/{course.id}")
 
     assert response.status_code == 200
     assert response.json()["visibility"] == "public"
@@ -1203,8 +1122,8 @@ def test_read_exposes_visibility():
 
 def test_update_preview_settings_course_not_owned():
     user = _user_row()
-    session = _FakeSession([[user], []])  # select cours scopé owner → vide
-    response = _client(session).put(
+    session = FakeSession([[user], []])  # select cours scopé owner → vide
+    response = make_client(session).put(
         f"/api/v1/courses/{uuid.uuid4()}/preview", json=_PREVIEW
     )
 
@@ -1216,8 +1135,8 @@ def test_read_exposes_preview_settings():
     # Le détail d'un cours remonte ses réglages de preview (le front les recharge).
     user = _user_row()
     course = _course_row(preview_settings=_PREVIEW)
-    session = _FakeSession([[user], [course], [], [], []])  # cours, matières, niveaux, blocs
-    response = _client(session).get(f"/api/v1/courses/{course.id}")
+    session = FakeSession([[user], [course], [], [], []])  # cours, matières, niveaux, blocs
+    response = make_client(session).get(f"/api/v1/courses/{course.id}")
 
     assert response.status_code == 200
     assert response.json()["preview_settings"] == _PREVIEW
@@ -1233,8 +1152,8 @@ def test_read_exposes_preview_settings():
     ],
 )
 def test_update_preview_settings_invalid_payload_without_db_access(payload):
-    session = _FakeSession()
-    response = _client(session).put(
+    session = FakeSession()
+    response = make_client(session).put(
         f"/api/v1/courses/{uuid.uuid4()}/preview", json=payload
     )
     assert response.status_code == 422
