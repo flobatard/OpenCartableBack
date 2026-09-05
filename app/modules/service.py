@@ -1,30 +1,27 @@
 """Bibliothèque de modules interactifs d'un cours : CRUD pur BDD.
 
-Le code HTML/CSS/JS vit en base (décision actée — pas de bundle S3) : aucune
-dépendance storage ici, une suppression n'a rien à purger. Les modules sont
+Le code HTML/CSS/JS vit en base (pas de bundle S3) : aucune dépendance
+storage ici, une suppression n'a rien à purger. Les modules sont
 **indépendants des blocs** : supprimer un module supprime les blocs
 ``module`` qui le pointent (FK ``CASCADE`` — un bloc pointeur sans son module
-n'a pas de sens, même décision que les documents). Comme
+n'a pas de sens, comme pour les documents). Comme
 :mod:`app.courses.service`, l'ordre des ``execute`` de chaque fonction est
 stable et rejoué par une fausse session FIFO (tests/test_modules_api.py), et
 tout est scopé au propriétaire du cours (introuvable → 404, jamais 403).
 """
 
 import uuid
-from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import touch
+from app.core.http import not_found
+from app.courses.queries import get_owned_course
 from app.models.course import Course
 from app.models.module import Module
 from app.models.user import User
 from app.modules.schemas import ModuleCreate, ModuleRead, ModuleSummary, ModuleUpdate
-
-
-def _not_found(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 def _module_summary(module: Module) -> ModuleSummary:
@@ -48,26 +45,6 @@ def _module_read(module: Module) -> ModuleRead:
     )
 
 
-async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> Course:
-    """Charge le cours du prof ; 404 s'il n'existe pas ou appartient à autrui.
-
-    L'instance ORM sert au bump d'``updated_at`` des mutations de la
-    bibliothèque (les modules font partie du cours).
-    """
-    course = (
-        (
-            await db.execute(
-                select(Course).where(Course.id == course_id, Course.owner_id == user.id)
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if course is None:
-        raise _not_found("Cours introuvable")
-    return course
-
-
 async def _get_module(db: AsyncSession, course: Course, module_id: uuid.UUID) -> Module:
     """Charge un module scopé à ce cours ; 404 sinon."""
     module = (
@@ -82,7 +59,7 @@ async def _get_module(db: AsyncSession, course: Course, module_id: uuid.UUID) ->
         .one_or_none()
     )
     if module is None:
-        raise _not_found("Module introuvable")
+        raise not_found("Module introuvable")
     return module
 
 
@@ -94,7 +71,7 @@ async def list_modules(
     Ordre des execute : 1) cours (contrôle de propriété), 2) modules
     (tri stable ``created_at desc, id``). Lecture seule : pas de commit.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     modules = (
         (
             await db.execute(
@@ -117,7 +94,7 @@ async def create_module(
     Ordre des execute : 1) cours (contrôle de propriété), 2) insert module
     (RETURNING les timestamps générés par Postgres — motif ``create_course``).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     module_id = uuid.uuid4()
     created_at, updated_at = (
         await db.execute(
@@ -133,7 +110,7 @@ async def create_module(
             .returning(Module.created_at, Module.updated_at)
         )
     ).one()
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()
     return ModuleRead(
         id=module_id,
@@ -154,7 +131,7 @@ async def get_module(
     Ordre des execute : 1) cours (contrôle de propriété), 2) module (scopé
     cours). Lecture seule : pas de commit.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     module = await _get_module(db, course, module_id)
     return _module_read(module)
 
@@ -178,7 +155,7 @@ async def update_module(
     précédente. Le ``ModuleRead`` reste construit AVANT le commit (piège
     ``MissingGreenlet``).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     module = await _get_module(db, course, module_id)
     fields = payload.model_fields_set
     if "title" in fields:
@@ -189,8 +166,7 @@ async def update_module(
         module.css = payload.css
     if "js" in fields:
         module.js = payload.js
-    module.updated_at = datetime.now(UTC)
-    course.updated_at = datetime.now(UTC)
+    touch(module, course)
     read = _module_read(module)
     await db.commit()
     return read
@@ -204,8 +180,8 @@ async def delete_module(
     Ordre des execute : 1) cours (contrôle de propriété), 2) module (scopé
     cours), 3) delete. Rien à purger côté storage : le code vit en base.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     module = await _get_module(db, course, module_id)
     await db.execute(delete(Module).where(Module.id == module.id))
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()

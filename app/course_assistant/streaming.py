@@ -54,10 +54,9 @@ Comme partout, tout est scopé au propriétaire (404 jamais 403) et l'ordre des
 import json
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +64,8 @@ from app.ai_credentials.service import effective_config, refund_default_quota
 from app.core.ai import AIClient, ChatMessage
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
+from app.core.database import touch
+from app.core.http import invalid, not_found
 from app.core.storage import Storage
 from app.course_assistant import hitl
 from app.course_assistant.context import (
@@ -77,13 +78,9 @@ from app.course_assistant.context import (
 from app.course_assistant.editing import TARGET_MODULE, EditContext, edit_context_for
 from app.course_assistant.refs import CitationRewriter
 from app.course_assistant.schemas import MessageCreate, ProposalDecisionCreate
-from app.course_assistant.service import (
-    load_conversation,
-    load_messages,
-    load_owned_course,
-    not_found,
-)
+from app.course_assistant.service import load_conversation, load_messages
 from app.course_assistant.tools import build_tool_executor, build_tool_specs
+from app.courses.queries import get_owned_course
 from app.models.ai_conversation import AIConversation
 from app.models.ai_message import ROLE_ASSISTANT, ROLE_TOOL, ROLE_USER, AIMessage
 from app.models.block import Block
@@ -201,14 +198,11 @@ async def sse_stream(
     :func:`sse_resume_stream` (route de décision). Un nouveau message alors
     qu'une proposition attendait abandonne la reprise.
     """
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
     existing = await load_messages(db, conversation)
     if len(existing) >= MAX_MESSAGES_PER_CONVERSATION:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Conversation pleine — démarrez-en une nouvelle",
-        )
+        raise invalid("Conversation pleine — démarrez-en une nouvelle")
 
     # ``config`` None = repli serveur AI_* (résolu par AIClient.resolve_config) ;
     # le provider effectif sert au replay (repli inter-provider) et à la
@@ -274,7 +268,7 @@ async def sse_stream(
     if conversation.title is None:
         title_set = payload.content.strip()[:TITLE_TRUNCATE_CHARS]
         conversation.title = title_set
-    conversation.updated_at = datetime.now(UTC)
+    touch(conversation)
     await db.commit()
 
     try:
@@ -342,7 +336,7 @@ async def sse_resume_stream(
     peut encore lire le cours après la décision). Aucune écriture ici : le
     generator persiste la suite du tour à la clôture.
     """
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
     edit = edit_context_for(conversation.context)
     # Une reprise n'existe que pour un contexte d'édition (le registre n'est
@@ -500,7 +494,7 @@ async def _encode_turn(
                 for i, (row_id, row) in enumerate(zip(ids, turn_rows, strict=True))
             ],
         )
-        conversation.updated_at = datetime.now(UTC)
+        touch(conversation)
         await db.commit()
         return ids
 

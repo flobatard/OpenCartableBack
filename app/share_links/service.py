@@ -1,4 +1,4 @@
-"""Gestion prof des liens de partage élèves d'un cours (J2).
+"""Gestion prof des liens de partage élèves d'un cours.
 
 CRUD pur BDD (motif :mod:`app.modules.service`, sans storage) : un cours
 peut porter plusieurs liens, chacun révocable individuellement (soft :
@@ -15,19 +15,15 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import HTTPException, status
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.course import Course
+from app.core.http import not_found
+from app.courses.queries import get_owned_course
 from app.models.share_link import ShareLink
 from app.models.user import User
 from app.share_links.schemas import ShareLinkCreate, ShareLinkRead
-
-
-def _not_found(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 def _share_link_read(link: ShareLink) -> ShareLinkRead:
@@ -41,22 +37,6 @@ def _share_link_read(link: ShareLink) -> ShareLinkRead:
     )
 
 
-async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> Course:
-    """Charge le cours du prof ; 404 s'il n'existe pas ou appartient à autrui."""
-    course = (
-        (
-            await db.execute(
-                select(Course).where(Course.id == course_id, Course.owner_id == user.id)
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if course is None:
-        raise _not_found("Cours introuvable")
-    return course
-
-
 async def list_share_links(
     db: AsyncSession, user: User, course_id: uuid.UUID
 ) -> list[ShareLinkRead]:
@@ -65,7 +45,7 @@ async def list_share_links(
     Ordre des execute : 1) cours (contrôle de propriété), 2) liens (tri
     stable ``created_at desc, id``). Lecture seule : pas de commit.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     links = (
         (
             await db.execute(
@@ -91,7 +71,7 @@ async def create_share_link(
     telle quelle. Pas de bump d'``updated_at`` du cours : créer un lien ne
     change pas son contenu (seules les mutations de contenu bumpent).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     link_id = uuid.uuid4()
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + timedelta(days=settings.SHARE_LINK_TTL_DAYS)
@@ -133,7 +113,7 @@ async def revoke_share_link(
     cours) — 404 s'il n'existe pas dans ce cours. Révoquer un lien déjà
     révoqué est idempotent (204). Pas de bump d'``updated_at`` du cours.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     link = (
         (
             await db.execute(
@@ -146,6 +126,6 @@ async def revoke_share_link(
         .one_or_none()
     )
     if link is None:
-        raise _not_found("Lien de partage introuvable")
+        raise not_found("Lien de partage introuvable")
     link.revoked = True
     await db.commit()

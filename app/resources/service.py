@@ -14,14 +14,15 @@ et tout est scopé au propriétaire du cours (introuvable → 404, jamais 403).
 
 import re
 import uuid
-from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.database import touch
+from app.core.http import conflict, not_found
 from app.core.storage import Storage
+from app.courses.queries import get_owned_course
 from app.models.course import Course
 from app.models.resource import STATUS_AVAILABLE, STATUS_PENDING, Resource
 from app.models.user import User
@@ -35,14 +36,6 @@ from app.resources.schemas import (
 
 # Caractères conservés dans un nom de fichier sanitizé (le reste → « _ »).
 _ALLOWED_NAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-def _not_found(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-
-
-def _conflict(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
 def _sanitize_name(name: str) -> str:
@@ -69,26 +62,6 @@ def _resource_read(resource: Resource) -> ResourceRead:
     )
 
 
-async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> Course:
-    """Charge le cours du prof ; 404 s'il n'existe pas ou appartient à autrui.
-
-    L'instance ORM sert au bump d'``updated_at`` des mutations de la
-    bibliothèque (la bibliothèque fait partie du cours).
-    """
-    course = (
-        (
-            await db.execute(
-                select(Course).where(Course.id == course_id, Course.owner_id == user.id)
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if course is None:
-        raise _not_found("Cours introuvable")
-    return course
-
-
 async def _get_resource(
     db: AsyncSession, course: Course, resource_id: uuid.UUID
 ) -> Resource:
@@ -105,7 +78,7 @@ async def _get_resource(
         .one_or_none()
     )
     if resource is None:
-        raise _not_found("Ressource introuvable")
+        raise not_found("Ressource introuvable")
     return resource
 
 
@@ -119,7 +92,7 @@ async def list_resources(
     (le front les affiche atténuées et permet de purger un upload raté).
     Lecture seule : pas de commit.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     resources = (
         (
             await db.execute(
@@ -147,7 +120,7 @@ async def presign_upload(
     L'URL présignée PUT est du calcul local (pas d'execute). Clé S3 plate
     ``<resource_id>/<nom-sanitizé>`` (l'uuid garantit l'unicité).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     resource_id = uuid.uuid4()
     s3_key = f"courses/{course_id}/resources/{resource_id}/{_sanitize_name(payload.original_name)}"
     await db.execute(
@@ -198,22 +171,22 @@ async def confirm_upload(
     décalage assumé — pas de ``refresh``, la fausse session des tests ne le
     simule pas).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
     if resource.status == STATUS_AVAILABLE:
-        raise _conflict("Ressource déjà confirmée")
+        raise conflict("Ressource déjà confirmée")
 
     metadata = await storage.head(resource.s3_key)
     if metadata is None:
-        raise _conflict("Objet introuvable sur S3 : upload non abouti")
+        raise conflict("Objet introuvable sur S3 : upload non abouti")
     actual_size = metadata.get("ContentLength")
     if actual_size is not None and actual_size != resource.size:
-        raise _conflict(
+        raise conflict(
             f"Taille incohérente (déclarée {resource.size}, réelle {actual_size})"
         )
 
     resource.status = STATUS_AVAILABLE
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     read = _resource_read(resource)
     await db.commit()
     return read
@@ -235,10 +208,10 @@ async def update_resource(
     ``MissingGreenlet`` que ``confirm_upload`` : le flush expire
     ``updated_at``, généré côté Postgres).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
     resource.original_name = payload.original_name
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     read = _resource_read(resource)
     await db.commit()
     return read
@@ -258,14 +231,14 @@ async def delete_resource(
     ``document`` qui la pointaient partent avec elle par la FK ``CASCADE``
     (aucun execute supplémentaire). L'objet S3 (hors cascade
     DB) est supprimé APRÈS le commit — motif ``delete_course`` : un échec S3
-    laisse un orphelin dans le bucket (job de réconciliation à venir),
-    jamais une réf DB pointant un objet absent.
+    laisse un orphelin dans le bucket (ramassé par la réconciliation de
+    :mod:`app.maintenance`), jamais une réf DB pointant un objet absent.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
     s3_key = resource.s3_key
     await db.execute(delete(Resource).where(Resource.id == resource.id))
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()
     await storage.delete_many([s3_key])
 
@@ -287,10 +260,10 @@ async def presign_download(
     route front de redirection matérialisant les liens des PDF exportés.
     Lecture seule : pas de commit.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
     if resource.status != STATUS_AVAILABLE:
-        raise _conflict("Ressource non disponible (upload non confirmé)")
+        raise conflict("Ressource non disponible (upload non confirmé)")
     download_url = storage.presign_get(
         resource.s3_key, resource.original_name, inline=inline
     )

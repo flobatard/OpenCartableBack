@@ -7,8 +7,8 @@ token de partage ``?token=``, 404 uniforme). Le bloc doit être un exercice du
 cours et la question exister dans son content (404 sinon).
 
 Routes professeur (résumé et effacement des tentatives de TOUS les élèves) :
-scopées au propriétaire du cours (``load_owned_course`` de l'assistant — 404
-jamais 403), même sélection du bloc exercice.
+scopées au propriétaire du cours (:func:`app.courses.queries.get_owned_course`
+— 404 jamais 403), même sélection du bloc exercice.
 
 L'ordre des ``execute`` de chaque fonction est un contrat des tests (fausse
 session FIFO).
@@ -16,11 +16,11 @@ session FIFO).
 
 import uuid
 
-from fastapi import HTTPException, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.course_assistant.service import load_owned_course
+from app.core.http import not_found
+from app.courses.queries import get_owned_course
 from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import Course
 from app.models.exercise_submission import ExerciseSubmission
@@ -36,10 +36,6 @@ from app.student_exercises.schemas import (
 
 # Garde-fou par question (422 au-delà) : un fil n'est pas infini.
 MAX_TURNS_PER_QUESTION = 100
-
-
-def not_found(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 async def _select_exercise(db: AsyncSession, course: Course, block_id: uuid.UUID) -> Block:
@@ -75,7 +71,7 @@ async def load_owned_exercise(
     db: AsyncSession, user: User, course_id: uuid.UUID, block_id: uuid.UUID
 ) -> Block:
     """Régime professeur : cours du propriétaire (1 execute) puis bloc exercice (1)."""
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     return await _select_exercise(db, course, block_id)
 
 

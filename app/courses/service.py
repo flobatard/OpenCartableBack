@@ -9,13 +9,14 @@ son existence.
 
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
 from sqlalchemy import bindparam, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import touch
+from app.core.http import invalid, not_found
 from app.core.storage import Storage
+from app.courses.queries import get_owned_course
 from app.courses.schemas import (
     BlockCreate,
     BlockOrderUpdate,
@@ -49,14 +50,6 @@ def _dedupe(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
     return list(dict.fromkeys(ids))
 
 
-def _invalid(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
-
-
-def _not_found(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-
-
 def _default_content(type_: str) -> dict:
     """Contenu JSONB initial d'un bloc, conforme au contrat de block.py.
 
@@ -72,7 +65,8 @@ def _default_content(type_: str) -> dict:
 
 
 # Forme de content admise par type de bloc (garde-fou d'update_block).
-# « module » n'a pas de forme éditable avant le J4.
+# Le content d'un bloc « module » n'est pas éditable : son contenu, c'est le
+# module pointé par ``module_id``.
 _TYPE_BY_CONTENT = {
     TextContent: TYPE_TEXT,
     ExerciseContent: TYPE_EXERCISE,
@@ -94,7 +88,7 @@ def _exercise_content(block: Block, content: ExerciseContent) -> dict:
     }
     unknown = {str(q.id) for q in content.questions if q.id is not None} - existing
     if unknown:
-        raise _invalid(f"Questions inconnues : {sorted(unknown)}")
+        raise invalid(f"Questions inconnues : {sorted(unknown)}")
     return {
         "statement": content.statement,
         "questions": [
@@ -140,25 +134,6 @@ def _block_read(block: Block) -> BlockRead:
         resource_id=block.resource_id,
         module_id=block.module_id,
     )
-
-
-async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> Course:
-    """Charge le cours du prof ; 404 s'il n'existe pas ou appartient à autrui.
-
-    L'instance ORM chargée sert aussi au bump d'``updated_at`` des mutations.
-    """
-    course = (
-        (
-            await db.execute(
-                select(Course).where(Course.id == course_id, Course.owner_id == user.id)
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if course is None:
-        raise _not_found("Cours introuvable")
-    return course
 
 
 async def list_courses(db: AsyncSession, user: User) -> list[CourseRead]:
@@ -239,7 +214,7 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
     )
     unknown_subjects = set(subject_ids) - known_subjects
     if unknown_subjects:
-        raise _invalid(f"Matières inconnues : {sorted(map(str, unknown_subjects))}")
+        raise invalid(f"Matières inconnues : {sorted(map(str, unknown_subjects))}")
 
     known_levels = set(
         (
@@ -252,7 +227,7 @@ async def create_course(db: AsyncSession, user: User, payload: CourseCreate) -> 
     )
     unknown_levels = set(education_level_ids) - known_levels
     if unknown_levels:
-        raise _invalid(f"Niveaux d'étude inconnus : {sorted(map(str, unknown_levels))}")
+        raise invalid(f"Niveaux d'étude inconnus : {sorted(map(str, unknown_levels))}")
 
     course_id = uuid.uuid4()
     created_at, updated_at = (
@@ -304,7 +279,7 @@ async def get_course_detail(
     Ordre des execute : 1) cours (contrôle de propriété), 2) matières,
     3) niveaux, 4) blocs (tri stable ``position, id``).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     subject_ids = list(
         (
             await db.execute(
@@ -351,7 +326,7 @@ async def delete_course(
     ``ondelete=CASCADE`` ; les objets S3 (hors cascade DB) sont supprimés après
     le commit, pour ne pas laisser d'orphelins dans le bucket.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     s3_keys = list(
         (await db.execute(select(Resource.s3_key).where(Resource.course_id == course.id)))
         .scalars()
@@ -372,9 +347,9 @@ async def update_preview_settings(
     serait pas détectée). Le cours est « touché » (updated_at) pour remonter
     dans la liste.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     course.preview_settings = payload.model_dump(by_alias=True)  # clés camelCase
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()
     return payload
 
@@ -389,9 +364,9 @@ async def update_visibility(
     ``draft`` suspend les liens de partage sans les toucher : la règle
     vit dans app/public/service.py, vérifiée à chaque accès.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     course.visibility = payload.visibility
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()
     return payload
 
@@ -405,7 +380,7 @@ async def add_block(
     suivante (max + 1, 0 si aucun bloc), 3) insert du bloc. Le cours est
     « touché » (updated_at) pour remonter dans la liste.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     position = (
         (
             await db.execute(
@@ -432,7 +407,7 @@ async def add_block(
             module_id=None,
         )
     )
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()
     return BlockRead(
         id=block_id,
@@ -457,7 +432,7 @@ async def delete_block(
     S3 : la ressource éventuellement pointée par un bloc ``document`` reste
     dans la bibliothèque du cours (suppression via ``app/resources/``).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     block = (
         (
             await db.execute(
@@ -468,9 +443,9 @@ async def delete_block(
         .one_or_none()
     )
     if block is None:
-        raise _not_found("Bloc introuvable")
+        raise not_found("Bloc introuvable")
     await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()
 
 
@@ -502,7 +477,7 @@ async def update_block(
     NOUVEAU dict (une mutation in-place du JSONB ne serait pas détectée
     par l'ORM).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     block = (
         (
             await db.execute(
@@ -513,11 +488,11 @@ async def update_block(
         .one_or_none()
     )
     if block is None:
-        raise _not_found("Bloc introuvable")
+        raise not_found("Bloc introuvable")
     fields = payload.model_fields_set
     if "resource_id" in fields:
         if block.type != TYPE_DOCUMENT:
-            raise _invalid("resource_id ne s'applique qu'aux blocs « document »")
+            raise invalid("resource_id ne s'applique qu'aux blocs « document »")
         if payload.resource_id is not None:
             # 422 et non 404 : le bloc ciblé, lui, existe (motif « Matières
             # inconnues ») ; le filtre course_id scelle l'appartenance.
@@ -534,12 +509,12 @@ async def update_block(
                 .one_or_none()
             )
             if resource is None:
-                raise _invalid("Ressource inconnue")
+                raise invalid("Ressource inconnue")
             if resource.status != STATUS_AVAILABLE:
-                raise _invalid("Ressource non disponible")
+                raise invalid("Ressource non disponible")
     if "module_id" in fields:
         if block.type != TYPE_MODULE:
-            raise _invalid("module_id ne s'applique qu'aux blocs « module »")
+            raise invalid("module_id ne s'applique qu'aux blocs « module »")
         if payload.module_id is not None:
             # 422 et non 404 : le bloc ciblé, lui, existe (motif « Matières
             # inconnues ») ; le filtre course_id scelle l'appartenance.
@@ -556,12 +531,12 @@ async def update_block(
                 .one_or_none()
             )
             if module is None:
-                raise _invalid("Module inconnu")
+                raise invalid("Module inconnu")
     new_content: dict | None = None
     if payload.content is not None:
         expected_type = _TYPE_BY_CONTENT[type(payload.content)]
         if block.type != expected_type:
-            raise _invalid(
+            raise invalid(
                 f"Le contenu fourni correspond à un bloc « {expected_type} », "
                 f"pas « {block.type} »"
             )
@@ -584,7 +559,7 @@ async def update_block(
         block.module_id = payload.module_id
     if new_content is not None:
         block.content = new_content
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()
     return _block_read(block)
 
@@ -598,12 +573,12 @@ async def reorder_blocks(
     du cours (la liste fournie doit les contenir exactement), 3) update
     executemany des positions (omis si le cours n'a pas de blocs).
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     course_block_ids = set(
         (await db.execute(select(Block.id).where(Block.course_id == course.id))).scalars().all()
     )
     if set(payload.block_ids) != course_block_ids:
-        raise _invalid("block_ids doit contenir exactement les blocs du cours")
+        raise invalid("block_ids doit contenir exactement les blocs du cours")
     if payload.block_ids:
         # Update sur la Table (pas l'entité ORM) : executemany pur Core,
         # sans passer par le bulk-update-by-pk de l'ORM.
@@ -613,5 +588,5 @@ async def reorder_blocks(
             .values(position=bindparam("b_position")),
             [{"b_id": block_id, "b_position": i} for i, block_id in enumerate(payload.block_ids)],
         )
-    course.updated_at = datetime.now(UTC)
+    touch(course)
     await db.commit()

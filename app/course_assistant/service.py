@@ -3,9 +3,10 @@
 Le flux SSE d'un tour d'assistant et sa reprise HITL vivent dans
 :mod:`app.course_assistant.streaming` (contrat SSE documenté là) ; ce module
 porte le CRUD des conversations et les chargements scopés qu'il partage avec
-lui (:func:`load_owned_course`, :func:`load_conversation`,
-:func:`load_messages`). Les contextes d'édition (validation de la cible visée à
-la création) sont décrits par :mod:`app.course_assistant.editing` — aucune
+lui (:func:`load_conversation`, :func:`load_messages` ; le cours lui-même vient
+de :func:`app.courses.queries.get_owned_course`). Les contextes d'édition
+(validation de la cible visée à la création) sont décrits par
+:mod:`app.course_assistant.editing` — aucune
 branche par contexte ici, seulement sur la **cible** du descripteur (bloc ou
 module).
 
@@ -14,12 +15,12 @@ Comme partout, tout est scopé au propriétaire (404 jamais 403) et l'ordre des
 """
 
 import uuid
-from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import touch
+from app.core.http import invalid, not_found
 from app.course_assistant.editing import TARGET_MODULE, EditContext, edit_context_for
 from app.course_assistant.schemas import (
     ConversationCreate,
@@ -28,6 +29,7 @@ from app.course_assistant.schemas import (
     ConversationUpdate,
     MessageRead,
 )
+from app.courses.queries import get_owned_course
 from app.models.ai_conversation import AIConversation
 from app.models.ai_message import AIMessage
 from app.models.block import Block
@@ -36,10 +38,6 @@ from app.models.module import Module
 from app.models.user import User
 
 CONVERSATION_LIST_LIMIT = 100
-
-
-def not_found(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 def _conversation_read(conversation: AIConversation) -> ConversationRead:
@@ -68,22 +66,6 @@ def _message_read(message: AIMessage) -> MessageRead:
         output_tokens=message.output_tokens,
         created_at=message.created_at,
     )
-
-
-async def load_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> Course:
-    """Charge le cours du prof ; 404 s'il n'existe pas ou appartient à autrui."""
-    course = (
-        (
-            await db.execute(
-                select(Course).where(Course.id == course_id, Course.owner_id == user.id)
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if course is None:
-        raise not_found("Cours introuvable")
-    return course
 
 
 async def load_conversation(
@@ -141,7 +123,7 @@ async def list_conversations(
     (tri ``updated_at desc, id``, plafond :data:`CONVERSATION_LIST_LIMIT`).
     Lecture seule : pas de commit.
     """
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     stmt = (
         select(AIConversation)
         .where(
@@ -194,10 +176,7 @@ async def _check_edit_target(
     if block is None:
         raise not_found("Bloc introuvable")
     if block.type != edit.block_type:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=edit.type_error_detail,
-        )
+        raise invalid(edit.type_error_detail)
 
 
 async def create_conversation(
@@ -212,7 +191,7 @@ async def create_conversation(
     bloc ni module ; un contexte d'édition exige sa cible (validée par le
     schéma ET le CHECK en base).
     """
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     edit = edit_context_for(payload.context)
     if edit is not None:
         await _check_edit_target(db, course, edit, payload)
@@ -251,7 +230,7 @@ async def get_conversation_detail(
     Ordre des execute : 1) cours, 2) conversation (scopée), 3) messages
     (tri ``position, id``). Lecture seule : pas de commit.
     """
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
     messages = await load_messages(db, conversation)
     return ConversationDetailRead(
@@ -272,10 +251,10 @@ async def rename_conversation(
     Ordre des execute : 1) cours, 2) conversation (scopée). Le
     ``ConversationRead`` est construit AVANT le commit (piège MissingGreenlet).
     """
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
     conversation.title = payload.title
-    conversation.updated_at = datetime.now(UTC)
+    touch(conversation)
     read = _conversation_read(conversation)
     await db.commit()
     return read
@@ -288,7 +267,7 @@ async def delete_conversation(
 
     Ordre des execute : 1) cours, 2) conversation (scopée), 3) delete.
     """
-    course = await load_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
     await db.execute(delete(AIConversation).where(AIConversation.id == conversation.id))
     await db.commit()

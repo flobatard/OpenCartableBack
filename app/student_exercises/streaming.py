@@ -38,13 +38,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_credentials.service import effective_config, refund_default_quota
 from app.core.ai import AIClient, AIToolCall, AIToolResult, AIToolSpec, ChatMessage
 from app.core.auth import AuthenticatedUser
+from app.core.http import invalid
 from app.core.storage import Storage
 from app.course_assistant.context import build_refs
 from app.course_assistant.editing.base import tool_error
@@ -212,10 +213,7 @@ async def sse_stream(
     question_number, question = require_question(block, question_id)
     turns = await load_turns(db, user, block, question_id)
     if len(turns) >= MAX_TURNS_PER_QUESTION:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Fil de la question plein",
-        )
+        raise invalid("Fil de la question plein")
 
     config, ticket = await effective_config(db, auth, None)
 

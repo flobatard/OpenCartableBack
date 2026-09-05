@@ -41,13 +41,10 @@ from app.core import crypto
 from app.core.ai import AIClient, AIProvider, AIRequestConfig, ChatMessage, list_models
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
+from app.core.http import invalid, unavailable
 from app.models.ai_daily_usage import AIDailyUsage
 from app.models.user import User
 from app.users import service as users_service
-
-
-def _invalid(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
 def _master_key() -> bytes:
@@ -55,9 +52,8 @@ def _master_key() -> bytes:
     try:
         return crypto.decode_master_key(settings.AI_CREDENTIALS_MASTER_KEY)
     except crypto.MasterKeyMissing:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Chiffrement des credentials IA non configuré sur ce serveur",
+        raise unavailable(
+            "Chiffrement des credentials IA non configuré sur ce serveur"
         ) from None
 
 
@@ -124,7 +120,7 @@ async def update_credentials(
         )
         user.ai_encryption_salt = salt
     elif user.ai_api_key_encrypted is None and payload.provider not in PROVIDERS_WITH_OPTIONAL_KEY:
-        raise _invalid(f"Clé API requise pour le provider {payload.provider.value}")
+        raise invalid(f"Clé API requise pour le provider {payload.provider.value}")
 
     user.ai_provider = payload.provider.value
     user.ai_model = payload.model
@@ -144,7 +140,7 @@ def _decrypt_stored_key(user: User) -> SecretStr | None:
             crypto.decrypt_secret(user.ai_api_key_encrypted, _master_key(), user.ai_encryption_salt)
         )
     except crypto.DecryptionError:
-        raise _invalid(
+        raise invalid(
             "Identifiants IA illisibles — ré-enregistrez votre clé API dans les paramètres"
         ) from None
 
@@ -156,7 +152,7 @@ def _probe_api_key(
     sémantique que le PUT), sinon 422 pour les providers qui l'exigent."""
     api_key = provided if provided is not None else _decrypt_stored_key(user)
     if api_key is None and provider not in PROVIDERS_WITH_OPTIONAL_KEY:
-        raise _invalid(f"Clé API requise pour le provider {provider.value}")
+        raise invalid(f"Clé API requise pour le provider {provider.value}")
     return api_key
 
 

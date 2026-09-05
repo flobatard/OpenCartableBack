@@ -8,13 +8,13 @@ import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
 from sqlalchemy import distinct, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
+from app.core.http import conflict, invalid
 from app.core.storage import Storage
 from app.models.education_level import EducationLevel
 from app.models.resource import STATUS_AVAILABLE, STATUS_PENDING
@@ -39,14 +39,6 @@ from app.users.schemas import (
 def _dedupe(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
     """Dédoublonne en préservant l'ordre de première apparition."""
     return list(dict.fromkeys(ids))
-
-
-def _invalid(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
-
-
-def _conflict(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
 def avatar_url_for(s3_key: str | None, avatar_status: str | None, storage: Storage) -> str | None:
@@ -176,7 +168,7 @@ async def update_profile(
         (await db.execute(select(distinct(EducationLevel.system)))).scalars().all()
     )
     if payload.school_system not in systems:
-        raise _invalid(f"Système scolaire inconnu : {payload.school_system}")
+        raise invalid(f"Système scolaire inconnu : {payload.school_system}")
 
     rows = (
         await db.execute(
@@ -188,14 +180,14 @@ async def update_profile(
     system_by_level = {level_id: system for level_id, system in rows}
     unknown = all_levels - system_by_level.keys()
     if unknown:
-        raise _invalid(f"Niveaux d'étude inconnus : {sorted(map(str, unknown))}")
+        raise invalid(f"Niveaux d'étude inconnus : {sorted(map(str, unknown))}")
     out_of_system = [
         level_id
         for level_id, system in system_by_level.items()
         if system != payload.school_system
     ]
     if out_of_system:
-        raise _invalid(
+        raise invalid(
             f"Niveaux hors du système scolaire '{payload.school_system}' : "
             f"{sorted(map(str, out_of_system))}"
         )
@@ -207,7 +199,7 @@ async def update_profile(
     )
     unknown_subjects = all_subjects - known_subjects
     if unknown_subjects:
-        raise _invalid(f"Matières inconnues : {sorted(map(str, unknown_subjects))}")
+        raise invalid(f"Matières inconnues : {sorted(map(str, unknown_subjects))}")
 
     await db.execute(
         user_education_levels.delete().where(user_education_levels.c.user_id == user.id)
@@ -290,18 +282,18 @@ async def confirm_avatar(
     de l'objet hors gabarit (la ligne reste ``pending``).
     """
     if user.avatar_s3_key is None or user.avatar_status != STATUS_PENDING:
-        raise _conflict("Aucun upload d'avatar en attente")
+        raise conflict("Aucun upload d'avatar en attente")
 
     metadata = await storage.head(user.avatar_s3_key)
     if metadata is None:
-        raise _conflict("Objet introuvable sur S3 : upload non abouti")
+        raise conflict("Objet introuvable sur S3 : upload non abouti")
     size = metadata.get("ContentLength")
     content_type = metadata.get("ContentType")
     if (size is not None and size > settings.AVATAR_MAX_BYTES) or (
         content_type is not None and content_type != user.avatar_mime
     ):
         await storage.delete_many([user.avatar_s3_key])
-        raise _conflict("Objet hors gabarit (taille ou type inattendu)")
+        raise conflict("Objet hors gabarit (taille ou type inattendu)")
 
     user.avatar_status = STATUS_AVAILABLE
     await db.commit()

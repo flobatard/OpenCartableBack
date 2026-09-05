@@ -1,6 +1,6 @@
-"""Régime d'accès élève (J2) : autorisation par visibilité + token de partage.
+"""Régime d'accès élève : autorisation par visibilité + token de partage.
 
-C'est la **seconde dépendance d'autorisation** actée au cadrage (§5.1),
+C'est la **seconde dépendance d'autorisation** de l'API (Descriptions.md §5.1),
 distincte de ``get_current_user`` : aucune identité, aucun JWT, aucun appel
 Zitadel — un token de partage opaque (capability URL) et la ``visibility``
 du cours décident seuls de l'accès, vérifiés À CHAQUE requête :
@@ -27,11 +27,12 @@ FIFO (tests/test_public_api.py) ; l'expiration est comparée EN PYTHON
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.http import conflict, not_found
 from app.core.storage import Storage
 from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
@@ -63,9 +64,7 @@ from app.users.service import avatar_url_for
 def _not_found() -> HTTPException:
     # Détail unique et volontairement vague : ne pas distinguer « cours
     # inexistant », « lien révoqué », « lien expiré », « cours dépublié ».
-    return HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND, detail="Cours introuvable"
-    )
+    return not_found("Cours introuvable")
 
 
 def _link_valid(link: ShareLink | None) -> bool:
@@ -314,10 +313,7 @@ async def presign_download_public(
     if resource is None:
         raise _not_found()
     if resource.status != STATUS_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ressource non disponible (upload non confirmé)",
-        )
+        raise conflict("Ressource non disponible (upload non confirmé)")
     download_url = storage.presign_get(
         resource.s3_key, resource.original_name, inline=inline
     )

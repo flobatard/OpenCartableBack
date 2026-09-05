@@ -1,12 +1,11 @@
 """Export/import d'un cours en archive ``.zip`` (manifest + binaires S3).
 
-**Exception actée** à la règle « les binaires ne transitent jamais par le
-backend » (contrainte Pi) : l'archive est assemblée et parsée par l'API,
-volumes bornés (``TRANSFER_MAX_ZIP_BYTES`` global, ``S3_MAX_UPLOAD_BYTES``
-par fichier). Comme :mod:`app.courses.service`, l'ordre des ``execute`` de
-chaque fonction est un contrat des tests (fausse session FIFO,
-tests/test_course_transfer_api.py) et tout est scopé au propriétaire
-(introuvable → 404, jamais 403).
+Seule exception à la règle « les binaires ne transitent jamais par le
+backend » (contrainte Pi, cf. docs/decisions.md) : l'archive est assemblée et
+parsée par l'API, volumes bornés (``TRANSFER_MAX_ZIP_BYTES`` global,
+``S3_MAX_UPLOAD_BYTES`` par fichier). L'ordre des ``execute`` de chaque
+fonction est un contrat des tests (fausse session FIFO) ; tout est scopé au
+propriétaire (introuvable → 404, jamais 403).
 
 L'import crée TOUJOURS un nouveau cours : uuid régénérés partout (cours,
 blocs, ressources, modules), références remappées — colonnes
@@ -29,6 +28,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.http import invalid, unavailable
 from app.core.storage import Storage
 from app.course_transfer.archive import (
     InvalidArchive,
@@ -46,6 +46,7 @@ from app.course_transfer.schemas import (
     ManifestModule,
     ManifestResource,
 )
+from app.courses.queries import get_owned_course
 from app.courses.schemas import CourseRead
 from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
@@ -62,30 +63,6 @@ from app.models.user import User
 from app.resources.service import _sanitize_name
 
 
-def _invalid(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
-
-
-def _not_found(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-
-
-async def _get_owned_course(db: AsyncSession, user: User, course_id: uuid.UUID) -> Course:
-    """Charge le cours du prof ; 404 s'il n'existe pas ou appartient à autrui."""
-    course = (
-        (
-            await db.execute(
-                select(Course).where(Course.id == course_id, Course.owner_id == user.id)
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if course is None:
-        raise _not_found("Cours introuvable")
-    return course
-
-
 async def export_course(
     db: AsyncSession, user: User, course_id: uuid.UUID, storage: Storage
 ) -> tuple[str, SpooledTemporaryFile]:
@@ -99,7 +76,7 @@ async def export_course(
     id``). Lecture seule : pas de commit. L'assemblage du zip (lectures S3
     comprises) est déporté en UN ``run_in_threadpool``.
     """
-    course = await _get_owned_course(db, user, course_id)
+    course = await get_owned_course(db, user, course_id)
     subject_codes = list(
         (
             await db.execute(
@@ -266,7 +243,7 @@ async def import_course(
     try:
         zf, manifest = await run_in_threadpool(parse_zip_sync, upload.file)
     except InvalidArchive as exc:
-        raise _invalid(str(exc)) from exc
+        raise invalid(str(exc)) from exc
 
     try:
         subject_ids = list(
@@ -428,14 +405,11 @@ async def import_course(
         except InvalidArchive as exc:
             await db.rollback()
             await _cleanup(storage, pushed)
-            raise _invalid(str(exc)) from exc
+            raise invalid(str(exc)) from exc
         except Exception as exc:
             await db.rollback()
             await _cleanup(storage, pushed)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Stockage S3 indisponible",
-            ) from exc
+            raise unavailable("Stockage S3 indisponible") from exc
 
         await db.commit()
         return read
