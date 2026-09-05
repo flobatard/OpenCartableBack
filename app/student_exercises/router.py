@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ai import AIClient, get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.sse import sse_response
 from app.core.storage import Storage, get_storage
 from app.student_exercises import service, streaming
 from app.student_exercises.schemas import (
@@ -34,12 +35,6 @@ from app.users import service as users_service
 router = APIRouter(
     prefix="/student/courses/{course_id}/blocks/{block_id}", tags=["student-exercises"]
 )
-
-_SSE_HEADERS = {
-    "Cache-Control": "no-store",
-    "X-Accel-Buffering": "no",
-}
-
 
 @router.get("/submissions", response_model=SubmissionsRead)
 async def list_submissions(
@@ -69,7 +64,7 @@ async def stream_submission(
     events = await streaming.sse_stream(
         client, db, storage, auth, user, course_id, token, block_id, question_id, payload
     )
-    return StreamingResponse(events, media_type="text/event-stream", headers=_SSE_HEADERS)
+    return sse_response(events)
 
 
 @router.delete("/submissions", response_model=DeletedRead)

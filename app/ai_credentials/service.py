@@ -19,6 +19,7 @@ consommateur rembourse via le :class:`QuotaTicket` si l'appel échoue
 
 import contextlib
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -279,6 +280,24 @@ async def refund_default_quota(db: AsyncSession, ticket: QuotaTicket) -> None:
     except Exception:  # pragma: no cover - filet best-effort
         with contextlib.suppress(Exception):
             await db.rollback()
+
+
+@contextlib.asynccontextmanager
+async def refund_on_error(
+    db: AsyncSession, ticket: QuotaTicket | None
+) -> AsyncIterator[None]:
+    """Rembourse le ticket si le bloc lève, puis re-lève.
+
+    Pour les échecs EAGER (cascade, validation du client IA, appel classique) :
+    un flux déjà entamé applique sa propre règle — remboursé seulement
+    avant le premier token, dans son encodeur.
+    """
+    try:
+        yield
+    except Exception:
+        if ticket is not None:
+            await refund_default_quota(db, ticket)
+        raise
 
 
 async def effective_config(

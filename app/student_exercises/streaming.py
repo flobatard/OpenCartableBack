@@ -1,6 +1,6 @@
 """Flux SSE d'un tour du tuteur d'exercice élève.
 
-Contrat SSE — extension du contrat de référence de :mod:`app.ai.service`,
+Contrat SSE — extension du contrat de référence de :mod:`app.core.sse`,
 mêmes événements que l'assistant de cours (le parseur front est partagé) :
 
 .. code-block:: text
@@ -32,7 +32,6 @@ l'élève) : remboursé sur erreur eager ou avant le premier token — règles d
 :mod:`app.ai_credentials`.
 """
 
-import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -42,10 +41,15 @@ from fastapi import HTTPException
 from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai_credentials.service import effective_config, refund_default_quota
+from app.ai_credentials.service import (
+    effective_config,
+    refund_default_quota,
+    refund_on_error,
+)
 from app.core.ai import AIClient, AIToolCall, AIToolResult, AIToolSpec, ChatMessage
 from app.core.auth import AuthenticatedUser
 from app.core.http import invalid
+from app.core.sse import sse_event
 from app.core.storage import Storage
 from app.course_assistant.context import build_refs
 from app.course_assistant.editing.base import tool_error
@@ -182,10 +186,6 @@ def build_tutor_executor(
     return _execute
 
 
-def _sse_event(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
 async def sse_stream(
     client: AIClient,
     db: AsyncSession,
@@ -253,7 +253,7 @@ async def sse_stream(
     )
     await db.commit()
 
-    try:
+    async with refund_on_error(db, ticket):
         events = client.stream_agent(
             model_messages,
             config,
@@ -263,10 +263,6 @@ async def sse_stream(
             trace_name=_TRACE_NAME,
             user_id=auth.sub,
         )
-    except Exception:
-        if ticket is not None:
-            await refund_default_quota(db, ticket)
-        raise
 
     return _encode_turn(
         db=db,
@@ -300,7 +296,7 @@ async def _encode_turn(
         if not text:
             return None
         all_text.append(text)
-        return _sse_event("token", {"delta": text})
+        return sse_event("token", {"delta": text})
 
     async def _finalize(usage: dict[str, Any] | None) -> None:
         await db.execute(
@@ -325,20 +321,20 @@ async def _encode_turn(
                 if sse is not None:
                     yield sse
             elif event.type == "thinking":
-                yield _sse_event("thinking", {"delta": event.delta})
+                yield sse_event("thinking", {"delta": event.delta})
             elif event.type == "tool_call":
                 held = _emit_text(rewriter.flush())
                 if held is not None:
                     yield held
                 call = event.tool_call
-                yield _sse_event(
+                yield sse_event(
                     "tool_call", {"id": call.id, "name": call.name, "args": call.arguments}
                 )
             elif event.type == "tool_result":
                 held = _emit_text(rewriter.flush())
                 if held is not None:
                     yield held
-                yield _sse_event(
+                yield sse_event(
                     "tool_result",
                     {
                         "id": event.tool_call.id,
@@ -354,7 +350,7 @@ async def _encode_turn(
                     yield held
                 usage = event.usage.model_dump() if event.usage else None
                 await _finalize(usage)
-                yield _sse_event(
+                yield sse_event(
                     "done",
                     {
                         "submission_id": str(submission_id),
@@ -378,4 +374,4 @@ async def _encode_turn(
             await _finalize(None)
         except Exception:  # noqa: BLE001 — best-effort assumé
             pass
-        yield _sse_event("error", {"status": exc.status_code, "detail": exc.detail})
+        yield sse_event("error", {"status": exc.status_code, "detail": exc.detail})

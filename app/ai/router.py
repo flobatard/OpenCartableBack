@@ -1,15 +1,9 @@
-"""Routes de smoke-test du client IA générique (BYO token).
+"""Routes de smoke-test du client IA générique (BYO token), protégées prof.
 
-Preuve de bout en bout de la brique :mod:`app.core.ai` et **référence
-d'intégration SSE** pour les futures features (J5). Facilement supprimable :
-retirer le mount dans ``create_app()`` et ce package.
-
-Les deux routes sont protégées prof (JWT). Le streaming est un **POST** servi
-en ``text/event-stream`` : le front le consommera via ``fetch`` +
-``ReadableStream`` (``EventSource`` ne sait ni POSTer ni porter un Bearer).
-``X-Accel-Buffering: no`` demande au nginx d'infra (hors repo) de ne pas
-bufferiser le flux ; son ``proxy_read_timeout`` doit couvrir la durée d'une
-génération.
+Preuve de bout en bout de la brique :mod:`app.core.ai` (appel classique et
+flux SSE) et banc d'essai de la cascade config × quota. Supprimable : retirer
+le mount dans ``create_app()`` et ce package, après avoir porté les tests de
+cascade de ``tests/test_ai_api.py`` au niveau service.
 """
 
 from fastapi import APIRouter, Depends
@@ -21,13 +15,9 @@ from app.ai.schemas import ChatRequest, ChatResponse
 from app.core.ai import AIClient, get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.sse import sse_response
 
 router = APIRouter(prefix="/ai", tags=["ai"])
-
-_SSE_HEADERS = {
-    "Cache-Control": "no-store",
-    "X-Accel-Buffering": "no",
-}
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -48,9 +38,8 @@ async def chat_stream(
     db: AsyncSession = Depends(get_db),
     client: AIClient = Depends(get_ai_client),
 ) -> StreamingResponse:
-    """Appel streamé : événements SSE ``token``/``done``/``error`` (contrat
-    documenté dans :mod:`app.ai.service`). Une config invalide ou un
-    credential illisible échoue en 4xx/503 AVANT le début du flux (cascade +
-    validation eager de ``AIClient.stream``, résolues dans ``sse_stream``)."""
+    """Appel streamé : événements SSE ``token``/``thinking``/``done``/``error``
+    (contrat dans :mod:`app.core.sse`). Une config invalide ou un credential
+    illisible échoue en 4xx/503 AVANT le début du flux."""
     events = await service.sse_stream(client, db, payload, auth)
-    return StreamingResponse(events, media_type="text/event-stream", headers=_SSE_HEADERS)
+    return sse_response(events)

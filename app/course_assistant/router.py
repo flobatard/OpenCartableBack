@@ -2,9 +2,8 @@
 
 Préfixe ``/courses/{course_id}/assistant`` — aucun conflit de littéral avec
 ``app/courses/`` (segment ``assistant`` dédié). Le streaming est un **POST**
-servi en ``text/event-stream`` (motif ``app/ai/router.py`` : fetch +
-ReadableStream côté front, EventSource ne porte pas de Bearer) ; contrat SSE
-documenté dans :mod:`app.course_assistant.streaming` (le CRUD vit dans
+servi en ``text/event-stream`` (contrat de base dans :mod:`app.core.sse`,
+extension agent dans :mod:`app.course_assistant.streaming` ; le CRUD vit dans
 :mod:`app.course_assistant.service`).
 """
 
@@ -17,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ai import AIClient, get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.sse import sse_response
 from app.core.storage import Storage, get_storage
 from app.course_assistant import service, streaming
 from app.course_assistant.schemas import (
@@ -31,12 +31,6 @@ from app.models.ai_conversation import CONTEXT_COURSE
 from app.users import service as users_service
 
 router = APIRouter(prefix="/courses/{course_id}/assistant", tags=["course-assistant"])
-
-_SSE_HEADERS = {
-    "Cache-Control": "no-store",
-    "X-Accel-Buffering": "no",
-}
-
 
 @router.get("/conversations", response_model=list[ConversationRead])
 async def list_conversations(
@@ -119,7 +113,7 @@ async def submit_proposal_decision(
     events = await streaming.sse_resume_stream(
         client, db, storage, auth, user, course_id, conversation_id, tool_call_id, payload
     )
-    return StreamingResponse(events, media_type="text/event-stream", headers=_SSE_HEADERS)
+    return sse_response(events)
 
 
 @router.post("/conversations/{conversation_id}/messages/stream")
@@ -139,4 +133,4 @@ async def stream_message(
     events = await streaming.sse_stream(
         client, db, storage, auth, user, course_id, conversation_id, payload
     )
-    return StreamingResponse(events, media_type="text/event-stream", headers=_SSE_HEADERS)
+    return sse_response(events)

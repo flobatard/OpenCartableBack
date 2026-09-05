@@ -31,8 +31,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.core.http import conflict, not_found
+from app.core.http import not_found
 from app.core.storage import Storage
 from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
@@ -58,6 +57,7 @@ from app.public.schemas import (
     PublicProfessorRead,
     PublicResourceRead,
 )
+from app.resources.service import download_url_for
 from app.users.service import avatar_url_for
 
 
@@ -295,9 +295,9 @@ async def presign_download_public(
 ) -> PublicDownloadRead:
     """URL présignée de lecture d'une ressource d'un cours déjà autorisé.
 
-    Ordre des execute : 1) ressource (scopée cours). 409 si la ressource
-    n'est pas ``available`` (miroir exact du régime prof). Le bucket n'est
-    jamais public : c'est la présignature qui matérialise l'accès (§5.6).
+    Ordre des execute : 1) ressource (scopée cours) ; 409 si elle n'est pas
+    ``available`` (règle partagée avec le régime prof). Le bucket n'est
+    jamais public : c'est la présignature qui matérialise l'accès.
     """
     resource = (
         (
@@ -312,14 +312,8 @@ async def presign_download_public(
     )
     if resource is None:
         raise _not_found()
-    if resource.status != STATUS_AVAILABLE:
-        raise conflict("Ressource non disponible (upload non confirmé)")
-    download_url = storage.presign_get(
-        resource.s3_key, resource.original_name, inline=inline
-    )
-    return PublicDownloadRead(
-        download_url=download_url, expires_in=settings.S3_PRESIGN_GET_TTL
-    )
+    download_url, expires_in = download_url_for(resource, storage, inline=inline)
+    return PublicDownloadRead(download_url=download_url, expires_in=expires_in)
 
 
 async def get_module_public(

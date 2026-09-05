@@ -1,6 +1,6 @@
 """Flux SSE d'un tour d'assistant de cours (agent) et reprise HITL.
 
-Contrat SSE — extension du contrat de référence de :mod:`app.ai.service` :
+Contrat SSE — extension du contrat de référence de :mod:`app.core.sse` :
 
 .. code-block:: text
 
@@ -51,7 +51,6 @@ Comme partout, tout est scopé au propriétaire (404 jamais 403) et l'ordre des
 ``execute`` de chaque fonction est un contrat des tests (fausse session FIFO).
 """
 
-import json
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -60,12 +59,17 @@ from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai_credentials.service import effective_config, refund_default_quota
+from app.ai_credentials.service import (
+    effective_config,
+    refund_default_quota,
+    refund_on_error,
+)
 from app.core.ai import AIClient, ChatMessage
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
 from app.core.database import touch
 from app.core.http import invalid, not_found
+from app.core.sse import sse_event
 from app.core.storage import Storage
 from app.course_assistant import hitl
 from app.course_assistant.context import (
@@ -98,10 +102,6 @@ MAX_TOOL_ROUNDS = 5
 # Extrait d'un résultat d'outil relayé sur le flux (le contenu complet, lui,
 # n'est servi que par le détail de conversation) — même valeur côté front.
 TOOL_RESULT_EXCERPT_CHARS = 400
-
-
-def _sse_event(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 async def _load_snapshot(db: AsyncSession, course) -> tuple[list, list, list]:
@@ -271,7 +271,7 @@ async def sse_stream(
     touch(conversation)
     await db.commit()
 
-    try:
+    async with refund_on_error(db, ticket):
         events = client.stream_agent(
             model_messages,
             config,
@@ -282,10 +282,6 @@ async def sse_stream(
             trace_name=_TRACE_NAME,
             user_id=auth.sub,
         )
-    except Exception:
-        if ticket is not None:
-            await refund_default_quota(db, ticket)
-        raise
 
     return _encode_turn(
         client=client,
@@ -440,7 +436,7 @@ async def _encode_turn(
             return None
         segment_text.append(text)
         all_text.append(text)
-        return _sse_event("token", {"delta": text})
+        return sse_event("token", {"delta": text})
 
     def _flush_segment() -> str | None:
         """Clôt le segment assistant courant ; retourne l'éventuel
@@ -506,7 +502,7 @@ async def _encode_turn(
                 if sse is not None:
                     yield sse
             elif event.type == "thinking":
-                yield _sse_event("thinking", {"delta": event.delta})
+                yield sse_event("thinking", {"delta": event.delta})
             elif event.type == "tool_call":
                 # Le texte retenu par le rewriter part avant l'appel d'outil
                 # (ordre d'affichage côté front).
@@ -524,7 +520,7 @@ async def _encode_turn(
                 segment_tool_calls.append(
                     {"id": call.id, "name": call.name, "arguments": arguments}
                 )
-                yield _sse_event(
+                yield sse_event(
                     "tool_call",
                     {"id": call.id, "name": call.name, "args": arguments},
                 )
@@ -542,7 +538,7 @@ async def _encode_turn(
                         "is_error": bool(event.tool_result_error),
                     }
                 )
-                yield _sse_event(
+                yield sse_event(
                     "tool_result",
                     {
                         "id": event.tool_call.id,
@@ -576,7 +572,7 @@ async def _encode_turn(
                 )
                 if replaced is not None:
                     client.drop_agent_thread(replaced.thread_id)
-                yield _sse_event(
+                yield sse_event(
                     "interrupt",
                     {
                         "tool_call_id": tool_call_id,
@@ -593,7 +589,7 @@ async def _encode_turn(
                 ids = await _persist_turn(sources, usage)
                 if thread_id is not None:
                     client.drop_agent_thread(thread_id)
-                yield _sse_event(
+                yield sse_event(
                     "done",
                     {
                         "usage": usage,
@@ -621,4 +617,4 @@ async def _encode_turn(
             pass
         if thread_id is not None:
             client.drop_agent_thread(thread_id)
-        yield _sse_event("error", {"status": exc.status_code, "detail": exc.detail})
+        yield sse_event("error", {"status": exc.status_code, "detail": exc.detail})

@@ -6,10 +6,8 @@ confirmation vérifie l'objet (HEAD S3) et passe le statut à ``available``.
 La ressource est **indépendante des blocs** : confirmer un upload ne crée
 rien d'autre, et supprimer une ressource supprime les blocs ``document`` qui
 la pointent (FK ``CASCADE`` — un document sans son fichier n'a pas de sens).
-Comme
-:mod:`app.courses.service`, l'ordre des ``execute`` de chaque fonction est
-stable et rejoué par une fausse session FIFO (tests/test_resources_api.py),
-et tout est scopé au propriétaire du cours (introuvable → 404, jamais 403).
+L'ordre des ``execute`` de chaque fonction est un contrat des tests (fausse
+session FIFO) ; tout est scopé au propriétaire (introuvable → 404, jamais 403).
 """
 
 import re
@@ -243,6 +241,20 @@ async def delete_resource(
     await storage.delete_many([s3_key])
 
 
+def download_url_for(resource: Resource, storage: Storage, *, inline: bool) -> tuple[str, int]:
+    """URL présignée de lecture d'une ressource ``available`` et son TTL.
+
+    409 tant que l'upload n'est pas confirmé. ``inline=True`` demande la
+    disposition ``inline`` (le navigateur affiche l'objet au lieu de le
+    télécharger). Calcul local, aucune I/O : partagé par les régimes prof
+    (:func:`presign_download`) et public (:mod:`app.public.service`).
+    """
+    if resource.status != STATUS_AVAILABLE:
+        raise conflict("Ressource non disponible (upload non confirmé)")
+    url = storage.presign_get(resource.s3_key, resource.original_name, inline=inline)
+    return url, settings.S3_PRESIGN_GET_TTL
+
+
 async def presign_download(
     db: AsyncSession,
     user: User,
@@ -252,21 +264,12 @@ async def presign_download(
     *,
     inline: bool = False,
 ) -> ResourceDownload:
-    """URL présignée de lecture ; 409 tant que la ressource n'est pas disponible.
+    """URL présignée de lecture (:func:`download_url_for`).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) ressource (scopée
-    cours). ``inline=True`` demande la disposition ``inline`` — le navigateur
-    affiche l'objet au lieu de le télécharger ; c'est la variante que résout la
-    route front de redirection matérialisant les liens des PDF exportés.
-    Lecture seule : pas de commit.
+    cours). Lecture seule : pas de commit.
     """
     course = await get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
-    if resource.status != STATUS_AVAILABLE:
-        raise conflict("Ressource non disponible (upload non confirmé)")
-    download_url = storage.presign_get(
-        resource.s3_key, resource.original_name, inline=inline
-    )
-    return ResourceDownload(
-        download_url=download_url, expires_in=settings.S3_PRESIGN_GET_TTL
-    )
+    download_url, expires_in = download_url_for(resource, storage, inline=inline)
+    return ResourceDownload(download_url=download_url, expires_in=expires_in)

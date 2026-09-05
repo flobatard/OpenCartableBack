@@ -1,45 +1,21 @@
-"""Service de la route de smoke-test IA : conversions + encodage SSE.
+"""Service des routes de smoke-test IA : conversions + encodage SSE minimal.
 
-Le format SSE défini ici est le **contrat de référence** pour les futures
-features streamées (J5) :
-
-.. code-block:: text
-
-    event: token
-    data: {"delta": "…"}
-
-    event: thinking
-    data: {"delta": "…"}
-
-    event: done
-    data: {"usage": {"input_tokens": 12, "output_tokens": 87}}
-
-    event: error
-    data: {"status": 503, "detail": "Fournisseur IA injoignable"}
-
-``thinking`` relaie les deltas de raisonnement quand le provider en émet
-(absent sinon — le front doit le tolérer). Les features agent (assistant de
-cours) étendent ce contrat avec ``tool_call``/``tool_result`` — voir
-:mod:`app.course_assistant.service`.
-
-JSON compact ``ensure_ascii=False``, chaque événement terminé par ``\\n\\n``,
-flux clos après ``done`` ou ``error``. Rationale de l'événement ``error`` : une
-erreur survenue APRÈS le premier octet ne peut plus changer le status HTTP
-(déjà parti en 200) — l'événement porte donc le status « qu'aurait eu » la
-requête (celui du mapping de :mod:`app.core.ai.errors`).
+Contrat SSE et rationale dans :mod:`app.core.sse`. Ce package est supprimable
+(retirer le mount dans ``create_app()`` et le package) une fois les tests de
+la cascade config × quota de ``tests/test_ai_api.py`` portés au niveau
+service — cf. TODO.md.
 """
 
-import json
 from collections.abc import AsyncIterator
-from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.schemas import AIConfigIn, ChatRequest, ChatResponse, ChatUsageRead
-from app.ai_credentials.service import effective_config, refund_default_quota
+from app.ai_credentials.service import effective_config, refund_default_quota, refund_on_error
 from app.core.ai import AIClient, AIRequestConfig, ChatMessage
 from app.core.auth import AuthenticatedUser
+from app.core.sse import sse_event
 
 _TRACE_NAME = "smoke-chat"
 
@@ -54,32 +30,24 @@ def _to_core_messages(payload: ChatRequest) -> list[ChatMessage]:
     return [ChatMessage(role=m.role, content=m.content) for m in payload.messages]
 
 
-def _sse_event(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
 async def chat(
     client: AIClient, db: AsyncSession, payload: ChatRequest, auth: AuthenticatedUser
 ) -> ChatResponse:
     """Appel classique — ``auth.sub`` (jamais l'e-mail) part en trace Langfuse.
 
     La config passe par la cascade ``effective_config`` (config explicite >
-    credential utilisateur chiffré > None → fallback serveur d'AIClient).
-    Le quota de l'IA par défaut, réservé par la cascade, est REMBOURSÉ si
-    l'appel provider échoue (ticket) : un échec est net-zéro.
+    credential utilisateur chiffré > None → fallback serveur d'AIClient) ; le
+    quota de l'IA par défaut réservé par la cascade est remboursé si l'appel
+    provider échoue.
     """
     config, ticket = await effective_config(db, auth, _to_core_config(payload.config))
-    try:
+    async with refund_on_error(db, ticket):
         completion = await client.complete(
             _to_core_messages(payload),
             config,
             trace_name=_TRACE_NAME,
             user_id=auth.sub,
         )
-    except Exception:
-        if ticket is not None:
-            await refund_default_quota(db, ticket)
-        raise
     usage = ChatUsageRead(**completion.usage.model_dump()) if completion.usage else None
     return ChatResponse(
         content=completion.content,
@@ -97,23 +65,18 @@ async def sse_stream(
     La cascade ``effective_config`` est résolue puis ``client.stream(...)``
     appelé ICI, hors du generator : leurs erreurs (credential illisible,
     config absente/invalide) remontent en vraies HTTPException 4xx/503 avant
-    que la route ne retourne la ``StreamingResponse``. Remboursement du
-    quota de l'IA par défaut (ticket de la cascade) : sur une erreur eager,
-    et sur une erreur mid-stream survenue AVANT le premier token — un flux
-    qui a déjà produit du contenu reste compté (décision actée).
+    que la route ne retourne la réponse. Quota de l'IA par défaut : remboursé
+    sur erreur eager, et sur erreur mid-stream survenue AVANT le premier token
+    — un flux qui a déjà produit du contenu reste compté.
     """
     config, ticket = await effective_config(db, auth, _to_core_config(payload.config))
-    try:
+    async with refund_on_error(db, ticket):
         events = client.stream(
             _to_core_messages(payload),
             config,
             trace_name=_TRACE_NAME,
             user_id=auth.sub,
         )
-    except Exception:
-        if ticket is not None:
-            await refund_default_quota(db, ticket)
-        raise
 
     async def _encode() -> AsyncIterator[str]:
         # La session `db` reste utilisable ici : les dépendances yield de
@@ -123,17 +86,15 @@ async def sse_stream(
             async for event in events:
                 if event.type == "token":
                     tokens_emitted = True
-                    yield _sse_event("token", {"delta": event.delta})
+                    yield sse_event("token", {"delta": event.delta})
                 elif event.type == "thinking":
-                    yield _sse_event("thinking", {"delta": event.delta})
+                    yield sse_event("thinking", {"delta": event.delta})
                 elif event.type == "done":
                     usage = event.usage.model_dump() if event.usage else None
-                    yield _sse_event("done", {"usage": usage})
+                    yield sse_event("done", {"usage": usage})
         except HTTPException as exc:
-            # Trop tard pour changer le status HTTP : l'erreur devient un
-            # événement SSE portant le status du mapping app/core/ai/errors.py.
             if ticket is not None and not tokens_emitted:
                 await refund_default_quota(db, ticket)
-            yield _sse_event("error", {"status": exc.status_code, "detail": exc.detail})
+            yield sse_event("error", {"status": exc.status_code, "detail": exc.detail})
 
     return _encode()
