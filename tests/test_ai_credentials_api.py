@@ -14,15 +14,11 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert
 
 from app.ai_credentials import service as ai_credentials_service
 from app.core import crypto
-from app.core.ai import get_ai_client
-from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import settings
-from app.core.database import get_db
-from app.main import create_app
+from tests.fakes import FakeSession, make_client
 
 URL = "/api/v1/users/me/ai-credentials"
 TEST_URL = URL + "/test"
@@ -76,42 +72,6 @@ def _user_with_key(**overrides):
     )
 
 
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT ; INSERT/DELETE tracés sans consommer."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, (Insert, Delete)):
-            return _FakeResult([])
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-
 class _FakeAIClient:
     """``complete()`` scriptable — seul mode utilisé par le test de connexion.
 
@@ -128,17 +88,6 @@ class _FakeAIClient:
         if self.error is not None:
             raise self.error
         return SimpleNamespace(content="ok")
-
-
-def _client(session, ai_client=None) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: session
-    if ai_client is not None:
-        app.dependency_overrides[get_ai_client] = lambda: ai_client
-    return TestClient(app)
 
 
 # ---------------------------------------------------------------- auth
@@ -162,7 +111,7 @@ def test_routes_require_token(client: TestClient):
 
 
 def test_get_without_credential():
-    response = _client(_FakeSession([[_user_row()], []])).get(URL)
+    response = make_client(FakeSession([[_user_row()], []])).get(URL)
     assert response.status_code == 200
     assert response.json() == {
         "provider": None,
@@ -174,7 +123,7 @@ def test_get_without_credential():
 
 
 def test_get_with_credential_never_reemits_key():
-    response = _client(_FakeSession([[_user_with_key()], []])).get(URL)
+    response = make_client(FakeSession([[_user_with_key()], []])).get(URL)
     assert response.status_code == 200
     assert response.json() == {
         "provider": "anthropic",
@@ -191,7 +140,7 @@ def test_get_exposes_daily_quota(monkeypatch):
     monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
     monkeypatch.setattr(settings, "AI_MODEL", "llama3.2:latest")
     user = _user_row(ai_daily_call_quota=5)
-    response = _client(_FakeSession([[user], [3]])).get(URL)
+    response = make_client(FakeSession([[user], [3]])).get(URL)
     assert response.status_code == 200
     body = response.json()
     assert body["default_ai_available"] is True
@@ -208,8 +157,8 @@ def test_get_exposes_daily_quota(monkeypatch):
 
 def test_put_nominal_encrypts_key():
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).put(
+    session = FakeSession([[user], []])
+    response = make_client(session).put(
         URL, json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": API_KEY}
     )
     assert response.status_code == 200
@@ -234,7 +183,7 @@ def test_put_nominal_encrypts_key():
 def test_put_without_key_keeps_blob_and_salt():
     user = _user_with_key()
     blob, salt = user.ai_api_key_encrypted, user.ai_encryption_salt
-    response = _client(_FakeSession([[user], []])).put(
+    response = make_client(FakeSession([[user], []])).put(
         URL, json={"provider": "anthropic", "model": "claude-opus-5"}
     )
     assert response.status_code == 200
@@ -246,7 +195,7 @@ def test_put_without_key_keeps_blob_and_salt():
 def test_put_new_key_regenerates_salt():
     user = _user_with_key()
     blob, salt = user.ai_api_key_encrypted, user.ai_encryption_salt
-    response = _client(_FakeSession([[user], []])).put(
+    response = make_client(FakeSession([[user], []])).put(
         URL, json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "sk-nouvelle"}
     )
     assert response.status_code == 200
@@ -271,13 +220,13 @@ def test_put_new_key_regenerates_salt():
     ],
 )
 def test_put_invalid(payload: dict):
-    response = _client(_FakeSession([[_user_row()]])).put(URL, json=payload)
+    response = make_client(FakeSession([[_user_row()]])).put(URL, json=payload)
     assert response.status_code == 422
 
 
 def test_put_ollama_without_key():
     user = _user_row()
-    response = _client(_FakeSession([[user], []])).put(
+    response = make_client(FakeSession([[user], []])).put(
         URL, json={"provider": "ollama", "model": "llama3.2", "base_url": "http://pi:11434"}
     )
     assert response.status_code == 200
@@ -293,7 +242,7 @@ def test_put_ollama_without_key():
 
 def test_put_503_without_master_key(monkeypatch):
     monkeypatch.setattr(settings, "AI_CREDENTIALS_MASTER_KEY", "")
-    response = _client(_FakeSession([[_user_row()]])).put(
+    response = make_client(FakeSession([[_user_row()]])).put(
         URL, json={"provider": "anthropic", "model": "m", "api_key": API_KEY}
     )
     assert response.status_code == 503
@@ -304,8 +253,8 @@ def test_put_503_without_master_key(monkeypatch):
 
 def test_delete_clears_everything():
     user = _user_with_key(ai_base_url=None)
-    session = _FakeSession([[user]])
-    response = _client(session).delete(URL)
+    session = FakeSession([[user]])
+    response = make_client(session).delete(URL)
     assert response.status_code == 204
     assert user.ai_provider is None and user.ai_model is None and user.ai_base_url is None
     assert user.ai_api_key_encrypted is None and user.ai_encryption_salt is None
@@ -313,7 +262,7 @@ def test_delete_clears_everything():
 
 
 def test_delete_idempotent():
-    assert _client(_FakeSession([[_user_row()]])).delete(URL).status_code == 204
+    assert make_client(FakeSession([[_user_row()]])).delete(URL).status_code == 204
 
 
 # ---------------------------------------------------------------- POST /test
@@ -321,8 +270,8 @@ def test_delete_idempotent():
 
 def test_connection_with_explicit_key():
     ai = _FakeAIClient()
-    session = _FakeSession([[_user_row()]])
-    response = _client(session, ai).post(
+    session = FakeSession([[_user_row()]])
+    response = make_client(session, ai_client=ai).post(
         TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": API_KEY}
     )
     assert response.status_code == 200
@@ -338,7 +287,7 @@ def test_connection_with_explicit_key():
 
 def test_connection_uses_stored_key_when_omitted():
     ai = _FakeAIClient()
-    response = _client(_FakeSession([[_user_with_key()]]), ai).post(
+    response = make_client(FakeSession([[_user_with_key()]]), ai).post(
         TEST_URL, json={"provider": "anthropic", "model": "claude-opus-5"}
     )
     assert response.status_code == 200
@@ -348,7 +297,7 @@ def test_connection_uses_stored_key_when_omitted():
 
 def test_connection_ollama_without_key():
     ai = _FakeAIClient()
-    response = _client(_FakeSession([[_user_row()]]), ai).post(
+    response = make_client(FakeSession([[_user_row()]]), ai).post(
         TEST_URL, json={"provider": "ollama", "model": "llama3.2", "base_url": "http://pi:11434"}
     )
     assert response.status_code == 200
@@ -358,7 +307,7 @@ def test_connection_ollama_without_key():
 
 def test_connection_requires_key_when_none_stored():
     ai = _FakeAIClient()
-    response = _client(_FakeSession([[_user_row()]]), ai).post(
+    response = make_client(FakeSession([[_user_row()]]), ai).post(
         TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5"}
     )
     assert response.status_code == 422
@@ -370,7 +319,7 @@ def test_connection_unreadable_credential():
     user = _user_with_key()
     user.ai_encryption_salt = crypto.new_salt()  # sel ≠ celui du blob
     ai = _FakeAIClient()
-    response = _client(_FakeSession([[user]]), ai).post(
+    response = make_client(FakeSession([[user]]), ai).post(
         TEST_URL, json={"provider": "anthropic", "model": "claude-sonnet-5"}
     )
     assert response.status_code == 422
@@ -380,7 +329,7 @@ def test_connection_unreadable_credential():
 def test_connection_provider_error_passthrough():
     """L'HTTPException traduite par app/core/ai remonte telle quelle (400 clé refusée)."""
     ai = _FakeAIClient(error=HTTPException(400, detail="Clé API refusée par le fournisseur IA"))
-    response = _client(_FakeSession([[_user_row()]]), ai).post(
+    response = make_client(FakeSession([[_user_row()]]), ai).post(
         TEST_URL, json={"provider": "openai", "model": "gpt-4o", "api_key": API_KEY}
     )
     assert response.status_code == 400
@@ -404,7 +353,7 @@ def fake_list_models(monkeypatch):
 
 
 def test_models_with_explicit_key(fake_list_models):
-    response = _client(_FakeSession([[_user_row()]])).post(
+    response = make_client(FakeSession([[_user_row()]])).post(
         MODELS_URL, json={"provider": "openai", "api_key": API_KEY}
     )
     assert response.status_code == 200
@@ -417,7 +366,7 @@ def test_models_with_explicit_key(fake_list_models):
 
 
 def test_models_uses_stored_key_when_omitted(fake_list_models):
-    response = _client(_FakeSession([[_user_with_key()]])).post(
+    response = make_client(FakeSession([[_user_with_key()]])).post(
         MODELS_URL, json={"provider": "anthropic"}
     )
     assert response.status_code == 200
@@ -426,7 +375,7 @@ def test_models_uses_stored_key_when_omitted(fake_list_models):
 
 
 def test_models_ollama_without_key(fake_list_models):
-    response = _client(_FakeSession([[_user_row()]])).post(
+    response = make_client(FakeSession([[_user_row()]])).post(
         MODELS_URL, json={"provider": "ollama", "base_url": "http://pi:11434"}
     )
     assert response.status_code == 200
@@ -435,7 +384,7 @@ def test_models_ollama_without_key(fake_list_models):
 
 
 def test_models_requires_key_when_none_stored(fake_list_models):
-    response = _client(_FakeSession([[_user_row()]])).post(MODELS_URL, json={"provider": "google"})
+    response = make_client(FakeSession([[_user_row()]])).post(MODELS_URL, json={"provider": "google"})
     assert response.status_code == 422
     assert fake_list_models == []
 
@@ -454,6 +403,6 @@ def test_models_requires_key_when_none_stored(fake_list_models):
     ],
 )
 def test_models_invalid_payload(fake_list_models, payload: dict):
-    response = _client(_FakeSession([[_user_row()]])).post(MODELS_URL, json=payload)
+    response = make_client(FakeSession([[_user_row()]])).post(MODELS_URL, json=payload)
     assert response.status_code == 422
     assert fake_list_models == []
