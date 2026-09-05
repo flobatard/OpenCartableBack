@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import touch
 from app.core.http import invalid, not_found
 from app.core.storage import Storage
-from app.courses.queries import get_owned_course
+from app.courses.queries import (
+    block_counts_by_course,
+    get_owned_course,
+    taxonomy_ids_by_course,
+)
 from app.courses.schemas import (
     BlockCreate,
     BlockOrderUpdate,
@@ -157,43 +161,8 @@ async def list_courses(db: AsyncSession, user: User) -> list[CourseRead]:
         return []
     course_ids = [c.id for c in courses]
 
-    subjects: dict[uuid.UUID, list[uuid.UUID]] = {c.id: [] for c in courses}
-    subject_rows = (
-        await db.execute(
-            select(course_subjects.c.course_id, course_subjects.c.subject_id)
-            .where(course_subjects.c.course_id.in_(course_ids))
-            .order_by(course_subjects.c.course_id, course_subjects.c.subject_id)
-        )
-    ).all()
-    for course_id, subject_id in subject_rows:
-        subjects[course_id].append(subject_id)
-
-    levels: dict[uuid.UUID, list[uuid.UUID]] = {c.id: [] for c in courses}
-    level_rows = (
-        await db.execute(
-            select(
-                course_education_levels.c.course_id,
-                course_education_levels.c.education_level_id,
-            )
-            .where(course_education_levels.c.course_id.in_(course_ids))
-            .order_by(
-                course_education_levels.c.course_id,
-                course_education_levels.c.education_level_id,
-            )
-        )
-    ).all()
-    for course_id, level_id in level_rows:
-        levels[course_id].append(level_id)
-
-    counts = dict(
-        (
-            await db.execute(
-                select(Block.course_id, func.count())
-                .where(Block.course_id.in_(course_ids))
-                .group_by(Block.course_id)
-            )
-        ).all()
-    )
+    subjects, levels = await taxonomy_ids_by_course(db, course_ids)
+    counts = await block_counts_by_course(db, course_ids)
 
     return [_course_read(c, subjects[c.id], levels[c.id], counts.get(c.id, 0)) for c in courses]
 

@@ -28,11 +28,12 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.http import not_found
 from app.core.storage import Storage
+from app.courses.queries import block_counts_by_course, taxonomy_names_by_course
 from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
     VISIBILITY_DRAFT,
@@ -384,46 +385,8 @@ async def list_public_courses_by_professor(
         )
     course_ids = [c.id for c in courses]
 
-    subjects: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
-    subject_rows = (
-        await db.execute(
-            select(course_subjects.c.course_id, Subject.name)
-            .select_from(
-                course_subjects.join(Subject, Subject.id == course_subjects.c.subject_id)
-            )
-            .where(course_subjects.c.course_id.in_(course_ids))
-            .order_by(course_subjects.c.course_id, Subject.name)
-        )
-    ).all()
-    for course_id, name in subject_rows:
-        subjects[course_id].append(name)
-
-    levels: dict[uuid.UUID, list[str]] = {c.id: [] for c in courses}
-    level_rows = (
-        await db.execute(
-            select(course_education_levels.c.course_id, EducationLevel.name)
-            .select_from(
-                course_education_levels.join(
-                    EducationLevel,
-                    EducationLevel.id == course_education_levels.c.education_level_id,
-                )
-            )
-            .where(course_education_levels.c.course_id.in_(course_ids))
-            .order_by(course_education_levels.c.course_id, EducationLevel.name)
-        )
-    ).all()
-    for course_id, name in level_rows:
-        levels[course_id].append(name)
-
-    counts = dict(
-        (
-            await db.execute(
-                select(Block.course_id, func.count())
-                .where(Block.course_id.in_(course_ids))
-                .group_by(Block.course_id)
-            )
-        ).all()
-    )
+    subjects, levels = await taxonomy_names_by_course(db, course_ids)
+    counts = await block_counts_by_course(db, course_ids)
     return PublicProfessorRead(
         public_name=public_name,
         avatar_url=avatar_url,
