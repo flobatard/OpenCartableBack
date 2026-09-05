@@ -12,13 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.sql.dml import Delete, Insert, Update
+from sqlalchemy.sql.dml import Delete, Update
 
-from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import settings
-from app.core.database import get_db
-from app.core.storage import get_storage
 from app.main import create_app
+from tests.fakes import FakeSession, FakeStorage, inserts, make_client
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 
@@ -48,93 +46,6 @@ def _resource_row(**overrides):
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
-
-
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._rows
-
-    def one(self):
-        [row] = self._rows
-        return row
-
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        [row] = self._rows
-        return row
-
-
-class _FakeSession:
-    """FIFO des résultats de SELECT ; écritures tracées sans consommer."""
-
-    def __init__(self, select_results=()):
-        self._select_results = list(select_results)
-        self.executed = []
-        self.commits = 0
-
-    async def execute(self, stmt, params=None):
-        self.executed.append((stmt, params))
-        if isinstance(stmt, Insert) and stmt._returning:
-            return _FakeResult(self._select_results.pop(0))
-        if isinstance(stmt, (Insert, Update, Delete)):
-            return _FakeResult([])
-        return _FakeResult(self._select_results.pop(0))
-
-    async def commit(self):
-        self.commits += 1
-
-
-class _FakeStorage:
-    """Faux client S3 : URLs déterministes, HEAD configurable, pas de réseau."""
-
-    def __init__(self, head_result=None):
-        self._head_result = head_result
-        self.put_calls: list[tuple[str, str]] = []
-        self.get_calls: list[tuple[str, str]] = []
-        self.inline_calls: list[bool] = []
-        self.head_calls: list[str] = []
-        self.deleted: list[str] = []
-
-    def presign_put(self, s3_key, content_type):
-        self.put_calls.append((s3_key, content_type))
-        return f"https://s3.test/put/{s3_key}"
-
-    def presign_get(self, s3_key, original_name, inline=False):
-        self.get_calls.append((s3_key, original_name))
-        self.inline_calls.append(inline)
-        return f"https://s3.test/get/{s3_key}"
-
-    async def head(self, s3_key):
-        self.head_calls.append(s3_key)
-        return self._head_result
-
-    async def delete_many(self, s3_keys):
-        self.deleted.extend(s3_keys)
-
-
-def _client(session, storage=None) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
-        sub="prof-123", email=None, roles=frozenset(), claims={}
-    )
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_storage] = lambda: storage or _FakeStorage()
-    return TestClient(app)
-
-
-def _inserts(session, table_name):
-    return [
-        (stmt, params)
-        for stmt, params in session.executed
-        if isinstance(stmt, Insert) and stmt.table.name == table_name
-    ]
 
 
 _COURSE_ID = uuid.uuid4()
@@ -180,15 +91,15 @@ def test_auth_required(method, path, body):
 def test_presign_upload_ok():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course]])
-    storage = _FakeStorage()
+    session = FakeSession([[user], [course]])
+    storage = FakeStorage()
     payload = {
         "original_name": "schema.pdf",
         "mime": "application/pdf",
         "size": 2048,
         "type": "document",
     }
-    response = _client(session, storage).post(
+    response = make_client(session, storage).post(
         f"/api/v1/courses/{course.id}/resources", json=payload
     )
 
@@ -202,7 +113,7 @@ def test_presign_upload_ok():
     assert body["upload_url"] == f"https://s3.test/put/{body['s3_key']}"
     assert storage.put_calls == [(body["s3_key"], "application/pdf")]
 
-    [(stmt, _)] = _inserts(session, "resources")
+    [(stmt, _)] = inserts(session, "resources")
     values = stmt.compile().params
     assert values["status"] == "pending"
     assert values["original_name"] == "schema.pdf"
@@ -213,14 +124,14 @@ def test_presign_upload_ok():
 def test_presign_upload_sanitizes_name():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course]])
+    session = FakeSession([[user], [course]])
     payload = {
         "original_name": "../etc/mon cours (final).pdf",
         "mime": "application/pdf",
         "size": 10,
         "type": "document",
     }
-    response = _client(session).post(
+    response = make_client(session).post(
         f"/api/v1/courses/{course.id}/resources", json=payload
     )
 
@@ -244,8 +155,8 @@ def test_presign_upload_sanitizes_name():
     ],
 )
 def test_presign_invalid_payload_without_db_access(payload):
-    session = _FakeSession()
-    response = _client(session).post(
+    session = FakeSession()
+    response = make_client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/resources", json=payload
     )
     assert response.status_code == 422
@@ -254,17 +165,17 @@ def test_presign_invalid_payload_without_db_access(payload):
 
 def test_presign_foreign_course_404():
     user = _user_row()
-    session = _FakeSession([[user], []])  # select cours scopé owner → vide
+    session = FakeSession([[user], []])  # select cours scopé owner → vide
     payload = {
         "original_name": "x.pdf", "mime": "application/pdf", "size": 10, "type": "document",
     }
-    response = _client(session).post(
+    response = make_client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/resources", json=payload
     )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
-    assert _inserts(session, "resources") == []
+    assert inserts(session, "resources") == []
 
 
 # --- Liste (bibliothèque du cours) ---------------------------------------------
@@ -280,8 +191,8 @@ def test_list_course_resources():
     )
     # L'ordre servi (created_at desc, id) est restitué tel quel ; les
     # « pending » sont incluses (uploads à confirmer/purger).
-    session = _FakeSession([[user], [course], [r1, r2]])
-    response = _client(session).get(f"/api/v1/courses/{course.id}/resources")
+    session = FakeSession([[user], [course], [r1, r2]])
+    response = make_client(session).get(f"/api/v1/courses/{course.id}/resources")
 
     assert response.status_code == 200
     body = response.json()
@@ -304,8 +215,8 @@ def test_list_course_resources():
 
 def test_list_resources_foreign_course_404():
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).get(f"/api/v1/courses/{uuid.uuid4()}/resources")
+    session = FakeSession([[user], []])
+    response = make_client(session).get(f"/api/v1/courses/{uuid.uuid4()}/resources")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Cours introuvable"
@@ -320,9 +231,9 @@ def test_confirm_ok_available_without_block():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, size=2048)
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage(head_result={"ContentLength": 2048})
-    response = _client(session, storage).post(
+    session = FakeSession([[user], [course], [resource]])
+    storage = FakeStorage(head_result={"ContentLength": 2048})
+    response = make_client(session, storage).post(
         f"/api/v1/courses/{course.id}/resources/{resource.id}/confirm"
     )
 
@@ -334,8 +245,8 @@ def test_confirm_ok_available_without_block():
 
     assert storage.head_calls == [resource.s3_key]
     # Aucun insert métier (seul l'upsert auth sur users passe par un Insert).
-    assert _inserts(session, "blocks") == []
-    assert _inserts(session, "resources") == []
+    assert inserts(session, "blocks") == []
+    assert inserts(session, "resources") == []
     # La ressource passe à available (mutation ORM, flush au commit).
     assert resource.status == "available"
     assert course.updated_at != _NOW
@@ -346,9 +257,9 @@ def test_confirm_missing_object_409():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id)
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage(head_result=None)  # objet jamais uploadé
-    response = _client(session, storage).post(
+    session = FakeSession([[user], [course], [resource]])
+    storage = FakeStorage(head_result=None)  # objet jamais uploadé
+    response = make_client(session, storage).post(
         f"/api/v1/courses/{course.id}/resources/{resource.id}/confirm"
     )
 
@@ -360,9 +271,9 @@ def test_confirm_inconsistent_size_409():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, size=2048)
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage(head_result={"ContentLength": 999})
-    response = _client(session, storage).post(
+    session = FakeSession([[user], [course], [resource]])
+    storage = FakeStorage(head_result={"ContentLength": 999})
+    response = make_client(session, storage).post(
         f"/api/v1/courses/{course.id}/resources/{resource.id}/confirm"
     )
 
@@ -374,9 +285,9 @@ def test_confirm_already_confirmed_409():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, status="available")
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage(head_result={"ContentLength": 1024})
-    response = _client(session, storage).post(
+    session = FakeSession([[user], [course], [resource]])
+    storage = FakeStorage(head_result={"ContentLength": 1024})
+    response = make_client(session, storage).post(
         f"/api/v1/courses/{course.id}/resources/{resource.id}/confirm"
     )
 
@@ -387,8 +298,8 @@ def test_confirm_already_confirmed_409():
 def test_confirm_resource_not_found_404():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])  # ressource absente du cours
-    response = _client(session).post(
+    session = FakeSession([[user], [course], []])  # ressource absente du cours
+    response = make_client(session).post(
         f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}/confirm"
     )
 
@@ -398,8 +309,8 @@ def test_confirm_resource_not_found_404():
 
 def test_confirm_foreign_course_404():
     user = _user_row()
-    session = _FakeSession([[user], []])
-    response = _client(session).post(
+    session = FakeSession([[user], []])
+    response = make_client(session).post(
         f"/api/v1/courses/{uuid.uuid4()}/resources/{uuid.uuid4()}/confirm"
     )
 
@@ -414,8 +325,8 @@ def test_rename_ok_s3_key_frozen():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, status="available")
-    session = _FakeSession([[user], [course], [resource]])
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], [resource]])
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/resources/{resource.id}",
         json={"original_name": "schéma final.pdf"},
     )
@@ -442,8 +353,8 @@ def test_rename_ok_s3_key_frozen():
     ],
 )
 def test_rename_invalid_payload_without_db_access(payload):
-    session = _FakeSession()
-    response = _client(session).patch(
+    session = FakeSession()
+    response = make_client(session).patch(
         f"/api/v1/courses/{uuid.uuid4()}/resources/{uuid.uuid4()}", json=payload
     )
     assert response.status_code == 422
@@ -453,8 +364,8 @@ def test_rename_invalid_payload_without_db_access(payload):
 def test_rename_resource_other_course_404():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])  # select scopé course → vide
-    response = _client(session).patch(
+    session = FakeSession([[user], [course], []])  # select scopé course → vide
+    response = make_client(session).patch(
         f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}",
         json={"original_name": "y.pdf"},
     )
@@ -470,7 +381,7 @@ def test_delete_resource_purges_s3_after_commit():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, status="available")
-    session = _FakeSession([[user], [course], [resource]])
+    session = FakeSession([[user], [course], [resource]])
 
     class _StorageAfterCommit(_FakeStorage):
         # La purge S3 doit intervenir APRÈS le commit (motif delete_course) :
@@ -480,7 +391,7 @@ def test_delete_resource_purges_s3_after_commit():
             await super().delete_many(s3_keys)
 
     storage = _StorageAfterCommit()
-    response = _client(session, storage).delete(
+    response = make_client(session, storage).delete(
         f"/api/v1/courses/{course.id}/resources/{resource.id}"
     )
 
@@ -496,9 +407,9 @@ def test_delete_resource_purges_s3_after_commit():
 def test_delete_resource_not_found_404():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    storage = _FakeStorage()
-    response = _client(session, storage).delete(
+    session = FakeSession([[user], [course], []])
+    storage = FakeStorage()
+    response = make_client(session, storage).delete(
         f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}"
     )
 
@@ -508,9 +419,9 @@ def test_delete_resource_not_found_404():
 
 def test_delete_resource_foreign_course_404():
     user = _user_row()
-    session = _FakeSession([[user], []])
-    storage = _FakeStorage()
-    response = _client(session, storage).delete(
+    session = FakeSession([[user], []])
+    storage = FakeStorage()
+    response = make_client(session, storage).delete(
         f"/api/v1/courses/{uuid.uuid4()}/resources/{uuid.uuid4()}"
     )
 
@@ -525,9 +436,9 @@ def test_download_ok():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, status="available")
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage()
-    response = _client(session, storage).get(
+    session = FakeSession([[user], [course], [resource]])
+    storage = FakeStorage()
+    response = make_client(session, storage).get(
         f"/api/v1/courses/{course.id}/resources/{resource.id}/download"
     )
 
@@ -544,9 +455,9 @@ def test_download_inline_ok():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, status="available")
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage()
-    response = _client(session, storage).get(
+    session = FakeSession([[user], [course], [resource]])
+    storage = FakeStorage()
+    response = make_client(session, storage).get(
         f"/api/v1/courses/{course.id}/resources/{resource.id}/download"
         "?disposition=inline"
     )
@@ -560,8 +471,8 @@ def test_download_inline_ok():
 
 
 def test_download_invalid_disposition_422():
-    session = _FakeSession([])
-    response = _client(session).get(
+    session = FakeSession([])
+    response = make_client(session).get(
         f"/api/v1/courses/{uuid.uuid4()}/resources/{uuid.uuid4()}/download"
         "?disposition=autre"
     )
@@ -574,9 +485,9 @@ def test_download_not_available_409():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, status="pending")
-    session = _FakeSession([[user], [course], [resource]])
-    storage = _FakeStorage()
-    response = _client(session, storage).get(
+    session = FakeSession([[user], [course], [resource]])
+    storage = FakeStorage()
+    response = make_client(session, storage).get(
         f"/api/v1/courses/{course.id}/resources/{resource.id}/download"
     )
 
@@ -587,8 +498,8 @@ def test_download_not_available_409():
 def test_download_resource_not_found_404():
     user = _user_row()
     course = _course_row()
-    session = _FakeSession([[user], [course], []])
-    response = _client(session).get(
+    session = FakeSession([[user], [course], []])
+    response = make_client(session).get(
         f"/api/v1/courses/{course.id}/resources/{uuid.uuid4()}/download"
     )
 
