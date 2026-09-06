@@ -19,6 +19,7 @@ from app.public.router import router as public_router
 from app.resources.router import router as resources_router
 from app.search.router import router as search_router
 from app.share_links.router import router as share_links_router
+from app.starter_course.router import router as starter_course_router
 from app.student_exercises.router import router as student_exercises_router
 from app.student_exercises.router import teacher_router as student_exercises_teacher_router
 from app.subjects.router import router as subjects_router
@@ -35,6 +36,7 @@ ROUTERS: tuple[APIRouter, ...] = (
     users_router,
     ai_credentials_router,  # /users/me/ai-credentials
     course_transfer_router,  # /courses/import, /courses/{id}/export
+    starter_course_router,  # /courses/starter
     courses_router,
     resources_router,
     modules_router,

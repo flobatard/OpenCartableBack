@@ -10,6 +10,11 @@ ignorés). Les put S3 précèdent le commit : au pire des orphelins bucket
 pointant un objet absent — miroir de ``delete_course``, qui purge S3 APRÈS
 commit pour la même raison.
 
+La phase base de données est isolée dans :func:`insert_manifest_course`
+(inserts sans commit ni S3) et partagée avec le seed du cours d'exemple
+(:mod:`app.starter_course.service`) : son ordre des execute est le contrat
+unique, rejoué par les deux suites de tests.
+
 Sécurité d'archive (:mod:`app.course_transfer.archive`) : seuls
 ``manifest.json`` et les entrées déclarées sont lues, tailles vérifiées deux
 fois (``file_size`` du zip et compteur au flux décompressé), plafonds
@@ -33,7 +38,7 @@ from app.course_transfer.archive import (
     parse_zip_sync,
     rewrite_block_content,
 )
-from app.course_transfer.schemas import ManifestResource
+from app.course_transfer.schemas import CourseManifest, ManifestResource
 from app.courses.schemas import CourseRead
 from app.models.block import TYPE_EXERCISE, Block
 from app.models.course import (
@@ -49,6 +54,10 @@ from app.models.subject import Subject
 from app.models.user import User
 from app.resources.service import _sanitize_name
 
+# Binaire restant à pousser après la phase base de données :
+# (entrée du zip, s3_key cible, métadonnées de la ressource).
+PendingUpload = tuple[str, str, ManifestResource]
+
 
 async def _cleanup(storage: Storage, s3_keys: list[str]) -> None:
     """Purge best-effort des objets déjà poussés lors d'un import échoué."""
@@ -56,6 +65,178 @@ async def _cleanup(storage: Storage, s3_keys: list[str]) -> None:
         await storage.delete_many(s3_keys)
     except Exception:  # best effort : l'erreur d'origine prime
         pass
+
+
+async def insert_manifest_course(
+    db: AsyncSession, user: User, manifest: CourseManifest
+) -> tuple[CourseRead, list[PendingUpload]]:
+    """Insère un cours complet depuis un manifest validé — SANS commit ni S3.
+
+    Phase base de données partagée par l'import d'archive
+    (:func:`import_course`) et le seed du cours d'exemple
+    (:mod:`app.starter_course.service`). Uuid régénérés partout, références
+    remappées, positions réécrites 0..n-1. L'appelant reste responsable des
+    put S3 des ``PendingUpload`` rendus, du commit et du rollback — un
+    manifest sans ressource (cas du cours d'exemple) rend une liste vide et
+    n'exige donc aucun accès S3.
+
+    Ordre des execute : 1) lookup matières par ``code``, 2) lookup niveaux
+    (toujours exécutés, même sur listes vides — FIFO constant, motif
+    ``create_course`` ; codes inconnus ignorés), 3) insert cours (RETURNING
+    des timestamps ; ``visibility`` par défaut ``draft``), puis si non
+    vides : 4) insert course_subjects, 5) insert course_education_levels,
+    6) insert modules (executemany), 7) insert resources (executemany,
+    ``status='available'`` — le commit n'a lieu qu'après les put S3),
+    8) insert blocks (executemany, positions réécrites 0..n-1, contenus
+    passés par ``rewrite_block_content``, colonnes remappées).
+    """
+    subject_ids = list(
+        (
+            await db.execute(
+                select(Subject.id)
+                .where(Subject.code.in_(manifest.course.subject_codes))
+                .order_by(Subject.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    education_level_ids = list(
+        (
+            await db.execute(
+                select(EducationLevel.id)
+                .where(EducationLevel.code.in_(manifest.course.education_level_codes))
+                .order_by(EducationLevel.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    course_id = uuid.uuid4()
+    created_at, updated_at = (
+        await db.execute(
+            insert(Course)
+            .values(
+                id=course_id,
+                owner_id=user.id,
+                title=manifest.course.title,
+                description=manifest.course.description,
+                preview_settings=dict(manifest.course.preview_settings),
+            )
+            .returning(Course.created_at, Course.updated_at)
+        )
+    ).one()
+    if subject_ids:
+        await db.execute(
+            course_subjects.insert(),
+            [{"course_id": course_id, "subject_id": sid} for sid in subject_ids],
+        )
+    if education_level_ids:
+        await db.execute(
+            course_education_levels.insert(),
+            [
+                {"course_id": course_id, "education_level_id": lid}
+                for lid in education_level_ids
+            ],
+        )
+
+    module_map = {str(m.id): uuid.uuid4() for m in manifest.modules}
+    if manifest.modules:
+        await db.execute(
+            insert(Module),
+            [
+                {
+                    "id": module_map[str(m.id)],
+                    "course_id": course_id,
+                    "title": m.title,
+                    "html": m.html,
+                    "css": m.css,
+                    "js": m.js,
+                }
+                for m in manifest.modules
+            ],
+        )
+
+    resource_map = {str(r.id): uuid.uuid4() for r in manifest.resources}
+    # (entrée zip, s3_key cible, métadonnées) — pour la phase binaire.
+    uploads: list[PendingUpload] = []
+    if manifest.resources:
+        resource_rows = []
+        for r in manifest.resources:
+            new_id = resource_map[str(r.id)]
+            s3_key = (
+                f"courses/{course_id}/resources/{new_id}/"
+                f"{_sanitize_name(r.original_name)}"
+            )
+            resource_rows.append(
+                {
+                    "id": new_id,
+                    "course_id": course_id,
+                    "type": r.type,
+                    "s3_key": s3_key,
+                    "original_name": r.original_name,
+                    "size": r.size,
+                    "mime": r.mime,
+                    "status": STATUS_AVAILABLE,
+                }
+            )
+            uploads.append((f"resources/{r.id}", s3_key, r))
+        await db.execute(insert(Resource), resource_rows)
+
+    resource_refs = {old: str(new) for old, new in resource_map.items()}
+    module_refs = {old: str(new) for old, new in module_map.items()}
+    if manifest.blocks:
+        block_rows = []
+        for position, block in enumerate(manifest.blocks):
+            content = rewrite_block_content(
+                block.type, block.content, resource_refs, module_refs
+            )
+            if block.type == TYPE_EXERCISE:
+                # Ids présents conservés verbatim (stables à vie) ; une
+                # question sans id (manifest écrit à la main) en reçoit
+                # un frais — jamais de question sans id en base.
+                content = {
+                    **content,
+                    "questions": [
+                        {**q, "id": q.get("id") or str(uuid.uuid4())}
+                        for q in content["questions"]
+                    ],
+                }
+            block_rows.append(
+                {
+                    "id": uuid.uuid4(),
+                    "course_id": course_id,
+                    "position": position,
+                    "type": block.type,
+                    "title": block.title,
+                    "description": block.description,
+                    "content": content,
+                    "resource_id": (
+                        resource_map[str(block.resource_ref)]
+                        if block.resource_ref
+                        else None
+                    ),
+                    "module_id": (
+                        module_map[str(block.module_ref)] if block.module_ref else None
+                    ),
+                }
+            )
+        await db.execute(insert(Block), block_rows)
+
+    read = CourseRead(
+        id=course_id,
+        title=manifest.course.title,
+        description=manifest.course.description,
+        subject_ids=subject_ids,
+        education_level_ids=education_level_ids,
+        block_count=len(manifest.blocks),
+        preview_settings=manifest.course.preview_settings,
+        visibility=VISIBILITY_DRAFT,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+    return read, uploads
 
 
 async def import_course(
@@ -67,15 +248,8 @@ async def import_course(
     413 ; ouverture + validation du manifest (``parse_zip_sync``, déporté en
     thread — les archives v1 y sont traduites en v2) sinon 422.
 
-    Ordre des execute : 1) lookup matières par ``code``, 2) lookup niveaux
-    (toujours exécutés, même sur listes vides — FIFO constant, motif
-    ``create_course`` ; codes inconnus ignorés), 3) insert cours (RETURNING
-    des timestamps ; ``visibility`` par défaut ``draft``), puis si non
-    vides : 4) insert course_subjects, 5) insert course_education_levels,
-    6) insert modules (executemany), 7) insert resources (executemany,
-    ``status='available'`` — le commit n'a lieu qu'après les put S3),
-    8) insert blocks (executemany, positions réécrites 0..n-1, contenus
-    passés par ``rewrite_block_content``, colonnes remappées).
+    Phase 1 (base de données) : déléguée à :func:`insert_manifest_course`,
+    dont la docstring porte l'ordre des execute.
 
     PUIS les binaires : par ressource, extraction contrôlée (thread) →
     ``storage.put_object``. Un échec S3 → rollback + purge best-effort des
@@ -96,152 +270,7 @@ async def import_course(
         raise invalid(str(exc)) from exc
 
     try:
-        subject_ids = list(
-            (
-                await db.execute(
-                    select(Subject.id)
-                    .where(Subject.code.in_(manifest.course.subject_codes))
-                    .order_by(Subject.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        education_level_ids = list(
-            (
-                await db.execute(
-                    select(EducationLevel.id)
-                    .where(EducationLevel.code.in_(manifest.course.education_level_codes))
-                    .order_by(EducationLevel.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-        course_id = uuid.uuid4()
-        created_at, updated_at = (
-            await db.execute(
-                insert(Course)
-                .values(
-                    id=course_id,
-                    owner_id=user.id,
-                    title=manifest.course.title,
-                    description=manifest.course.description,
-                    preview_settings=dict(manifest.course.preview_settings),
-                )
-                .returning(Course.created_at, Course.updated_at)
-            )
-        ).one()
-        if subject_ids:
-            await db.execute(
-                course_subjects.insert(),
-                [{"course_id": course_id, "subject_id": sid} for sid in subject_ids],
-            )
-        if education_level_ids:
-            await db.execute(
-                course_education_levels.insert(),
-                [
-                    {"course_id": course_id, "education_level_id": lid}
-                    for lid in education_level_ids
-                ],
-            )
-
-        module_map = {str(m.id): uuid.uuid4() for m in manifest.modules}
-        if manifest.modules:
-            await db.execute(
-                insert(Module),
-                [
-                    {
-                        "id": module_map[str(m.id)],
-                        "course_id": course_id,
-                        "title": m.title,
-                        "html": m.html,
-                        "css": m.css,
-                        "js": m.js,
-                    }
-                    for m in manifest.modules
-                ],
-            )
-
-        resource_map = {str(r.id): uuid.uuid4() for r in manifest.resources}
-        # (entrée zip, s3_key cible, métadonnées) — pour la phase binaire.
-        uploads: list[tuple[str, str, ManifestResource]] = []
-        if manifest.resources:
-            rows = []
-            for r in manifest.resources:
-                new_id = resource_map[str(r.id)]
-                s3_key = (
-                    f"courses/{course_id}/resources/{new_id}/"
-                    f"{_sanitize_name(r.original_name)}"
-                )
-                rows.append(
-                    {
-                        "id": new_id,
-                        "course_id": course_id,
-                        "type": r.type,
-                        "s3_key": s3_key,
-                        "original_name": r.original_name,
-                        "size": r.size,
-                        "mime": r.mime,
-                        "status": STATUS_AVAILABLE,
-                    }
-                )
-                uploads.append((f"resources/{r.id}", s3_key, r))
-            await db.execute(insert(Resource), rows)
-
-        resource_refs = {old: str(new) for old, new in resource_map.items()}
-        module_refs = {old: str(new) for old, new in module_map.items()}
-        if manifest.blocks:
-            rows = []
-            for position, block in enumerate(manifest.blocks):
-                content = rewrite_block_content(
-                    block.type, block.content, resource_refs, module_refs
-                )
-                if block.type == TYPE_EXERCISE:
-                    # Ids présents conservés verbatim (stables à vie) ; une
-                    # question sans id (manifest écrit à la main) en reçoit
-                    # un frais — jamais de question sans id en base.
-                    content = {
-                        **content,
-                        "questions": [
-                            {**q, "id": q.get("id") or str(uuid.uuid4())}
-                            for q in content["questions"]
-                        ],
-                    }
-                rows.append(
-                    {
-                        "id": uuid.uuid4(),
-                        "course_id": course_id,
-                        "position": position,
-                        "type": block.type,
-                        "title": block.title,
-                        "description": block.description,
-                        "content": content,
-                        "resource_id": (
-                            resource_map[str(block.resource_ref)]
-                            if block.resource_ref
-                            else None
-                        ),
-                        "module_id": (
-                            module_map[str(block.module_ref)] if block.module_ref else None
-                        ),
-                    }
-                )
-            await db.execute(insert(Block), rows)
-
-        read = CourseRead(
-            id=course_id,
-            title=manifest.course.title,
-            description=manifest.course.description,
-            subject_ids=subject_ids,
-            education_level_ids=education_level_ids,
-            block_count=len(manifest.blocks),
-            preview_settings=manifest.course.preview_settings,
-            visibility=VISIBILITY_DRAFT,
-            created_at=created_at,
-            updated_at=updated_at,
-        )
+        read, uploads = await insert_manifest_course(db, user, manifest)
 
         pushed: list[str] = []
         try:

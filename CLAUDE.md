@@ -50,7 +50,8 @@ Package-by-feature : chaque domaine = `schemas.py` (Pydantic), `service.py` (mé
 | `resources/` | Bibliothèque S3 d'un cours, flow presigned en trois temps | `/courses/{id}/resources…` |
 | `modules/` | Bibliothèque de modules interactifs (code HTML/CSS/JS en base) | `/courses/{id}/modules…` |
 | `share_links/` | Liens de partage élèves (token opaque, expiration, révocation) | `/courses/{id}/share-links…` |
-| `course_transfer/` | Export (`export.py`) / import (`importer.py`) d'un cours en `.zip`, `archive.py` sécurité de lecture | `/courses/{id}/export`, `/courses/import` |
+| `course_transfer/` | Export (`export.py`) / import (`importer.py`) d'un cours en `.zip`, `archive.py` sécurité de lecture ; `insert_manifest_course` = phase DB partagée (sans commit ni S3) | `/courses/{id}/export`, `/courses/import` |
+| `starter_course/` | Cours d'exemple seedé à l'onboarding d'un prof : `manifest.json` embarqué (format v2, **aucun binaire**), seed best-effort, rattrapage manuel | `/courses/starter` |
 | `public/` | Régime élève **sans JWT** : `access.py` (autorisation visibilité + token, 404 uniforme), `service.py` (lectures filtrées) | `/public…` |
 | `search/` | Recherche FTS publique : `queries.py` builders purs, `service.py` | `/public/search…` |
 | `course_assistant/` | Assistant IA du prof : `service.py` CRUD conversations, `streaming.py` flux + reprise HITL, `turn_encoder.py` boucle SSE partagée, `context.py`/`render.py`/`replay.py`/`refs.py` helpers purs, `tools.py`, `hitl.py` registre, `editing/` descripteurs des contextes d'édition | `/courses/{id}/assistant…` |
@@ -102,6 +103,7 @@ Détails et contexte dans `../docs/decisions.md`.
 - Dépendances IA inutilisées de `requirements.txt` conservées ; `langchain*` épinglé en 1.x.
 - Pas de reverse proxy dans ce repo (nginx d'infra) ; l'API écoute sur 8000.
 - Purge en job compose séparé, jamais dans le process uvicorn.
+- Cours d'exemple : seed **best effort** après le commit de l'onboarding (une erreur ne remonte jamais), manifeste JSON **sans ressource** (donc sans `Storage`), et `POST /courses/starter` ne déduplique pas.
 
 ## Approfondissements
 

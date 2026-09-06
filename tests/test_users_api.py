@@ -16,6 +16,17 @@ from sqlalchemy.sql.dml import Delete, Insert
 
 from tests.fakes import FakeSession, FakeStorage, inserts, make_client
 
+_SEED_NOW = datetime(2026, 1, 1, tzinfo=UTC)
+
+# Résultats consommés par le seed du cours d'exemple, à la suite de ceux
+# d'``update_profile`` dès que le PUT est la PREMIÈRE complétion d'un profil de
+# prof : lookup matières du manifeste, lookup niveaux, RETURNING de l'insert
+# cours. Les executemany (liaisons, modules, blocs) ne consomment pas la file.
+# Sans ces trois entrées, le ``pop`` sur file vide lève — et l'``IndexError``
+# est AVALÉE par le best-effort du seed : le test passerait en ne testant plus
+# rien. C'est ``test_first_completion_seeds_starter_course`` qui le rattrape.
+STARTER_SEED_RESULTS = [[], [], [(_SEED_NOW, _SEED_NOW)]]
+
 
 def _user_row(**overrides):
     defaults = dict(
@@ -187,6 +198,7 @@ def test_onboarding_happy_path_dual_role():
             ["fr"],
             [(taught_level, "fr"), (learned_level, "fr")],
             [taught_subject, learned_subject],
+            *STARTER_SEED_RESULTS,
         ]
     )
     payload = {
@@ -227,7 +239,9 @@ def test_profile_public_name_saved_and_exposed():
     # pages publiques ; un blanc devient None (catalogue anonyme).
     user = _user_row()
     level, subject = uuid.uuid4(), uuid.uuid4()
-    session = FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
+    session = FakeSession(
+        [[user], ["fr"], [(level, "fr")], [subject], *STARTER_SEED_RESULTS]
+    )
     payload = {
         "is_teacher": True,
         "is_student": False,
@@ -245,7 +259,9 @@ def test_profile_public_name_saved_and_exposed():
 def test_profile_blank_public_name_becomes_none():
     user = _user_row(public_name="Ancien nom")
     level, subject = uuid.uuid4(), uuid.uuid4()
-    session = FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
+    session = FakeSession(
+        [[user], ["fr"], [(level, "fr")], [subject], *STARTER_SEED_RESULTS]
+    )
     payload = {
         "is_teacher": True,
         "is_student": False,
@@ -265,7 +281,9 @@ def test_profile_searchable_saved_and_exposed():
     # de remplacement complet que le reste du profil.
     user = _user_row()
     level, subject = uuid.uuid4(), uuid.uuid4()
-    session = FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
+    session = FakeSession(
+        [[user], ["fr"], [(level, "fr")], [subject], *STARTER_SEED_RESULTS]
+    )
     payload = {
         "is_teacher": True,
         "is_student": False,
@@ -286,7 +304,9 @@ def test_profile_searchable_absent_unchecks():
     # (comportement sûr — on ne reste jamais cherchable par accident).
     user = _user_row(searchable=True)
     level, subject = uuid.uuid4(), uuid.uuid4()
-    session = FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
+    session = FakeSession(
+        [[user], ["fr"], [(level, "fr")], [subject], *STARTER_SEED_RESULTS]
+    )
     payload = {
         "is_teacher": True,
         "is_student": False,
@@ -305,7 +325,9 @@ def test_profile_searchable_without_public_name_accepted():
     # public_name AND ≥1 cours public) vit dans le service de recherche.
     user = _user_row()
     level, subject = uuid.uuid4(), uuid.uuid4()
-    session = FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
+    session = FakeSession(
+        [[user], ["fr"], [(level, "fr")], [subject], *STARTER_SEED_RESULTS]
+    )
     payload = {
         "is_teacher": True,
         "is_student": False,
@@ -339,6 +361,101 @@ def test_onboarding_deduplicates_and_keeps_date():
     assert len(level_params) == 1
     # La date de première complétion n'est pas écrasée par la re-soumission.
     assert user.onboarded_at == first_date
+    # Et le cours d'exemple n'est pas re-semé (la FIFO n'a d'ailleurs pas de
+    # quoi le servir : ce test est le garde-fou de non-réémission).
+    assert inserts(session, "courses") == []
+
+
+# --- Cours d'exemple (première complétion d'un profil de prof) --------------
+
+
+def test_first_completion_seeds_starter_course():
+    # Le prof découvre les possibilités d'écriture sans lire la doc :
+    # un cours d'exemple en brouillon l'attend dans « Mes cours ».
+    user = _user_row()
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = FakeSession(
+        [[user], ["fr"], [(level, "fr")], [subject], *STARTER_SEED_RESULTS]
+    )
+    payload = {
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "teaching": _block(levels=[level], subjects=[subject]),
+    }
+    response = make_client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert len(inserts(session, "courses")) == 1
+    [(_, block_params)] = inserts(session, "blocks")
+    assert {p["type"] for p in block_params} == {"text", "exercise", "module"}
+    assert len(inserts(session, "modules")) == 1
+    # Manifeste sans binaire : jamais de ligne resources, donc jamais de put S3.
+    assert inserts(session, "resources") == []
+    # get_or_create_by_sub, le profil, puis le seed.
+    assert session.commits == 3
+
+
+def test_resubmission_does_not_seed_starter_course():
+    user = _user_row(is_teacher=True, onboarded_at=datetime(2026, 1, 1, tzinfo=UTC))
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
+    payload = {
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "teaching": _block(levels=[level], subjects=[subject]),
+    }
+    response = make_client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert inserts(session, "courses") == []
+
+
+def test_student_only_profile_does_not_seed_starter_course():
+    # Le cours d'exemple s'adresse à qui compose des cours, pas à qui en lit.
+    user = _user_row()
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = FakeSession([[user], ["fr"], [(level, "fr")], [subject]])
+    payload = {
+        "is_teacher": False,
+        "is_student": True,
+        "school_system": "fr",
+        "learning": _block(levels=[level], subjects=[subject]),
+    }
+    response = make_client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert inserts(session, "courses") == []
+
+
+def test_seed_failure_does_not_break_onboarding():
+    """Le seed est un cadeau, pas une condition : son échec reste invisible."""
+
+    class _SeedFailingSession(FakeSession):
+        async def execute(self, stmt, params=None):
+            if isinstance(stmt, Insert) and stmt.table.name == "courses":
+                raise RuntimeError("boom")
+            return await super().execute(stmt, params)
+
+    user = _user_row()
+    level, subject = uuid.uuid4(), uuid.uuid4()
+    session = _SeedFailingSession(
+        [[user], ["fr"], [(level, "fr")], [subject], *STARTER_SEED_RESULTS]
+    )
+    payload = {
+        "is_teacher": True,
+        "is_student": False,
+        "school_system": "fr",
+        "teaching": _block(levels=[level], subjects=[subject]),
+    }
+    response = make_client(session).put("/api/v1/users/me/profile", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["onboarding_complete"] is True
+    assert user.onboarded_at is not None
+    assert session.rollbacks == 1
+    assert inserts(session, "blocks") == []
 
 
 # --- Avatar (photo de profil) -------------------------------------------------

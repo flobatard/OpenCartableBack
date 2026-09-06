@@ -26,6 +26,7 @@ from app.models.user import (
     user_education_levels,
     user_subjects,
 )
+from app.starter_course.service import seed_starter_course
 from app.users.schemas import (
     AVATAR_EXTENSIONS,
     AvatarCreate,
@@ -150,7 +151,21 @@ async def update_profile(
     Ordre des execute : 1) systèmes distincts, 2) lookup niveaux,
     3) lookup matières, 4) delete niveaux, 5) delete matières,
     6) insert niveaux, 7) insert matières.
+
+    PUIS, **uniquement** à la première complétion d'un profil de prof
+    (``onboarded_at`` nul en entrant ET ``is_teacher``) et APRÈS le commit :
+    le seed best-effort du cours d'exemple
+    (``app.starter_course.service.seed_starter_course``). Ses execute — ceux
+    d'``insert_manifest_course`` : 8) matières du manifeste, 9) niveaux,
+    10) insert cours (RETURNING), 11) course_subjects,
+    12) course_education_levels, 13) modules, 14) blocks — suivent dans la
+    même FIFO ; toute erreur y est journalisée, rollbackée et **avalée** :
+    la réponse d'onboarding reste un 200.
     """
+    # Capturé avant tout await : « première complétion » ⟺ la date était
+    # nulle en entrant, quel que soit ce que la suite écrit.
+    first_completion = user.onboarded_at is None
+
     blocks: list[tuple[str, ProfileContext]] = []
     if payload.teaching is not None:
         blocks.append((CONTEXT_TEACHING, payload.teaching))
@@ -230,6 +245,11 @@ async def update_profile(
     # La date de première complétion est conservée à la re-soumission.
     user.onboarded_at = user.onboarded_at or datetime.now(UTC)
     await db.commit()
+
+    # Cadeau de bienvenue du prof, APRÈS le commit du profil : l'onboarding
+    # est acquis, le seed ne peut plus le faire échouer (best effort).
+    if first_completion and user.is_teacher:
+        await seed_starter_course(db, user)
 
     def block(context: str) -> ProfileContext | None:
         if context not in levels_by_block:

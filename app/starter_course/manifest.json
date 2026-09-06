@@ -1,0 +1,144 @@
+{
+  "format": "opencartable-course",
+  "format_version": 2,
+  "exported_at": "2026-09-06T00:00:00Z",
+  "course": {
+    "title": "Cours d'exemple",
+    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, diagrammes, figures, schémas, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
+    "preview_settings": {
+      "fontSizePx": 17,
+      "headingScale": 1.1,
+      "lineHeight": 1.75,
+      "widthCh": 72,
+      "paragraphGapEm": 1.2,
+      "font": "serif"
+    },
+    "subject_codes": [
+      "mathematiques"
+    ],
+    "education_level_codes": [
+      "fr.lycee"
+    ]
+  },
+  "blocks": [
+    {
+      "position": 0,
+      "type": "text",
+      "title": "Bienvenue",
+      "description": "Ce que fait ce cours, et pourquoi il est en brouillon.",
+      "content": {
+        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. les diagrammes ;\n3. les figures de fonctions ;\n4. les schémas géométriques ;\n5. les exercices à réponse libre ;\n6. les modules interactifs.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 1,
+      "type": "text",
+      "title": "Écrire des formules",
+      "description": "Formules en ligne et centrées, et les trois règles qui évitent les surprises.",
+      "content": {
+        "markdown": "Une formule **en ligne** se glisse dans le texte entre deux dollars : la suite $u_n = \\frac{n}{n+1}$ converge vers $1$.\n\nUne formule **centrée** s'écrit entre doubles dollars, seule sur sa ligne :\n\n$$\\sum_{k=0}^{n} k = \\frac{n(n+1)}{2}$$\n\nLa source de ces deux formules :\n\n```\nLa suite $u_n = \\frac{n}{n+1}$ converge vers $1$.\n\n$$\\sum_{k=0}^{n} k = \\frac{n(n+1)}{2}$$\n```\n\nTrois règles à connaître :\n\n- le double dollar de fermeture doit **terminer la ligne** — rien ne doit le suivre ;\n- pas d'espace juste après le dollar ouvrant, ni juste avant le dollar fermant ;\n- un dollar fermant suivi d'un chiffre n'en est pas un : un prix comme 20$ ou 30$ reste du texte, sans traitement particulier.\n\nLes macros personnalisées ne sont pas disponibles : chaque commande s'écrit en entier, à chaque fois.\n\nQuelques exemples pour la route : $\\int_0^1 x^2\\,dx = \\frac{1}{3}$, puis $\\lim_{n \\to +\\infty}\\left(1 + \\frac{1}{n}\\right)^n = e$, et enfin $\\forall \\varepsilon > 0,\\ \\exists N \\in \\mathbb{N}$. Une matrice se centre aussi bien :\n\n$$A = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$$\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 2,
+      "type": "text",
+      "title": "Dessiner un diagramme",
+      "description": "Arbres de décision, séquences, états — et pourquoi les nœuds n'acceptent pas de formules.",
+      "content": {
+        "markdown": "Un diagramme s'écrit dans un bloc de code `mermaid`. Il suit automatiquement le thème clair ou sombre de la page : **ne fixe jamais de couleurs** dans la source.\n\n```mermaid\nflowchart TD\n  A[Énoncé de départ] --> B{Le terme général est-il connu ?}\n  B -- Oui --> C[Calcul direct]\n  B -- Non --> D[Raisonnement par récurrence]\n  C --> E[Conclusion]\n  D --> E\n```\n\nLes accents passent sans problème dans les libellés.\n\nEn revanche, **pas de formule mathématique dans les nœuds** : les libellés sont du texte SVG, pas du HTML. Une formule entre dollars y déclencherait seulement un avertissement sous le diagramme. Place la formule dans le texte, autour du diagramme.\n\nD'autres familles de diagrammes répondent à la même syntaxe : `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `pie`, `gantt`.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 3,
+      "type": "text",
+      "title": "Tracer une figure",
+      "description": "Courbes de fonctions et points remarquables, avec le piège des fractions.",
+      "content": {
+        "markdown": "Une figure de fonctions se décrit avec **trois clés au plus**, une par ligne : `equation=` (répétable), `point=x,y` (répétable) et `bbox=xmin,ymax,xmax,ymin` (une seule fois).\n\n```jsxgraph\nequation=x^2 - 2*x - 3\nequation=2*x - 3\npoint=0,-3\npoint=4,5\nbbox=-4,9,6,-6\n```\n\nCi-dessus, la parabole $y = x^2 - 2x - 3$ et la droite $y = 2x - 3$, marquées de leurs deux points d'intersection.\n\nDeux pièges valent d'être connus.\n\n**La multiplication est explicite.** On écrit `2*x`, jamais `2x`. Et une seule équation illisible fait disparaître **toute** la figure, pas seulement la courbe fautive : ajoute-les une par une.\n\n**Les coordonnées sont des décimaux, jamais des fractions.** Le sommet de $y = 3x^2 - 8x$ se trouve en $x = \\frac{4}{3}$ ; dans le bloc, il s'écrit `point=1.333,-5.333`. Écrit `point=4/3,-16/3`, il serait lu comme le point $(4, -16)$ — silencieusement, sans le moindre message d'erreur.\n\n```jsxgraph\nequation=3*x^2 - 8*x\npoint=1.333,-5.333\nbbox=-2,4,4,-7\n```\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 4,
+      "type": "text",
+      "title": "Composer un schéma",
+      "description": "Un schéma géométrique en LaTeX, et les trois limites du moteur embarqué.",
+      "content": {
+        "markdown": "Un schéma géométrique s'écrit dans un bloc de code `tikz`. Tout le contenu est du LaTeX : il n'y a aucune option à régler, et l'environnement `tikzpicture` est ajouté automatiquement s'il manque.\n\n```tikz\n\\draw[->] (-0.5,0) -- (4.5,0) node[right] {x};\n\\draw[->] (0,-0.5) -- (0,3.5) node[above] {y};\n\\draw[thick] (0,0) -- (3,0) -- (3,2) -- (0,2) -- cycle;\n\\draw[dashed] (0,0) -- (3,2);\n\\fill (3,2) circle (2pt);\n\\node[below] at (1.5,0) {b};\n\\node[left] at (0,1) {h};\n```\n\nTrois limites à garder en tête :\n\n- aucun paquet LaTeX supplémentaire ne peut être chargé — la distribution embarquée est figée ;\n- le fond du dessin reste blanc, même en thème sombre : ce n'est pas un défaut d'affichage ;\n- une erreur LaTeX affiche « Code TikZ invalide », sans plus de détail. Avance par petits morceaux.\n\nDernier conseil : évite les accents dans les étiquettes `\\node`, leur rendu n'est pas garanti.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 5,
+      "type": "exercise",
+      "title": "Un exercice à réponse libre",
+      "description": "Un sujet, deux questions, deux corrigés qui restent chez toi.",
+      "content": {
+        "statement": "Ce bloc est un **exercice**. Son sujet accepte le même markdown que les blocs de cours, formules comprises.\n\nOn considère la suite définie par $u_0 = 2$ et, pour tout entier $n$, $u_{n+1} = \\frac{u_n + 3}{2}$.\n\nChaque question porte un énoncé et un corrigé. Le corrigé n'est **jamais** envoyé à l'élève et **jamais** indexé par la recherche : il ne quitte pas ton éditeur.\n",
+        "questions": [
+          {
+            "statement": "Calcule $u_1$ puis $u_2$.",
+            "type": "free_text",
+            "expected_answer": "u1 = (2 + 3) / 2 = 2,5 puis u2 = (2,5 + 3) / 2 = 2,75."
+          },
+          {
+            "statement": "La suite semble-t-elle converger ? Si oui, vers quelle valeur, et pourquoi ?",
+            "type": "free_text",
+            "expected_answer": "Elle converge vers 3, unique solution de x = (x + 3) / 2. L'ecart a 3 est divise par 2 a chaque etape, donc il tend vers 0."
+          }
+        ]
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 6,
+      "type": "module",
+      "title": "Un module interactif",
+      "description": "Un widget HTML, CSS et JavaScript exécuté dans un bac à sable, sans réseau ni stockage.",
+      "content": {},
+      "resource_ref": null,
+      "module_ref": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34"
+    },
+    {
+      "position": 7,
+      "type": "text",
+      "title": "Appeler un module depuis le texte",
+      "description": "Glisser un module dans un paragraphe avec une référence oc-module.",
+      "content": {
+        "markdown": "Un module peut aussi s'ouvrir depuis un lien au fil du texte, sans lui consacrer un bloc entier : [Ouvrir le compteur de termes](oc-module:7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34).\n\nLa référence `oc-module:` porte l'identifiant **stable** du module, jamais une adresse web. À l'export puis au réimport du cours, elle est réécrite automatiquement vers le nouvel identifiant : un cours reste donc autoportant quand il change d'instance.\n\nMême principe pour les fichiers de la bibliothèque du cours, avec `oc-resource:` — en lien pour un téléchargement, ou précédé d'un point d'exclamation pour afficher directement une image, un son ou une vidéo.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 8,
+      "type": "text",
+      "title": "Pour aller plus loin",
+      "description": "Publier, partager, régler la lecture, exporter, se faire aider.",
+      "content": {
+        "markdown": "Quelques leviers qui ne se voient pas dans le texte d'un cours.\n\n**Publier.** Ce cours est en brouillon. L'onglet de partage propose trois régimes : *brouillon* (personne d'autre que toi), *privé* (uniquement via un lien de partage que tu crées) et *public* (accessible par son adresse et listé dans ton catalogue).\n\n**Partager.** Un lien de partage est une adresse secrète : l'élève n'a ni compte ni mot de passe à créer. Tu peux en émettre plusieurs, les nommer, et en révoquer un sans toucher aux autres. Repasser le cours en brouillon les suspend tous d'un coup, sans les détruire.\n\n**Régler la lecture.** La typographie de ce cours n'est pas celle par défaut : police à empattement, texte un peu plus grand, colonne un peu plus large. C'est un réglage **du cours**, pas du lecteur — il le suit à l'impression comme à l'export PDF.\n\n**Exporter.** Un cours s'exporte en une archive qui emporte ses blocs, ses fichiers et ses modules. Réimportée ici ou sur une autre instance, elle recrée un cours neuf, en brouillon.\n\n**Se faire aider.** L'assistant peut rédiger un bloc, proposer des questions d'exercice ou écrire un module : il te soumet ses propositions, tu gardes la main sur ce qui entre dans le cours.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    }
+  ],
+  "resources": [],
+  "modules": [
+    {
+      "id": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34",
+      "title": "Compteur de termes d'une suite",
+      "html": "<h2>Termes d'une suite recurrente</h2>\n<p class=\"rule\">u<sub>n+1</sub> = (u<sub>n</sub> + 3) &divide; 2</p>\n\n<div class=\"controls\">\n  <label for=\"u0\">Premier terme u<sub>0</sub>\n    <input type=\"number\" id=\"u0\" value=\"0\" step=\"0.5\">\n  </label>\n  <label for=\"n\">Nombre de termes : <output id=\"n-out\">8</output>\n    <input type=\"range\" id=\"n\" min=\"1\" max=\"20\" value=\"8\">\n  </label>\n</div>\n\n<ol id=\"terms\" class=\"terms\" start=\"0\"></ol>\n\n<p class=\"hint\" id=\"hint\"></p>\n\n<button type=\"button\" id=\"emit\">Signaler le dernier terme a la page</button>\n",
+      "css": "/* L'iframe est isolee : elle n'herite d'aucune variable de la page. */\n:root {\n  color-scheme: light dark;\n  --ink: #1b1b1f;\n  --muted: #5b5b66;\n  --line: #d5d5dd;\n  --accent: #2f5bd0;\n  --paper: #ffffff;\n}\n\n@media (prefers-color-scheme: dark) {\n  :root {\n    --ink: #e9e9ef;\n    --muted: #a2a2b0;\n    --line: #3a3a45;\n    --accent: #8aa9f5;\n    --paper: #1b1b21;\n  }\n}\n\nbody {\n  margin: 0;\n  padding: 1rem;\n  font: 15px/1.5 system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif;\n  color: var(--ink);\n  background: var(--paper);\n}\n\nh2 { margin: 0 0 0.25rem; font-size: 1.1rem; }\n\n.rule {\n  margin: 0 0 1rem;\n  color: var(--muted);\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n\n.controls { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; }\n.controls label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: var(--muted); }\n.controls input { font: inherit; padding: 0.25rem; }\n.controls input[type=\"number\"] { width: 7rem; }\n\n.terms {\n  margin: 0 0 0.75rem;\n  padding-left: 2.5rem;\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n\n.terms li { padding: 0.1rem 0; border-bottom: 1px solid var(--line); }\n\n.hint { margin: 0 0 1rem; color: var(--muted); font-size: 0.9rem; }\n\nbutton {\n  font: inherit;\n  padding: 0.4rem 0.9rem;\n  color: var(--paper);\n  background: var(--accent);\n  border: 0;\n  border-radius: 6px;\n  cursor: pointer;\n}\n",
+      "js": "// Aucun reseau, aucun stockage : la CSP du bac a sable les bloque de toute\n// facon. Le pont window.ocModule est injecte avant ce script.\nvar u0Input = document.getElementById('u0');\nvar nInput = document.getElementById('n');\nvar nOut = document.getElementById('n-out');\nvar list = document.getElementById('terms');\nvar hint = document.getElementById('hint');\nvar last = 0;\n\nfunction next(u) {\n  return (u + 3) / 2;\n}\n\nfunction render() {\n  var count = Number(nInput.value);\n  var u = Number(u0Input.value);\n  nOut.textContent = String(count);\n  list.innerHTML = '';\n  if (!isFinite(u)) {\n    hint.textContent = 'Saisis un nombre pour u0.';\n    return;\n  }\n  for (var i = 0; i <= count; i++) {\n    var item = document.createElement('li');\n    item.textContent = 'u' + i + ' = ' + Math.round(u * 10000) / 10000;\n    list.appendChild(item);\n    last = u;\n    u = next(u);\n  }\n  hint.textContent = 'La suite converge vers 3, son unique point fixe : '\n    + \"l'ecart a 3 est divise par 2 a chaque etape.\";\n}\n\nu0Input.addEventListener('input', render);\nnInput.addEventListener('input', render);\n\ndocument.getElementById('emit').addEventListener('click', function () {\n  if (window.ocModule) {\n    window.ocModule.emit('dernier-terme', { n: Number(nInput.value), valeur: last });\n  }\n});\n\nrender();\n"
+    }
+  ]
+}
