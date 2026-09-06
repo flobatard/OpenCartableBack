@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
+from pydantic import SecretStr
 
 from app.core import ai as ai_module
 from app.core.ai import AIClient, AIProvider, AIRequestConfig, ChatMessage, observability
@@ -101,6 +102,31 @@ def test_anthropic_without_key() -> None:
     with pytest.raises(HTTPException) as exc:
         build_chat_model(cfg)
     assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        AIRequestConfig(
+            provider=AIProvider.OPENAI,
+            model="gpt-5",
+            api_key=SecretStr("sk-test"),
+            base_url="https://proxy.example/v1",
+        ),
+        AIRequestConfig(
+            provider=AIProvider.OPENAI_COMPATIBLE,
+            model="llama",
+            base_url="http://localhost:8000/v1",
+        ),
+    ],
+    ids=["openai+base_url", "openai_compatible"],
+)
+def test_openai_family_forces_stream_usage(cfg: AIRequestConfig) -> None:
+    """langchain n'active l'usage en flux que sur l'endpoint officiel (toute
+    ``base_url`` le désactive) : la factory le force — sans lui, ``done`` et
+    ``interrupt`` n'auraient pas d'usage chez Groq/vLLM ni derrière un proxy
+    OpenAI. Construction locale, aucun réseau."""
+    assert build_chat_model(cfg).stream_usage is True
 
 
 # ---------------------------------------------------------------- mapping d'erreurs

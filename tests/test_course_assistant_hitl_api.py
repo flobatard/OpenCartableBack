@@ -6,7 +6,7 @@ partagés dans ``course_assistant_fakes.py`` (contrats FIFO documentés là).
 
 import uuid
 
-from app.core.ai import AIStreamEvent, AIToolCall
+from app.core.ai import AIStreamEvent, AIToolCall, AIUsage
 from app.course_assistant import hitl
 from tests.course_assistant_fakes import (
     BASE,
@@ -212,9 +212,10 @@ def test_stream_block_text_context() -> None:
 
 
 def test_stream_block_text_interrupt_registers_resume() -> None:
-    """Proposition HITL : le flux émet ``interrupt`` et se ferme SANS done, le
-    tour partiel (segment assistant porteur du tool_call) est persisté et la
-    reprise est enregistrée au registre in-process."""
+    """Proposition HITL : le flux émet ``interrupt`` (porteur de l'usage du run
+    figé) et se ferme SANS done, le tour partiel (segment assistant porteur du
+    tool_call et de cet usage) est persisté et la reprise est enregistrée au
+    registre in-process."""
     events = [
         AIStreamEvent(type="token", delta="Je propose ceci. "),
         AIStreamEvent(
@@ -225,7 +226,11 @@ def test_stream_block_text_interrupt_registers_resume() -> None:
                 arguments={"new_markdown": "# Proposé", "summary": "Réécriture"},
             ),
         ),
-        AIStreamEvent(type="interrupt", interrupt_value={"tool_call_id": "call_p"}),
+        AIStreamEvent(
+            type="interrupt",
+            interrupt_value={"tool_call_id": "call_p"},
+            usage=AIUsage(input_tokens=120, output_tokens=40),
+        ),
     ]
     conv = conversation_row(context="block_text", block_id=BLOCK_ID, title="T")
     session = stream_session(conversation=conv)
@@ -239,12 +244,16 @@ def test_stream_block_text_interrupt_registers_resume() -> None:
         interrupt = events_out[-1][1]
         assert interrupt["tool_call_id"] == "call_p"
         assert len(interrupt["message_ids"]) == 1
+        assert interrupt["usage"] == {"input_tokens": 120, "output_tokens": 40}
 
         # Tour PARTIEL persisté : le segment assistant (texte + tool_call),
         # aucun tour tool — un abandon restera un round incomplet, replié.
+        # L'usage du run figé y est posé (la reprise repart de zéro).
         rows = inserted_message_rows(session)
         assert [r["role"] for r in rows] == ["assistant"]
         assert rows[0]["tool_calls"][0]["id"] == "call_p"
+        assert rows[0]["input_tokens"] == 120
+        assert rows[0]["output_tokens"] == 40
 
         # Reprise enregistrée : thread du run, config et provider du tour.
         [call] = fake.calls
@@ -623,7 +632,9 @@ def test_stream_module_context() -> None:
 
 def test_stream_module_interrupt_registers_resume() -> None:
     """Proposition de code : flux clos sur ``interrupt`` sans done, tour
-    partiel persisté, reprise enregistrée (aucune numérotation de question)."""
+    partiel persisté, reprise enregistrée (aucune numérotation de question).
+    Provider muet : la clé ``usage`` est présente et nulle, en flux comme en
+    base."""
     events = [
         AIStreamEvent(
             type="tool_call",
@@ -641,10 +652,14 @@ def test_stream_module_interrupt_registers_resume() -> None:
     try:
         response = client.post(STREAM_PATH, json={"content": "Mets le bouton en bleu"})
         assert response.status_code == 200
-        assert [k for k, _ in parse_sse(response.text)] == ["tool_call", "interrupt"]
+        events_out = parse_sse(response.text)
+        assert [k for k, _ in events_out] == ["tool_call", "interrupt"]
+        assert events_out[-1][1]["usage"] is None
 
         rows = inserted_message_rows(session)
         assert [r["role"] for r in rows] == ["assistant"]
+        assert rows[0]["input_tokens"] is None
+        assert rows[0]["output_tokens"] is None
 
         [call] = fake.calls
         pending = hitl.take(CONVERSATION_ID, "call_p")

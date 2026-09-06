@@ -216,7 +216,9 @@ class AIClient:
         ``max_tool_rounds`` borne le nombre d'appels au modèle (rounds de tools
         + réponse finale) ; à la coupure, un token d'avertissement clôt le texte
         (:data:`_TOOL_ROUNDS_EXCEEDED_NOTICE`) — jamais de boucle infinie.
-        L'usage de ``done`` cumule tous les rounds. Un résultat porteur d'une
+        L'usage de ``done`` cumule tous les rounds de l'appel ; un ``interrupt``
+        porte celui des rounds déjà joués par CET appel (la reprise repart de
+        zéro : la somme des deux vaut le tour). Un résultat porteur d'une
         :class:`AIToolImage` est montré au modèle (message utilisateur joint,
         cf. :mod:`app.core.ai.agent`) ; seul son ``content`` texte est relayé
         en ``tool_result``.
@@ -251,6 +253,13 @@ class AIClient:
         output_tokens = 0
         has_usage = False
         interrupted = False
+
+        def _usage() -> AIUsage | None:
+            """Cumul des rounds déjà joués par cet appel (``None`` : provider muet)."""
+            if not has_usage:
+                return None
+            return AIUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+
         try:
             async for mode, payload in agent.astream(
                 agent_input,
@@ -296,10 +305,14 @@ class AIClient:
                 if "__interrupt__" in payload:
                     for intr in payload["__interrupt__"]:
                         interrupted = True
+                        # Le modèle a fini de streamer avant que le nœud tools
+                        # ne fige le run : le cumul est complet — et sans
+                        # ``done``, il serait perdu.
                         yield AIStreamEvent(
                             type="interrupt",
                             interrupt_id=getattr(intr, "id", None),
                             interrupt_value=intr.value if isinstance(intr.value, dict) else {},
+                            usage=_usage(),
                         )
                     continue
                 for node, output in payload.items():
@@ -323,8 +336,7 @@ class AIClient:
             # Run figé (HITL) : pas de ``done`` — l'appelant clôt son flux et
             # attend la reprise (nouvel appel avec resume=).
             return
-        usage = AIUsage(input_tokens=input_tokens, output_tokens=output_tokens)
-        yield AIStreamEvent(type="done", usage=usage if has_usage else None)
+        yield AIStreamEvent(type="done", usage=_usage())
 
 
 @lru_cache

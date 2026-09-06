@@ -9,7 +9,8 @@ Contrat SSE — extension du contrat de référence de :mod:`app.core.sse` :
     event: tool_call     data: {"id": "…", "name": "read_block", "args": {…}}
     event: tool_result   data: {"id": "…", "name": "…", "is_error": false,
                                 "excerpt": "…", "length": 12345}
-    event: interrupt     data: {"tool_call_id": "…", "message_ids": ["…"]}
+    event: interrupt     data: {"tool_call_id": "…", "message_ids": ["…"],
+                                "usage": {…}|null}
     event: done          data: {"usage": {…}|null, "user_message_id": "…",
                                 "message_ids": ["…"], "sources": {…},
                                 "title": "…"|null}
@@ -32,9 +33,12 @@ tour (le front réconcilie sans refetch) et le titre s'il a été posé.
 Persistance (:mod:`app.models.ai_message`) : le message ``user`` est inséré
 AVANT l'appel provider (durable même si l'appel échoue) ; le tour — segments
 ``assistant`` (texte + ``tool_calls``) suivis de leurs lignes ``tool`` — est
-inséré à la clôture, le segment final portant ``sources`` et l'usage ; sur
-erreur mid-stream, rounds complets et texte partiel sont persistés (l'appel
-est compté dès le premier token). La boucle d'encodage est partagée avec le
+inséré à la clôture, le segment final portant ``sources`` et l'usage des
+rounds de l'appel. Un segment clos par ``interrupt`` porte de même l'usage du
+run figé (la reprise repart de zéro) : un tour HITL = plusieurs segments dont
+la somme est l'usage du tour. Sur erreur mid-stream, rounds complets et texte
+partiel sont persistés, sans usage (l'appel est compté dès le premier token).
+La boucle d'encodage est partagée avec le
 tuteur d'exercice (:mod:`app.course_assistant.turn_encoder`) : ce module ne
 porte que la préparation des tours et leur persistance (:class:`_AssistantTurn`).
 
@@ -320,9 +324,10 @@ class _AssistantTurn:
     Un round du modèle = un segment ``assistant`` (texte + ``tool_calls``)
     clos par l'arrivée du premier ``tool_result``, suivi de ses lignes
     ``tool``. Sur ``interrupt``, le tour PARTIEL est persisté (segment porteur
-    du ``tool_call``, sans ligne ``tool`` — un abandon le laissera en round
-    incomplet, replié au replay) et la reprise est enregistrée au registre
-    ``hitl``. Sur ``done``/erreur, le thread checkpointé est purgé.
+    du ``tool_call`` et de l'usage du run figé, sans ligne ``tool`` — un
+    abandon le laissera en round incomplet, replié au replay) et la reprise
+    est enregistrée au registre ``hitl``. Sur ``done``/erreur, le thread
+    checkpointé est purgé.
     """
 
     client: AIClient
@@ -369,7 +374,11 @@ class _AssistantTurn:
 
     async def interrupt(self, event: AIStreamEvent) -> dict[str, Any]:
         self._close_segment()
-        ids = await self._persist(None, None)
+        # Usage des rounds déjà joués par cet appel (la reprise repart de
+        # zéro), posé sur le segment porteur du tool_call — sans ``done``, il
+        # serait perdu.
+        usage = event.usage.model_dump() if event.usage else None
+        ids = await self._persist(None, usage)
         tool_call_id = (event.interrupt_value or {}).get("tool_call_id") or "?"
         # Numérotation Q… des questions du bloc édité, rejouée à la reprise
         # (références stables le temps du tour).
@@ -386,7 +395,11 @@ class _AssistantTurn:
         )
         if replaced is not None:
             self.client.drop_agent_thread(replaced.thread_id)
-        return {"tool_call_id": tool_call_id, "message_ids": [str(i) for i in ids]}
+        return {
+            "tool_call_id": tool_call_id,
+            "message_ids": [str(i) for i in ids],
+            "usage": usage,
+        }
 
     async def done(self, usage: dict[str, Any] | None) -> dict[str, Any]:
         self._close_segment()

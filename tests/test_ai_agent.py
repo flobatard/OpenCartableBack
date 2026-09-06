@@ -27,6 +27,7 @@ from app.core.ai import (
     AIToolImage,
     AIToolResult,
     AIToolSpec,
+    AIUsage,
     ChatMessage,
     agent_interrupt,
 )
@@ -146,10 +147,12 @@ async def test_agent_without_tool_call(fake_build) -> None:
 
 @pytest.mark.anyio
 async def test_agent_interrupt_and_resume(fake_build) -> None:
-    """HITL : un tool appelle ``agent_interrupt`` → événement ``interrupt``,
-    flux clos SANS ``done`` ; la reprise (même client + thread_id, ``resume=``)
-    ré-exécute le tool — qui reçoit la valeur de reprise — puis le run
-    continue jusqu'au ``done``, sans ré-émettre le ``tool_call``."""
+    """HITL : un tool appelle ``agent_interrupt`` → événement ``interrupt``
+    (porteur de l'usage du round déjà joué), flux clos SANS ``done`` ; la
+    reprise (même client + thread_id, ``resume=``) ré-exécute le tool — qui
+    reçoit la valeur de reprise — puis le run continue jusqu'au ``done``, sans
+    ré-émettre le ``tool_call`` ; son usage repart de zéro (seuls ses rounds :
+    la somme des deux vaut le tour)."""
     model = SeqToolModel(responses=[_tool_call_message(), _final_message()])
     fake_build["model"] = model
     client = AIClient()
@@ -176,6 +179,7 @@ async def test_agent_interrupt_and_resume(fake_build) -> None:
     assert first[-1].type == "interrupt"
     assert first[-1].interrupt_value == {"tool_call_id": "call_1"}
     assert first[-1].interrupt_id
+    assert first[-1].usage == AIUsage(input_tokens=10, output_tokens=3)
 
     second = [e async for e in _events(resume={"accepted": True}, messages=[])]
     kinds = [e.type for e in second]
@@ -183,6 +187,7 @@ async def test_agent_interrupt_and_resume(fake_build) -> None:
     tool_result = next(e for e in second if e.type == "tool_result")
     assert tool_result.delta == "décision : True"
     assert second[-1].type == "done"
+    assert second[-1].usage == AIUsage(input_tokens=20, output_tokens=5)
 
 
 @pytest.mark.anyio

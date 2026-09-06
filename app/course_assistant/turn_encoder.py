@@ -17,8 +17,9 @@ Ordre d'émission garanti (contrat des tests) :
 - ``tool_call`` : args relayés tels que le sink les rend (réécrits ou non) ;
 - ``tool_result`` : extrait borné (:data:`TOOL_RESULT_EXCERPT_CHARS`) + longueur,
   jamais le contenu complet ;
-- ``interrupt`` : si le sink rend un payload, l'événement est émis et le flux
-  SE FERME sans ``done`` ; ``None`` = ignoré, le flux continue ;
+- ``interrupt`` : l'événement (porteur de l'usage cumulé du run figé) est remis
+  au sink ; s'il rend un payload, celui-ci est émis et le flux SE FERME sans
+  ``done`` ; ``None`` = ignoré, le flux continue ;
 - ``done`` : le sink persiste et fournit le payload ;
 - ``HTTPException`` mid-stream (200 déjà parti) : remboursement du quota ssi
   aucun token n'est encore sorti, texte retenu flushé, persistance best-effort
@@ -58,7 +59,8 @@ class TurnSink(Protocol):
         """Enregistre le résultat complet (le flux n'en porte qu'un extrait)."""
 
     async def interrupt(self, event: AIStreamEvent) -> dict[str, Any] | None:
-        """Payload de l'événement ``interrupt``, ou ``None`` pour l'ignorer."""
+        """Payload de l'événement ``interrupt`` (``event.usage`` = rounds déjà
+        joués par l'appel), ou ``None`` pour l'ignorer."""
 
     async def done(self, usage: dict[str, Any] | None) -> dict[str, Any]:
         """Persiste le tour ; rend le payload de ``done``."""

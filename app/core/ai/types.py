@@ -151,8 +151,10 @@ class AIStreamEvent(BaseModel):
       (pour la persistance par l'appelant ; les routes SSE ne le relaient pas) ;
     - ``interrupt`` : le run est FIGÉ par ``agent_interrupt`` (HITL) —
       ``interrupt_value`` porte le payload du tool, ``interrupt_id`` l'id
-      LangGraph ; le flux se termine ensuite SANS ``done``, la reprise passe
-      par un nouvel appel ``stream_agent(..., thread_id=, resume=)`` ;
+      LangGraph, ``usage`` le cumul des rounds déjà joués par cet appel
+      (``None`` si le provider ne relaie rien) ; le flux se termine ensuite
+      SANS ``done``, la reprise passe par un nouvel appel
+      ``stream_agent(..., thread_id=, resume=)`` dont l'usage repart de zéro ;
     - ``done`` : clôt le flux avec l'usage cumulé quand fourni (sinon ``None``).
     """
 

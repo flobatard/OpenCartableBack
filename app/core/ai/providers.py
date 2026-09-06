@@ -55,24 +55,33 @@ def _build_anthropic(cfg: AIRequestConfig) -> "BaseChatModel":
 
 
 def _build_openai(cfg: AIRequestConfig) -> "BaseChatModel":
+    """``stream_usage=True`` : langchain n'active ``stream_options.include_usage``
+    que sur l'endpoint officiel (toute ``base_url`` le désactive) — forcé ici
+    pour que l'usage arrive en flux, proxy OpenAI compris."""
     from langchain_openai import ChatOpenAI
 
     kwargs = _common_kwargs(cfg)
     if cfg.base_url:
         kwargs["base_url"] = cfg.base_url
-    return ChatOpenAI(api_key=_require_api_key(cfg), **kwargs)
+    return ChatOpenAI(api_key=_require_api_key(cfg), stream_usage=True, **kwargs)
 
 
 def _build_openai_compatible(cfg: AIRequestConfig) -> "BaseChatModel":
     """Tout endpoint parlant le protocole OpenAI (Groq, Together, vLLM, LM
     Studio…). ``base_url`` obligatoire ; clé absente → placeholder (les serveurs
-    locaux type vLLM exigent une chaîne non vide mais ne la vérifient pas)."""
+    locaux type vLLM exigent une chaîne non vide mais ne la vérifient pas).
+    ``stream_usage=True`` force ``stream_options.include_usage`` (jamais activé
+    par langchain hors endpoint officiel) : l'usage arrive en flux. Risque
+    assumé : un serveur compatible strict qui rejetterait ``stream_options``
+    (repli possible : une option par provider)."""
     from langchain_openai import ChatOpenAI
 
     if not cfg.base_url:
         raise invalid_config("base_url requise pour le provider « openai_compatible »")
     api_key = cfg.api_key.get_secret_value() if cfg.api_key else "sk-no-key"
-    return ChatOpenAI(api_key=api_key, base_url=cfg.base_url, **_common_kwargs(cfg))
+    return ChatOpenAI(
+        api_key=api_key, base_url=cfg.base_url, stream_usage=True, **_common_kwargs(cfg)
+    )
 
 
 def _build_google(cfg: AIRequestConfig) -> "BaseChatModel":
