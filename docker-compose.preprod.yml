@@ -23,7 +23,7 @@ services:
       retries: 3
     # Le reverse proxy nginx (géré par l'infra) se branche sur ce port.
     ports:
-      - "8000:8000"
+      - "8100:8000"
 
   # Purge périodique des données (app/maintenance/) — même image que l'API,
   # hors de son process : la réconciliation S3 énumère tout le bucket, ça n'a
