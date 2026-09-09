@@ -7,6 +7,11 @@ rejouent avec une fausse session FIFO (voir tests/test_ai_credentials_api.py).
 Cascade de résolution des appels IA (``effective_config``) :
 config explicite de la requête > credential utilisateur déchiffré > ``None``
 (le ``resolve_config`` d'AIClient applique alors le fallback serveur AI_*).
+Le credential porte aussi les préférences de raisonnement de l'utilisateur
+(``users.ai_reasoning`` / ``ai_reasoning_effort``, règles par provider en 422
+dans les schémas) : elles voyagent dans l'``AIRequestConfig`` qu'il produit ;
+le fallback serveur porte les siennes (settings ``AI_REASONING*``, posés par
+l'opérateur, résolus par ``AIClient.resolve_config``).
 Le repli sur le fallback serveur est le SEUL cas soumis au quota QUOTIDIEN
 d'appels (``AI_DEFAULT_DAILY_QUOTA`` / ``users.ai_daily_call_quota``, comptage
 par jour UTC dans la table ``ai_daily_usage``) : les appels BYO token
@@ -37,9 +42,19 @@ from app.ai_credentials.schemas import (
     AICredentialsUpdate,
     AIModelListIn,
     AIModelListRead,
+    ReasoningOptionsIn,
+    ReasoningOptionsRead,
+    options_for,
 )
 from app.core import crypto
-from app.core.ai import AIClient, AIProvider, AIRequestConfig, ChatMessage, list_models
+from app.core.ai import (
+    AIClient,
+    AIProvider,
+    AIRequestConfig,
+    ChatMessage,
+    list_models,
+    reasoning_options,
+)
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
 from app.core.http import invalid, unavailable
@@ -84,6 +99,9 @@ def _read(user: User, calls_today: int) -> AICredentialsRead:
         model=user.ai_model,
         base_url=user.ai_base_url,
         api_key_set=user.ai_api_key_encrypted is not None,
+        reasoning=user.ai_reasoning,
+        reasoning_effort=user.ai_reasoning_effort,
+        reasoning_options=options_for(user.ai_provider, user.ai_model),
         default_ai_available=bool(settings.AI_PROVIDER),
         daily_quota=_effective_quota(user),
         calls_today=calls_today,
@@ -105,7 +123,8 @@ async def read_credentials(db: AsyncSession, user: User) -> AICredentialsRead:
 async def update_credentials(
     db: AsyncSession, user: User, payload: AICredentialsUpdate
 ) -> AICredentialsRead:
-    """Enregistre le credential (remplacement provider/model/base_url).
+    """Enregistre le credential (remplacement provider/model/base_url et
+    préférences de raisonnement).
 
     ``api_key`` absente = conserver le blob+sel existants ; fournie =
     re-chiffrement avec un NOUVEAU sel. Ni fournie ni existante alors que le
@@ -126,6 +145,8 @@ async def update_credentials(
     user.ai_provider = payload.provider.value
     user.ai_model = payload.model
     user.ai_base_url = payload.base_url
+    user.ai_reasoning = payload.reasoning
+    user.ai_reasoning_effort = payload.reasoning_effort
     response = _read(user, await _usage_for_day(db, user))
     await db.commit()
     return response
@@ -180,6 +201,8 @@ async def test_connection(
         model=payload.model,
         api_key=_probe_api_key(user, payload.provider, payload.api_key),
         base_url=payload.base_url,
+        reasoning=payload.reasoning,
+        reasoning_effort=payload.reasoning_effort,
     )
     await ai.complete(
         [ChatMessage(role="user", content=_TEST_PROMPT)],
@@ -201,13 +224,22 @@ async def list_provider_models(user: User, payload: AIModelListIn) -> AIModelLis
     return AIModelListRead(models=await list_models(payload.provider, api_key, payload.base_url))
 
 
+def read_reasoning_options(payload: ReasoningOptionsIn) -> ReasoningOptionsRead:
+    """Options de raisonnement du catalogue pour le couple saisi — pur (aucune
+    lecture DB, aucun appel provider) ; un modèle inconnu reçoit les options
+    génériques du provider avec ``known=False``."""
+    return ReasoningOptionsRead.from_options(reasoning_options(payload.provider, payload.model))
+
+
 async def delete_credentials(db: AsyncSession, user: User) -> None:
-    """Efface tout le credential (les 5 colonnes à NULL) — idempotent."""
+    """Efface tout le credential (les 7 colonnes à NULL) — idempotent."""
     user.ai_provider = None
     user.ai_model = None
     user.ai_base_url = None
     user.ai_api_key_encrypted = None
     user.ai_encryption_salt = None
+    user.ai_reasoning = None
+    user.ai_reasoning_effort = None
     await db.commit()
 
 
@@ -330,4 +362,6 @@ async def effective_config(
         model=user.ai_model,
         api_key=api_key,
         base_url=user.ai_base_url,
+        reasoning=user.ai_reasoning,
+        reasoning_effort=user.ai_reasoning_effort,
     ), None

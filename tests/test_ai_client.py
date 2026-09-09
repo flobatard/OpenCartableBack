@@ -86,6 +86,48 @@ def test_fallback_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     assert exc.value.status_code == 422
 
 
+def test_fallback_without_reasoning_settings_keeps_model_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "AI_PROVIDER", "anthropic")
+    monkeypatch.setattr(settings, "AI_MODEL", "claude-sonnet-5")
+    config = AIClient().resolve_config(None)
+    assert config.reasoning is None and config.reasoning_effort is None
+
+
+def test_fallback_reasoning_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Les préférences de l'opérateur (AI_REASONING*) voyagent avec le fallback."""
+    monkeypatch.setattr(settings, "AI_PROVIDER", "anthropic")
+    monkeypatch.setattr(settings, "AI_MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(settings, "AI_REASONING", False)
+    monkeypatch.setattr(settings, "AI_REASONING_EFFORT", "xhigh")  # niveau natif Anthropic
+    config = AIClient().resolve_config(None)
+    assert config.reasoning is False and config.reasoning_effort == "xhigh"
+
+
+@pytest.mark.parametrize(
+    ("provider", "reasoning", "effort"),
+    [
+        ("anthropic", None, "turbo"),  # pas un niveau natif du provider
+        ("openai", None, "max"),  # niveau d'un autre provider
+        ("mistral", None, "high"),  # effort hors capacités du provider
+        ("mistral", True, ""),  # bascule hors capacités du provider
+    ],
+    ids=["unknown-effort", "foreign-effort", "effort-unsupported", "toggle-unsupported"],
+)
+def test_fallback_invalid_reasoning_settings(
+    monkeypatch: pytest.MonkeyPatch, provider: str, reasoning: bool | None, effort: str
+) -> None:
+    """Même gating par provider que le credential : 422 à la résolution, jamais au boot."""
+    monkeypatch.setattr(settings, "AI_PROVIDER", provider)
+    monkeypatch.setattr(settings, "AI_MODEL", "m")
+    monkeypatch.setattr(settings, "AI_REASONING", reasoning)
+    monkeypatch.setattr(settings, "AI_REASONING_EFFORT", effort)
+    with pytest.raises(HTTPException) as exc:
+        AIClient().resolve_config(None)
+    assert exc.value.status_code == 422
+
+
 # ---------------------------------------------------------------- validation locale
 
 

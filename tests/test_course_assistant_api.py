@@ -233,6 +233,18 @@ def test_stream_nominal() -> None:
     assert fake.dropped_threads == []
 
 
+def test_stream_passes_reasoning_preferences() -> None:
+    """Les préférences du credential atteignent ``stream_agent`` par la cascade
+    (la reprise HITL hérite de ``pending.config``, rien de plus à vérifier)."""
+    user = user_row(ai_reasoning=False, ai_reasoning_effort="low")
+    session = stream_session(user=user)
+    client, fake = make_client(session, FakeAssistantAI(events=_nominal_events()))
+    assert client.post(STREAM_PATH, json={"content": "Bonjour"}).status_code == 200
+    [call] = fake.calls
+    assert call["config"].reasoning is False
+    assert call["config"].reasoning_effort == "low"
+
+
 def test_stream_rewrites_short_ref_citations_across_chunks() -> None:
     """Le modèle cite par référence courte (oc-block:B1), coupée entre plusieurs
     tokens : le flux, les sources et le texte persisté portent l'UUID."""

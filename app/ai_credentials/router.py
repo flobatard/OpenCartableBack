@@ -15,6 +15,8 @@ from app.ai_credentials.schemas import (
     AICredentialsUpdate,
     AIModelListIn,
     AIModelListRead,
+    ReasoningOptionsIn,
+    ReasoningOptionsRead,
 )
 from app.core.ai import AIClient, get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
@@ -71,6 +73,17 @@ async def list_my_ai_provider_models(
     en query. Même sémantique de clé que le test ; jamais de quota."""
     user = await users_service.get_or_create_by_sub(db, auth)
     return await service.list_provider_models(user, payload)
+
+
+@router.post("/users/me/ai-credentials/reasoning-options", response_model=ReasoningOptionsRead)
+async def read_my_reasoning_options(
+    payload: ReasoningOptionsIn,
+    auth: AuthenticatedUser = Depends(get_current_user),
+) -> ReasoningOptionsRead:
+    """Options de raisonnement (bascule, niveaux natifs) à proposer pour un
+    couple (provider, modèle) saisi dans le formulaire — catalogue pur : ni
+    lecture DB, ni appel provider, ni quota."""
+    return service.read_reasoning_options(payload)
 
 
 @router.delete("/users/me/ai-credentials", status_code=status.HTTP_204_NO_CONTENT)

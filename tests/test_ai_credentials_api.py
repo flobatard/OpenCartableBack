@@ -23,6 +23,7 @@ from tests.fakes import FakeSession, make_client
 URL = "/api/v1/users/me/ai-credentials"
 TEST_URL = URL + "/test"
 MODELS_URL = URL + "/models"
+OPTIONS_URL = URL + "/reasoning-options"
 MASTER_KEY = os.urandom(32)
 MASTER_KEY_B64 = base64.urlsafe_b64encode(MASTER_KEY).decode()
 API_KEY = "sk-ant-ma-cle-api-secrete"
@@ -43,6 +44,8 @@ def _user_row(**overrides):
         ai_base_url=None,
         ai_api_key_encrypted=None,
         ai_encryption_salt=None,
+        ai_reasoning=None,
+        ai_reasoning_effort=None,
         ai_daily_call_quota=None,
     )
     defaults.update(overrides)
@@ -59,6 +62,18 @@ DEFAULT_QUOTA_FIELDS = {
     "default_provider": None,
     "default_model": None,
 }
+# Préférences de raisonnement non posées (défaut du provider/modèle).
+DEFAULT_REASONING_FIELDS = {"reasoning": None, "reasoning_effort": None}
+# Options du catalogue : sans config, pour claude-sonnet-5 (niveaux déclarés
+# par le profil embarqué de langchain-anthropic) et pour un modèle Ollama
+# quelconque (bascule think, sans niveau, non reconnu).
+NO_OPTIONS = {"toggle": [], "efforts": [], "known": False}
+SONNET5_OPTIONS = {
+    "toggle": ["on", "off"],
+    "efforts": ["low", "medium", "high", "xhigh", "max"],
+    "known": True,
+}
+OLLAMA_OPTIONS = {"toggle": ["on", "off"], "efforts": [], "known": False}
 
 
 def _user_with_key(**overrides):
@@ -100,6 +115,7 @@ def test_routes_require_token(client: TestClient):
         ("delete", URL, {}),
         ("post", TEST_URL, {"json": {}}),
         ("post", MODELS_URL, {"json": {}}),
+        ("post", OPTIONS_URL, {"json": {}}),
     )
     for method, url, kwargs in cases:
         response = getattr(client, method)(url, **kwargs)
@@ -118,6 +134,8 @@ def test_get_without_credential():
         "model": None,
         "base_url": None,
         "api_key_set": False,
+        **DEFAULT_REASONING_FIELDS,
+        "reasoning_options": NO_OPTIONS,
         **DEFAULT_QUOTA_FIELDS,
     }
 
@@ -130,9 +148,17 @@ def test_get_with_credential_never_reemits_key():
         "model": "claude-sonnet-5",
         "base_url": None,
         "api_key_set": True,
+        **DEFAULT_REASONING_FIELDS,
+        "reasoning_options": SONNET5_OPTIONS,
         **DEFAULT_QUOTA_FIELDS,
     }
     assert API_KEY not in response.text
+
+
+def test_get_exposes_reasoning_preferences():
+    user = _user_with_key(ai_reasoning=False, ai_reasoning_effort="low")
+    body = make_client(FakeSession([[user], []])).get(URL).json()
+    assert body["reasoning"] is False and body["reasoning_effort"] == "low"
 
 
 def test_get_exposes_daily_quota(monkeypatch):
@@ -167,6 +193,8 @@ def test_put_nominal_encrypts_key():
         "model": "claude-sonnet-5",
         "base_url": None,
         "api_key_set": True,
+        **DEFAULT_REASONING_FIELDS,
+        "reasoning_options": SONNET5_OPTIONS,
         **DEFAULT_QUOTA_FIELDS,
     }
     assert API_KEY not in response.text
@@ -217,6 +245,13 @@ def test_put_new_key_regenerates_salt():
         {"provider": "anthropic", "model": "m", "api_key": "k", "inconnu": True},
         # Provider hors AIProvider.
         {"provider": "skynet", "model": "m", "api_key": "k"},
+        # Bascule et effort hors providers capables (mistral : rien).
+        {"provider": "mistral", "model": "m", "api_key": "k", "reasoning": True},
+        {"provider": "mistral", "model": "m", "api_key": "k", "reasoning_effort": "high"},
+        # Niveau qui n'est pas un niveau NATIF du provider.
+        {"provider": "anthropic", "model": "m", "api_key": "k", "reasoning_effort": "turbo"},
+        {"provider": "openai", "model": "gpt-5.2", "api_key": "k", "reasoning_effort": "max"},
+        {"provider": "ollama", "model": "gpt-oss", "reasoning_effort": "xhigh"},
     ],
 )
 def test_put_invalid(payload: dict):
@@ -235,9 +270,74 @@ def test_put_ollama_without_key():
         "model": "llama3.2",
         "base_url": "http://pi:11434",
         "api_key_set": False,
+        **DEFAULT_REASONING_FIELDS,
+        "reasoning_options": OLLAMA_OPTIONS,
         **DEFAULT_QUOTA_FIELDS,
     }
     assert user.ai_api_key_encrypted is None and user.ai_encryption_salt is None
+
+
+def test_put_reasoning_preferences_roundtrip():
+    user = _user_row()
+    response = make_client(FakeSession([[user], []])).put(
+        URL,
+        json={
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "api_key": API_KEY,
+            "reasoning": True,
+            "reasoning_effort": "high",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reasoning"] is True and body["reasoning_effort"] == "high"
+    assert user.ai_reasoning is True and user.ai_reasoning_effort == "high"
+
+
+def test_put_native_level_and_options_follow_the_model():
+    """Un niveau natif du provider est accepté même hors des options proposées
+    (le catalogue propose, le provider tranche) ; la réponse porte les options
+    du nouveau couple."""
+    user = _user_with_key()
+    response = make_client(FakeSession([[user], []])).put(
+        URL,
+        json={"provider": "anthropic", "model": "claude-opus-4-5", "reasoning_effort": "xhigh"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reasoning_effort"] == "xhigh"
+    assert body["reasoning_options"] == {
+        "toggle": ["on", "off"],
+        "efforts": ["low", "medium", "high"],
+        "known": True,
+    }
+
+
+def test_put_replaces_reasoning_preferences():
+    """Un PUT sans préférences remet les colonnes à NULL (remplacement, pas patch)."""
+    user = _user_with_key(ai_reasoning=True, ai_reasoning_effort="high")
+    response = make_client(FakeSession([[user], []])).put(
+        URL, json={"provider": "anthropic", "model": "claude-opus-5"}
+    )
+    assert response.status_code == 200
+    assert user.ai_reasoning is None and user.ai_reasoning_effort is None
+
+
+def test_put_explicit_null_preferences_accepted_for_any_provider():
+    """Le front envoie toujours les deux champs (null hors capacités du provider)."""
+    user = _user_row()
+    response = make_client(FakeSession([[user], []])).put(
+        URL,
+        json={
+            "provider": "mistral",
+            "model": "magistral-medium-latest",
+            "api_key": API_KEY,
+            "reasoning": None,
+            "reasoning_effort": None,
+        },
+    )
+    assert response.status_code == 200
 
 
 def test_put_503_without_master_key(monkeypatch):
@@ -252,12 +352,13 @@ def test_put_503_without_master_key(monkeypatch):
 
 
 def test_delete_clears_everything():
-    user = _user_with_key(ai_base_url=None)
+    user = _user_with_key(ai_base_url=None, ai_reasoning=True, ai_reasoning_effort="medium")
     session = FakeSession([[user]])
     response = make_client(session).delete(URL)
     assert response.status_code == 204
     assert user.ai_provider is None and user.ai_model is None and user.ai_base_url is None
     assert user.ai_api_key_encrypted is None and user.ai_encryption_salt is None
+    assert user.ai_reasoning is None and user.ai_reasoning_effort is None
     assert session.commits >= 2
 
 
@@ -293,6 +394,33 @@ def test_connection_uses_stored_key_when_omitted():
     assert response.status_code == 200
     [(_, config, _)] = ai.calls
     assert config.api_key.get_secret_value() == API_KEY
+
+
+def test_connection_passes_reasoning_preferences():
+    """Le test valide exactement ce que le PUT enregistrerait, raisonnement compris."""
+    ai = _FakeAIClient()
+    response = make_client(FakeSession([[_user_with_key()]]), ai_client=ai).post(
+        TEST_URL,
+        json={
+            "provider": "anthropic",
+            "model": "claude-opus-5",
+            "reasoning": True,
+            "reasoning_effort": "low",
+        },
+    )
+    assert response.status_code == 200
+    [(_, config, _)] = ai.calls
+    assert config.reasoning is True and config.reasoning_effort == "low"
+
+
+def test_connection_rejects_reasoning_for_incapable_provider():
+    ai = _FakeAIClient()
+    response = make_client(FakeSession([[_user_row()]]), ai_client=ai).post(
+        TEST_URL,
+        json={"provider": "mistral", "model": "m", "api_key": API_KEY, "reasoning": True},
+    )
+    assert response.status_code == 422
+    assert ai.calls == []
 
 
 def test_connection_ollama_without_key():
@@ -334,6 +462,51 @@ def test_connection_provider_error_passthrough():
     )
     assert response.status_code == 400
     assert API_KEY not in response.text
+
+
+# ---------------------------------------------------------------- POST /reasoning-options
+
+
+def test_reasoning_options_known_model():
+    session = FakeSession()  # sonde pure : aucun execute
+    response = make_client(session).post(
+        OPTIONS_URL, json={"provider": "openai", "model": "gpt-5.2"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "toggle": ["on", "off"],
+        "efforts": ["low", "medium", "high", "xhigh"],
+        "known": True,
+    }
+    assert session.executed == []
+
+
+def test_reasoning_options_unknown_model_falls_back_to_provider():
+    response = make_client(FakeSession()).post(
+        OPTIONS_URL, json={"provider": "openai_compatible", "model": "llama-3.3-70b-versatile"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"toggle": [], "efforts": ["low", "medium", "high"], "known": False}
+
+
+def test_reasoning_options_non_reasoning_model():
+    response = make_client(FakeSession()).post(
+        OPTIONS_URL, json={"provider": "openai", "model": "gpt-4o"}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"toggle": [], "efforts": [], "known": True}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"provider": "openai"},  # modèle requis
+        {"provider": "skynet", "model": "m"},
+        {"provider": "openai", "model": "gpt-5", "api_key": "k"},  # extra=forbid
+    ],
+)
+def test_reasoning_options_invalid_payload(payload: dict):
+    assert make_client(FakeSession()).post(OPTIONS_URL, json=payload).status_code == 422
 
 
 # ---------------------------------------------------------------- POST /models
@@ -402,6 +575,10 @@ def test_models_requires_key_when_none_stored(fake_list_models):
         {"provider": "anthropic", "api_key": "k", "model": "m"},
         # Clé blanche interdite (omettre le champ pour la clé enregistrée).
         {"provider": "anthropic", "api_key": "   "},
+        # extra=forbid : les préférences de raisonnement n'ont rien à faire
+        # dans un listing (le front les retire du payload du PUT).
+        {"provider": "anthropic", "api_key": "k", "reasoning": True},
+        {"provider": "anthropic", "api_key": "k", "reasoning_effort": "high"},
     ],
 )
 def test_models_invalid_payload(fake_list_models, payload: dict):

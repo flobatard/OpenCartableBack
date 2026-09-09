@@ -41,6 +41,8 @@ def user_row(**overrides):
         ai_base_url=None,
         ai_api_key_encrypted=None,
         ai_encryption_salt=None,
+        ai_reasoning=None,
+        ai_reasoning_effort=None,
         ai_daily_call_quota=None,
     )
     defaults.update(overrides)

@@ -173,6 +173,18 @@ class Settings(BaseSettings):
     AI_MODEL: str = ""
     AI_API_KEY: str = ""  # SECRET (.env) — jamais loggé
     AI_BASE_URL: str = ""  # ollama distant / provider openai_compatible
+    # Préférences de raisonnement de l'IA PAR DÉFAUT — mêmes règles par
+    # provider que le credential utilisateur (encodées par core/ai/providers.py),
+    # posées par l'opérateur dans config/<APP_ENV>.yaml. Absentes = défaut du
+    # provider/modèle (comportement historique). AI_REASONING true =
+    # raisonnement demandé et affiché, false = coupé (l'effort est alors
+    # ignoré) ; AI_REASONING_EFFORT = un niveau NATIF du provider
+    # (PROVIDER_REASONING_EFFORTS de core/ai/types.py, ex. low | medium | high,
+    # xhigh/max chez Anthropic, minimal chez OpenAI/Gemini). Une valeur invalide
+    # ou hors capacités du provider rend le fallback inutilisable (422
+    # « fallback serveur IA invalide » à la résolution, jamais au boot).
+    AI_REASONING: bool | None = None
+    AI_REASONING_EFFORT: str = ""
     # Garde-fous d'occupation d'un worker uvicorn sur Pi : timeout provider et
     # retries bas (ne pas empiler les latences).
     AI_TIMEOUT_SECONDS: float = 60.0

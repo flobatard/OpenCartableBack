@@ -42,6 +42,8 @@ def _user_row(**overrides):
         ai_base_url=None,
         ai_api_key_encrypted=None,
         ai_encryption_salt=None,
+        ai_reasoning=None,
+        ai_reasoning_effort=None,
         ai_daily_call_quota=None,
     )
     defaults.update(overrides)
@@ -171,6 +173,8 @@ def test_chat_without_config_uses_decrypted_credential(monkeypatch) -> None:
         ai_model="claude-sonnet-5",
         ai_api_key_encrypted=crypto.encrypt_secret("sk-user", MASTER_KEY, salt),
         ai_encryption_salt=salt,
+        ai_reasoning=True,
+        ai_reasoning_effort="high",
     )
     client, fake = _client(session=FakeSession([[user]]))
     assert client.post("/api/v1/ai/chat", json=NO_CONFIG_PAYLOAD).status_code == 200
@@ -178,6 +182,29 @@ def test_chat_without_config_uses_decrypted_credential(monkeypatch) -> None:
     assert config.provider.value == "anthropic"
     assert config.model == "claude-sonnet-5"
     assert config.api_key.get_secret_value() == "sk-user"
+    # Les préférences de raisonnement du credential voyagent avec la config.
+    assert config.reasoning is True and config.reasoning_effort == "high"
+
+
+def test_explicit_config_carries_reasoning_preferences() -> None:
+    """Le miroir HTTP ``AIConfigIn`` accepte les préférences (banc d'essai
+    des encodages par provider) et les transmet telles quelles."""
+    payload = {
+        **CHAT_PAYLOAD,
+        "config": {**CHAT_PAYLOAD["config"], "reasoning": False, "reasoning_effort": "low"},
+    }
+    client, fake = _client(session=FakeSession())
+    assert client.post("/api/v1/ai/chat", json=payload).status_code == 200
+    config = fake.calls[0]["config"]
+    assert config.reasoning is False and config.reasoning_effort == "low"
+
+
+def test_explicit_config_rejects_unknown_effort() -> None:
+    """Même gating par provider que le credential : « xhigh » n'existe pas chez Ollama."""
+    payload = {**CHAT_PAYLOAD, "config": {**CHAT_PAYLOAD["config"], "reasoning_effort": "xhigh"}}
+    client, fake = _client(session=FakeSession())
+    assert client.post("/api/v1/ai/chat", json=payload).status_code == 422
+    assert fake.calls == []
 
 
 def test_chat_unreadable_credential_422(monkeypatch) -> None:

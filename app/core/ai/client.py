@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from app.core.ai.agent import build_agent
 from app.core.ai.errors import invalid_config, translate_provider_error
@@ -48,6 +48,7 @@ from app.core.ai.types import (
     AIToolSpec,
     AIUsage,
     ChatMessage,
+    check_reasoning_support,
 )
 from app.core.config import settings
 
@@ -104,7 +105,10 @@ class AIClient:
 
         422 si aucune des deux n'est exploitable — c'est le point unique où le
         « BYO token » rencontre le fallback : les features n'ont pas à
-        connaître les settings.
+        connaître les settings. Les préférences de raisonnement du fallback
+        (``AI_REASONING`` / ``AI_REASONING_EFFORT``, absentes = défaut du
+        modèle) suivent la même règle de gating par provider que le credential
+        utilisateur — validées ici, à la résolution, jamais au boot.
         """
         if config is not None:
             return config
@@ -113,16 +117,22 @@ class AIClient:
                 "Aucune configuration IA fournie et pas de fallback serveur configuré"
             )
         try:
-            return AIRequestConfig(
+            resolved = AIRequestConfig(
                 provider=settings.AI_PROVIDER,
                 model=settings.AI_MODEL,
                 api_key=SecretStr(settings.AI_API_KEY) if settings.AI_API_KEY else None,
                 base_url=settings.AI_BASE_URL or None,
+                reasoning=settings.AI_REASONING,
+                reasoning_effort=settings.AI_REASONING_EFFORT or None,
             )
-        except ValidationError as exc:
+            check_reasoning_support(
+                resolved.provider, resolved.reasoning, resolved.reasoning_effort
+            )
+        except ValueError as exc:  # ValidationError ⊂ ValueError
             raise invalid_config(
-                "Fallback serveur IA invalide (vérifier AI_PROVIDER/AI_MODEL)"
+                "Fallback serveur IA invalide (vérifier AI_PROVIDER/AI_MODEL/AI_REASONING*)"
             ) from exc
+        return resolved
 
     async def complete(
         self,

@@ -52,6 +52,11 @@ SHARE_LINK_TTL_DAYS: 270
 AI_PROVIDER: mistral
 AI_MODEL: ministral-14b-latest
 AI_BASE_URL: https://api.mistral.ai/v1
+# Préférences de raisonnement de l'IA par défaut (absentes = défaut du
+# modèle) — mêmes règles par provider que la clé personnelle ; sans objet
+# pour mistral (422 si posées).
+# AI_REASONING: true
+# AI_REASONING_EFFORT: medium
 # Quota d'appels au fallback AI_* par utilisateur et par jour (UTC) — priorité
 # à users.ai_daily_call_quota s'il est renseigné ; 0 = illimité. Défaut : 30.
 # AI_DEFAULT_DAILY_QUOTA: 30

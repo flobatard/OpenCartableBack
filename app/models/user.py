@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -98,6 +99,13 @@ class User(Base):
     ai_base_url: Mapped[str | None] = mapped_column(String(2000))
     ai_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary)
     ai_encryption_salt: Mapped[bytes | None] = mapped_column(LargeBinary)
+    # Préférences de raisonnement du modèle, enregistrées avec le credential :
+    # NULL = défaut du provider/modèle ; ai_reasoning True = raisonnement
+    # demandé et affiché, False = coupé ; ai_reasoning_effort ∈ low/medium/high
+    # (validé Pydantic). Les règles PAR provider restent en 422 service (pas de
+    # CHECK, même doctrine que ci-dessus) ; effacées avec le credential.
+    ai_reasoning: Mapped[bool | None] = mapped_column(Boolean)
+    ai_reasoning_effort: Mapped[str | None] = mapped_column(String(20))
     # Quota QUOTIDIEN d'appels à l'IA PAR DÉFAUT (le fallback serveur AI_*) :
     # NULL = quota standard (settings.AI_DEFAULT_DAILY_QUOTA), 0 = illimité,
     # sinon plafond individuel par jour. Aucune route ne l'écrit (l'utilisateur

@@ -23,6 +23,68 @@ class AIProvider(StrEnum):
     HUGGINGFACE = "huggingface"  # Inference Endpoints/Providers (jamais pipeline local)
 
 
+# Niveaux d'effort de raisonnement NATIFS acceptés par provider — l'union sur
+# ses modèles, gating dur (422) ; les options réellement proposées pour un
+# modèle donné viennent du catalogue :mod:`app.core.ai.reasoning`. OpenAI :
+# « none » n'est pas un niveau mais l'encodage de ``reasoning=False``.
+PROVIDER_REASONING_EFFORTS: dict[AIProvider, tuple[str, ...]] = {
+    AIProvider.ANTHROPIC: ("low", "medium", "high", "xhigh", "max"),
+    AIProvider.OPENAI: ("minimal", "low", "medium", "high", "xhigh"),
+    AIProvider.OPENAI_COMPATIBLE: ("minimal", "low", "medium", "high", "xhigh"),
+    AIProvider.GOOGLE: ("minimal", "low", "medium", "high"),
+    AIProvider.OLLAMA: ("low", "medium", "high"),
+}
+
+# Capacités de raisonnement par provider — miroirs front
+# PROVIDERS_WITH_REASONING_TOGGLE / PROVIDERS_WITH_REASONING_EFFORT
+# (ai-credentials.model.ts). Le gating par PROVIDER est dur (422 au PUT du
+# credential et à la résolution du fallback) ; le support par MODÈLE est
+# proposé par le catalogue (:mod:`app.core.ai.reasoning`) mais jamais imposé :
+# l'encodage (providers.py) transmet ce qui est demandé et le 4xx du provider
+# remonte par errors.py.
+# Providers dont le raisonnement peut être forcé (et affiché) ou coupé — chez
+# OpenAI, coupé = ``reasoning_effort="none"`` (gpt-5.1+).
+PROVIDERS_WITH_REASONING_TOGGLE = frozenset(
+    {
+        AIProvider.ANTHROPIC,
+        AIProvider.OPENAI,
+        AIProvider.OPENAI_COMPATIBLE,
+        AIProvider.GOOGLE,
+        AIProvider.OLLAMA,
+    }
+)
+# Providers acceptant un niveau d'effort.
+PROVIDERS_WITH_REASONING_EFFORT = frozenset(PROVIDER_REASONING_EFFORTS)
+
+# Longueur max d'un niveau d'effort (colonne users.ai_reasoning_effort).
+REASONING_EFFORT_MAX_LENGTH = 20
+
+
+def check_reasoning_support(
+    provider: AIProvider, reasoning: bool | None, reasoning_effort: str | None
+) -> None:
+    """Règle unique du gating par provider — credential utilisateur (422 au
+    PUT) ET fallback serveur ``AI_REASONING*`` (422 à la résolution) :
+    ``ValueError`` si une préférence est posée pour un provider hors
+    capacités ou si le niveau n'est pas un niveau natif du provider ;
+    ``None`` explicite accepté partout."""
+    if reasoning is not None and provider not in PROVIDERS_WITH_REASONING_TOGGLE:
+        raise ValueError(
+            "reasoning ne s'applique qu'aux providers "
+            + ", ".join(sorted(p.value for p in PROVIDERS_WITH_REASONING_TOGGLE))
+        )
+    if reasoning_effort is None:
+        return
+    efforts = PROVIDER_REASONING_EFFORTS.get(provider)
+    if efforts is None:
+        raise ValueError(f"reasoning_effort ne s'applique pas au provider {provider.value}")
+    if reasoning_effort not in efforts:
+        raise ValueError(
+            f"reasoning_effort « {reasoning_effort} » inconnu du provider {provider.value} "
+            f"(niveaux : {', '.join(efforts)})"
+        )
+
+
 class AIRequestConfig(BaseModel):
     """Config d'appel BYO token : voyage à chaque appel, jamais persistée ici.
 
@@ -38,6 +100,14 @@ class AIRequestConfig(BaseModel):
     base_url: str | None = None
     temperature: float | None = Field(None, ge=0, le=2)
     max_tokens: int | None = Field(None, ge=1)
+    # Préférences de raisonnement : None = défaut du provider/modèle ;
+    # ``reasoning`` True = raisonnement demandé ET affiché (deltas ``thinking``),
+    # False = coupé (``reasoning_effort`` est alors ignoré) ; ``reasoning_effort``
+    # = un niveau NATIF du provider (``PROVIDER_REASONING_EFFORTS``, validé
+    # par ``check_reasoning_support``, jamais ici : les features passent par
+    # les schémas HTTP). Encodage par provider dans providers.py.
+    reasoning: bool | None = None
+    reasoning_effort: str | None = Field(None, min_length=1, max_length=REASONING_EFFORT_MAX_LENGTH)
 
 
 class AIToolSpec(BaseModel):

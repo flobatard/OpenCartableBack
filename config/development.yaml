@@ -37,6 +37,14 @@ SHARE_LINK_TTL_DAYS: 270
 AI_PROVIDER: mistral
 AI_MODEL: ministral-14b-latest
 AI_BASE_URL: https://api.mistral.ai/v1
+# Préférences de raisonnement de l'IA par défaut (absentes = défaut du
+# modèle). Mêmes règles par provider que la clé personnelle : AI_REASONING
+# (true = demandé et affiché, false = coupé ; chez OpenAI = « none », gpt-5.1+),
+# AI_REASONING_EFFORT = niveau NATIF du provider (Anthropic low…max, OpenAI
+# minimal…xhigh, Gemini minimal…high, Ollama low…high) — rien pour mistral
+# ni huggingface (422 sinon). Options par modèle : app/core/ai/reasoning.py.
+# AI_REASONING: true
+# AI_REASONING_EFFORT: medium
 # Quota d'appels à l'IA par défaut (fallback AI_*) par utilisateur et par
 # jour (UTC) — priorité à users.ai_quota_appels s'il est renseigné ;
 # 0 = illimité. Défaut : 30.

@@ -8,9 +8,9 @@ Miroir HTTP des types de :mod:`app.core.ai` — on ne réutilise pas directement
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from app.core.ai import AIProvider
+from app.core.ai import REASONING_EFFORT_MAX_LENGTH, AIProvider, check_reasoning_support
 
 
 class ChatMessageIn(BaseModel):
@@ -29,6 +29,15 @@ class AIConfigIn(BaseModel):
     base_url: str | None = Field(None, max_length=2000)
     temperature: float | None = Field(None, ge=0, le=2)
     max_tokens: int | None = Field(None, ge=1, le=128_000)
+    # Préférences de raisonnement (banc d'essai des encodages par provider),
+    # même gating par provider que le credential (niveaux natifs).
+    reasoning: bool | None = None
+    reasoning_effort: str | None = Field(None, min_length=1, max_length=REASONING_EFFORT_MAX_LENGTH)
+
+    @model_validator(mode="after")
+    def _reasoning_per_provider(self) -> "AIConfigIn":
+        check_reasoning_support(self.provider, self.reasoning, self.reasoning_effort)
+        return self
 
 
 class ChatRequest(BaseModel):
