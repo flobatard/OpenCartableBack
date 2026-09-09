@@ -173,11 +173,17 @@ def _question_entry(number: int, qid: uuid.UUID, question: dict) -> RefEntry:
 
 @dataclass
 class CourseRefs:
-    """Table de correspondance références courtes ↔ entités, pour un tour."""
+    """Table de correspondance références courtes ↔ entités, pour un tour.
+
+    ``new_question_refs`` : références des questions apparues depuis la
+    numérotation rejouée (``question_refs`` de :meth:`build`) — à la reprise
+    d'un ajout accepté, c'est la référence de la question ajoutée ; vide sans
+    numérotation rejouée."""
 
     entries: dict[Kind, list[RefEntry]] = field(
         default_factory=lambda: {"block": [], "resource": [], "module": [], "question": []}
     )
+    new_question_refs: tuple[str, ...] = ()
 
     @classmethod
     def build(
@@ -209,6 +215,11 @@ class CourseRefs:
                 for i, item in enumerate(items, start=1)
             ]
         refs.entries["question"] = _question_entries(questions, question_refs)
+        if question_refs:
+            replayed = {str(ref) for ref in question_refs}
+            refs.new_question_refs = tuple(
+                e.ref for e in refs.entries["question"] if e.ref not in replayed
+            )
         return refs
 
     # ------------------------------------------------------------ lookups

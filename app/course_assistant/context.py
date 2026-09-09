@@ -1,18 +1,24 @@
-"""Contexte d'un tour d'assistant : références courtes, system prompt, sources.
+"""Contexte d'un tour d'assistant : références courtes, sommaire, sources.
 
 Helpers purs (aucune I/O, testables sans DB ni storage) :
 
 - :func:`build_refs` numérote l'instantané du cours (``B1``/``R1``/``M1`` —
   et ``Q1…`` pour les questions du bloc exercice édité) ;
-- :func:`build_course_context` assemble le system prompt : consignes du
-  contexte de conversation — ``course``
-  (:data:`~app.course_assistant.prompts.COURSE_SYSTEM_PROMPT`) ou un
-  contexte d'édition (descripteur
-  :class:`~app.course_assistant.editing.EditContext`, dont la cible
-  ``focus_block`` OU ``focus_module`` est rendue en entier) — puis le cours
-  en markdown (:mod:`app.course_assistant.render`) et ses bibliothèques ;
-  :func:`assemble_context` en est l'assembleur commun, réutilisé par le tuteur
-  d'exercice ;
+- :func:`system_prompt_for` donne le system prompt du contexte de
+  conversation — ``course``
+  (:data:`~app.course_assistant.prompts.COURSE_SYSTEM_PROMPT`) ou un contexte
+  d'édition (descripteur :class:`~app.course_assistant.editing.EditContext`).
+  Il est **statique** (cacheable par le provider) : aucun contenu de cours ;
+- :func:`build_turn_context` assemble le **contexte du tour** : la cible
+  d'un contexte d'édition (``focus_block`` OU ``focus_module``, rendue en
+  entier) puis le **sommaire** du cours (:func:`render_outline` :
+  :mod:`app.course_assistant.render`) — jamais le contenu des autres blocs,
+  que le modèle lit avec ``read_block`` ; le tuteur d'exercice réutilise
+  :func:`render_outline` et :func:`turn_message` ;
+- :func:`turn_message` place ce contexte en tête du message utilisateur du
+  tour, **après l'historique** : system prompt, tools et historique forment
+  un préfixe stable d'un tour à l'autre (cache de prompt), seuls le contexte
+  et la demande changent ;
 - :func:`extract_sources` valide les citations ``oc-block:``/``oc-resource:``
   d'une réponse **déjà réécrite en UUID** ; les ids hallucinés sont filtrés —
   le markdown, lui, n'est jamais réécrit au-delà de la résolution des
@@ -27,7 +33,6 @@ Les fragments de prompt vivent dans :mod:`app.course_assistant.prompts`
 
 import re
 import uuid
-from collections.abc import Sequence
 
 from app.course_assistant.editing.base import EditContext
 from app.course_assistant.prompts import COURSE_SYSTEM_PROMPT
@@ -35,26 +40,28 @@ from app.course_assistant.refs import CourseRefs
 from app.course_assistant.render import (
     FOCUS_MODULE_MAX_CHARS,
     block_title,
-    excerpt_block,
     focus_pointer,
     format_block,
     format_module,
     libraries_section,
+    outline_block,
 )
 from app.models.block import TYPE_EXERCISE
 
-# Plafond du contexte en CARACTÈRES (heuristique assumée : pas de tokenizer
-# par provider). Au-delà, bascule en mode sommaire + tool read_block.
-CONTEXT_MAX_CHARS = 60_000
+# Garde-fou du sommaire en CARACTÈRES (heuristique assumée : pas de tokenizer
+# par provider) : au-delà, les plans internes des blocs sont omis.
+OUTLINE_MAX_CHARS = 12_000
+
+OUTLINE_NOTICE = (
+    "Sommaire seulement : le contenu d'un bloc se lit avec `read_block` "
+    "(sa référence en paramètre)."
+)
+TEACHER_LABEL = "Demande du professeur"
+_TURN_SEPARATOR = "\n\n---\n\n"
 
 _UUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _BLOCK_REF_RE = re.compile(rf"oc-block:({_UUID_RE})")
 _RESOURCE_REF_RE = re.compile(rf"oc-resource:({_UUID_RE})")
-
-_SUMMARY_NOTICE = (
-    "\n\n> Cours volumineux : seuls des extraits sont fournis ci-dessous — "
-    "utilisez `read_block` pour lire un bloc en entier.\n"
-)
 
 
 def build_refs(
@@ -81,99 +88,102 @@ def build_refs(
     )
 
 
-def build_course_context(
+def system_prompt_for(edit: EditContext | None) -> str:
+    """System prompt du contexte de conversation — statique, sans contenu de
+    cours : celui du descripteur d'édition, sinon celui du contexte ``course``."""
+    return COURSE_SYSTEM_PROMPT if edit is None else edit.system_prompt
+
+
+def render_outline(
     course,
     refs: CourseRefs,
     *,
-    max_chars: int = CONTEXT_MAX_CHARS,
+    focus_block=None,
+    focus_note: str = "bloc mis en avant",
+    headings: bool = True,
+) -> str:
+    """Sommaire du cours : en-tête (titre, description), une entrée
+    :func:`outline_block` par bloc (le ``focus_block``, s'il est donné, y est
+    remplacé par un pointeur d'une ligne annoté ``focus_note``), puis les
+    bibliothèques. Au-delà de :data:`OUTLINE_MAX_CHARS`, re-rendu sans les
+    plans internes (titres de blocs seuls) — jamais de contenu de bloc.
+    Partagé par :func:`build_turn_context` et le tuteur d'exercice."""
+    head = [f"# Cours : {course.title}"]
+    if course.description:
+        head.append(course.description)
+    entries = []
+    for entry in refs.entries["block"]:
+        block = entry.entity
+        if focus_block is not None and block.id == focus_block.id:
+            entries.append(focus_pointer(block, refs, focus_note))
+        else:
+            entries.append(outline_block(block, refs, headings=headings))
+    text = "\n\n".join(
+        [
+            *head,
+            f"\n## Sommaire du cours\n\n{OUTLINE_NOTICE}",
+            "\n\n".join(entries) if entries else "(aucun bloc)",
+            libraries_section(refs),
+        ]
+    )
+    if headings and len(text) > OUTLINE_MAX_CHARS:
+        return render_outline(
+            course, refs, focus_block=focus_block, focus_note=focus_note, headings=False
+        )
+    return text
+
+
+def build_turn_context(
+    course,
+    refs: CourseRefs,
+    *,
     focus_block=None,
     focus_module=None,
     edit: EditContext | None = None,
 ) -> str:
-    """System prompt complet : consignes + cours en markdown + bibliothèques.
-
-    ``refs`` porte l'instantané du cours (:func:`build_refs`). Si le rendu
-    complet dépasse ``max_chars``, bascule en **mode sommaire** (extraits +
-    invite à ``read_block``) — jamais de coupe au milieu d'un bloc.
+    """Contexte du tour d'assistant : cible d'édition (en entier) puis sommaire.
 
     Contexte d'édition (``edit`` et **exactement une** cible — ``focus_block``
-    ou ``focus_module`` — toujours ensemble) : le prompt est celui du
-    descripteur (mission + règles d'édition du contexte), et la cible est
-    rendue **en entier** dans une section dédiée (« Bloc / Module en cours
-    d'édition ») — y compris en mode sommaire (le professeur édite CETTE
-    cible, l'assistant doit toujours en voir l'état exact) ; un bloc édité est
-    en outre remplacé par un pointeur d'une ligne dans la liste du cours.
+    ou ``focus_module`` — toujours ensemble) : la cible est rendue **en
+    entier** dans une section dédiée (« Bloc / Module en cours d'édition »),
+    le professeur édite CETTE cible et l'assistant doit toujours en voir
+    l'état exact ; un bloc édité est remplacé par un pointeur dans le
+    sommaire. Hors contexte d'édition : le sommaire seul.
     """
     focus = focus_block if focus_block is not None else focus_module
     if focus_block is not None and focus_module is not None:
         raise ValueError("une seule cible d'édition (bloc OU module)")
     if (focus is None) != (edit is None):
         raise ValueError("la cible d'édition et edit vont ensemble (contexte d'édition)")
-    prompt = COURSE_SYSTEM_PROMPT if edit is None else edit.system_prompt
-    focus_section: list[str] = []
+    sections: list[str] = []
     if focus_block is not None:
-        focus_section = ["\n## Bloc en cours d'édition", format_block(focus_block, refs)]
+        sections += ["## Bloc en cours d'édition", format_block(focus_block, refs)]
     elif focus_module is not None:
-        focus_section = [
-            "\n## Module en cours d'édition",
+        sections += [
+            "## Module en cours d'édition",
             format_module(focus_module, refs, max_chars=FOCUS_MODULE_MAX_CHARS),
         ]
-    return assemble_context(
-        prompt,
-        course,
-        refs,
-        focus_section=focus_section,
-        focus_block=focus_block,
-        focus_note="bloc en cours d'édition",
-        max_chars=max_chars,
+    sections.append(
+        render_outline(course, refs, focus_block=focus_block, focus_note="bloc en cours d'édition")
     )
+    return "\n\n".join(sections)
 
 
-def assemble_context(
-    prompt: str,
-    course,
-    refs: CourseRefs,
-    *,
-    focus_section: Sequence[str] = (),
-    focus_block=None,
-    focus_note: str = "bloc mis en avant",
-    max_chars: int = CONTEXT_MAX_CHARS,
-) -> str:
-    """Assemblage commun des system prompts adossés à un cours : ``prompt``
-    (mission + règles), en-tête du cours, ``focus_section`` (sections propres
-    à l'appelant, rendues AVANT le cours et conservées en mode sommaire),
-    contenu du cours (le ``focus_block``, s'il est donné, y est remplacé par
-    un pointeur d'une ligne annoté ``focus_note``) et bibliothèques. Partagé
-    par :func:`build_course_context` et le tuteur d'exercice élève
-    (:mod:`app.student_exercises.context`).
-    """
-    head = [prompt, f"\n# Cours : {course.title}"]
-    if course.description:
-        head.append(course.description)
-    tail = libraries_section(refs)
-    blocks = [entry.entity for entry in refs.entries["block"]]
+def teacher_message(content: str) -> str:
+    """Demande du professeur, titrée pour la distinguer du contexte du tour."""
+    return f"## {TEACHER_LABEL}\n\n{content}"
 
-    def _render(block, renderer) -> str:
-        if focus_block is not None and block.id == focus_block.id:
-            return focus_pointer(block, refs, focus_note)
-        return renderer(block, refs)
 
-    full_blocks = "\n\n".join(_render(b, format_block) for b in blocks)
-    context = "\n\n".join([*head, *focus_section, "\n## Contenu du cours", full_blocks, tail])
-    if len(context) <= max_chars:
-        return context
-
-    summary_blocks = "\n\n".join(_render(b, excerpt_block) for b in blocks)
-    return "\n\n".join(
-        [
-            *head,
-            *focus_section,
-            _SUMMARY_NOTICE,
-            "\n## Contenu du cours (extraits)",
-            summary_blocks,
-            tail,
-        ]
-    )
+def turn_message(context: str, message: str, *, notice: str | None = None) -> str:
+    """Message utilisateur du tour : le contexte (:func:`build_turn_context`
+    ou celui du tuteur), une éventuelle note (historique tronqué…), puis —
+    après un séparateur ``---`` — le message réel, déjà étiqueté
+    (:func:`teacher_message`, ``student_message`` du tuteur). Le contexte
+    n'est jamais persisté : la ligne ``user`` garde le message brut."""
+    parts = [context]
+    if notice:
+        parts.append(notice)
+    return "\n\n".join(parts) + _TURN_SEPARATOR + message
 
 
 def extract_sources(

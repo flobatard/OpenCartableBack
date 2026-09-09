@@ -188,7 +188,7 @@ def test_stream_nominal() -> None:
     assert kinds == ["thinking", "tool_call", "tool_result", "token", "done"]
 
     done = events[-1][1]
-    assert done["usage"] == {"input_tokens": 30, "output_tokens": 8}
+    assert done["usage"] == {"input_tokens": 30, "output_tokens": 8, "cached_input_tokens": None}
     assert done["sources"]["blocks"] == [str(BLOCK_ID)]  # l'id halluciné est filtré
     assert done["title"] == "Fais une synthèse du cours"
     assert len(done["message_ids"]) == 3  # segment à tool_calls + tour tool + final
@@ -216,8 +216,12 @@ def test_stream_nominal() -> None:
     assert conv.title == "Fais une synthèse du cours"
     [call] = fake.calls
     assert call["messages"][0].role == "system"
-    assert "Pythagore." in call["messages"][0].content
-    assert call["messages"][-1].content == "Fais une synthèse du cours"
+    assert "Pythagore." not in call["messages"][0].content  # system prompt statique
+    # Contexte du tour (sommaire, jamais le contenu) en tête du message user.
+    turn = call["messages"][-1].content
+    assert "## Sommaire du cours" in turn and "### Bloc 1 — Intro (ref: B1)" in turn
+    assert "Pythagore." not in turn
+    assert turn.endswith("\n\n---\n\n## Demande du professeur\n\nFais une synthèse du cours")
     assert {t.name for t in call["tools"]} == {
         "read_block",
         "read_resource_pdf",
@@ -258,9 +262,9 @@ def test_stream_rewrites_short_ref_citations_across_chunks() -> None:
     # Le modèle, lui, ne voit que des références courtes ; les specs des tools
     # portent l'enum de l'instantané.
     [call] = fake.calls
-    system = call["messages"][0].content
-    assert "(ref: B1)" in system and "(ref: R1," in system
-    assert str(BLOCK_ID) not in system and str(RESOURCE_ID) not in system
+    turn = call["messages"][-1].content
+    assert "(ref: B1)" in turn and "(ref: R1," in turn
+    assert str(BLOCK_ID) not in turn and str(RESOURCE_ID) not in turn
     specs = {t.name: t for t in call["tools"]}
     assert specs["read_block"].parameters["properties"]["block_ref"]["enum"] == ["B1"]
     assert specs["read_resource_pdf"].parameters["properties"]["resource_ref"]["enum"] == ["R1"]

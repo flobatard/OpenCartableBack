@@ -9,6 +9,7 @@ import pytest
 from app.core.ai import AIToolCall
 from app.course_assistant.context import build_refs
 from app.student_exercises.context import (
+    HISTORY_MESSAGE_CHARS,
     NO_EXPECTED_ANSWER_NOTICE,
     RedactedBlock,
     build_tutor_context,
@@ -17,6 +18,7 @@ from app.student_exercises.context import (
     redact_blocks,
     student_message,
 )
+from app.student_exercises.prompts import TUTOR_SYSTEM_PROMPT
 from app.student_exercises.streaming import (
     RECORD_VERDICT,
     VerdictHolder,
@@ -105,11 +107,15 @@ def test_tutor_context_only_carries_the_target_answer() -> None:
     assert SECRET_SIBLING not in context
     assert SECRET_OTHER not in context
     assert "Réponse attendue" not in context
-    # L'exercice est remplacé par un pointeur dans la liste du cours ; l'autre
-    # bloc y est rendu (redacté).
+    # L'exercice est remplacé par un pointeur dans le sommaire ; l'autre bloc
+    # n'y est que sommaire (titre, nombre de questions), jamais son contenu.
     assert "(exercice en cours de résolution — contenu complet" in context
-    assert "Autre exercice" in context
-    assert "Tutoie" in context and "record_verdict" in context
+    assert "### Bloc 2 — Thalès (ref: B2)" in context
+    assert "Exercice — 1 question" in context
+    assert "Autre exercice" not in context
+    # Les consignes vivent dans le system prompt statique, pas dans le contexte.
+    assert "Tutoie" in TUTOR_SYSTEM_PROMPT and "record_verdict" in TUTOR_SYSTEM_PROMPT
+    assert "Tutoie" not in context
 
 
 def test_tutor_context_without_expected_answer() -> None:
@@ -132,6 +138,20 @@ def test_history_messages_and_student_message() -> None:
     assert messages[0].content.startswith("Réponse de l'élève :")
     assert messages[2].content.startswith("Message de l'élève :")
     assert history_messages(rows, limit=1)[0].content.startswith("Message")
+
+
+def test_history_messages_window_and_abridgement() -> None:
+    """Fenêtre à hystérésis (au-delà de ``limit`` tours, ``keep`` rejoués) et
+    messages/retours abrégés au plafond."""
+    rows = [
+        SimpleNamespace(kind="answer", content=f"R{i}", feedback="F" * (HISTORY_MESSAGE_CHARS + 50))
+        for i in range(15)
+    ]
+    messages = history_messages(rows, limit=12, keep=8)
+    assert len(messages) == 16 and messages[0].content.endswith("R7")
+    assert messages[1].content.startswith("F" * HISTORY_MESSAGE_CHARS)
+    assert "abrégé au replay" in messages[1].content
+    assert len(history_messages(rows[:12], limit=12, keep=8)) == 24
 
 
 @pytest.mark.parametrize(

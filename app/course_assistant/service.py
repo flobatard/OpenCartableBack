@@ -65,6 +65,7 @@ def _message_read(message: AIMessage) -> MessageRead:
         sources=message.sources,
         input_tokens=message.input_tokens,
         output_tokens=message.output_tokens,
+        cached_input_tokens=message.cached_input_tokens,
         created_at=message.created_at,
     )
 

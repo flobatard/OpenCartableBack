@@ -73,8 +73,17 @@ def build_agent(
     tool_executor: Callable[[AIToolCall], Awaitable[AIToolResult]],
     max_tool_rounds: int,
     checkpointer: Any = None,
+    *,
+    system_prompt: str | None = None,
+    prompt_cache: bool = False,
 ) -> "CompiledStateGraph":
     """Compile le graphe agent LangGraph autour des tools neutres.
+
+    ``system_prompt`` est le system prompt du graphe (``create_agent``) :
+    re-fourni à chaque appel modèle, jamais dans l'état — c'est le seul
+    message que le middleware de cache voit comme tel. ``prompt_cache`` ajoute
+    le middleware de cache de prompt Anthropic (:func:`_prompt_cache_middleware`,
+    sans effet sur un autre provider).
 
     Un résultat ``is_error=True`` est relayé au modèle en ``ToolMessage`` de
     statut ``error`` (via ``ToolException`` + ``handle_tool_error``), jamais
@@ -135,7 +144,28 @@ def build_agent(
         ModelCallLimitMiddleware(run_limit=max_tool_rounds + 1, exit_behavior="end"),
         _tool_image_middleware()(),
     ]
-    return create_agent(model, lc_tools, middleware=middleware, checkpointer=checkpointer)
+    if prompt_cache:
+        middleware.append(_prompt_cache_middleware())
+    return create_agent(
+        model,
+        lc_tools,
+        system_prompt=system_prompt,
+        middleware=middleware,
+        checkpointer=checkpointer,
+    )
+
+
+def _prompt_cache_middleware() -> Any:
+    """Middleware de cache de prompt Anthropic (import paresseux) : marque le
+    system prompt et le dernier tool d'un ``cache_control`` et pose le
+    ``cache_control`` global de la requête — tools, system prompt et préfixe
+    des messages sont alors servis depuis le cache (TTL 5 min) tant qu'ils ne
+    changent pas ; d'où un system prompt statique et le contexte du tour en fin
+    de prompt côté appelants. Sans effet sur un modèle non Anthropic
+    (``unsupported_model_behavior="ignore"``)."""
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+    return AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore")
 
 
 def _hoist_tool_images(messages: Sequence["BaseMessage"]) -> list["BaseMessage"]:

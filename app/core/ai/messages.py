@@ -66,4 +66,14 @@ def to_usage(usage_metadata: dict[str, Any] | None) -> AIUsage | None:
     return AIUsage(
         input_tokens=usage_metadata.get("input_tokens"),
         output_tokens=usage_metadata.get("output_tokens"),
+        cached_input_tokens=cached_input_tokens(usage_metadata),
     )
+
+
+def cached_input_tokens(usage_metadata: dict[str, Any]) -> int | None:
+    """Tokens d'entrée lus dans le cache de prompt du provider
+    (``input_token_details.cache_read``, compris dans ``input_tokens``) —
+    ``None`` quand le provider ne relaie pas ce détail."""
+    details = usage_metadata.get("input_token_details") or {}
+    value = details.get("cache_read")
+    return value if isinstance(value, int) else None

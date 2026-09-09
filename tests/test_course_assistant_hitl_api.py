@@ -203,9 +203,9 @@ def test_stream_block_text_context() -> None:
     # au done.
     [call] = fake.calls
     system = call["messages"][0].content
-    assert "## Bloc en cours d'édition" in system
     assert "propose_block_edit" in system
     assert "```mermaid" in system  # syntaxes d'édition déclarées
+    assert "## Bloc en cours d'édition" in call["messages"][-1].content  # contexte du tour
     assert "propose_block_edit" in {t.name for t in call["tools"]}
     assert call["thread_id"] is not None
     assert fake.dropped_threads == [call["thread_id"]]
@@ -244,7 +244,11 @@ def test_stream_block_text_interrupt_registers_resume() -> None:
         interrupt = events_out[-1][1]
         assert interrupt["tool_call_id"] == "call_p"
         assert len(interrupt["message_ids"]) == 1
-        assert interrupt["usage"] == {"input_tokens": 120, "output_tokens": 40}
+        assert interrupt["usage"] == {
+            "input_tokens": 120,
+            "output_tokens": 40,
+            "cached_input_tokens": None,
+        }
 
         # Tour PARTIEL persisté : le segment assistant (texte + tool_call),
         # aucun tour tool — un abandon restera un round incomplet, replié.
@@ -342,7 +346,8 @@ def test_proposal_decision_resumes_the_run() -> None:
     [call] = fake.calls
     assert call["thread_id"] == "t-run"
     assert call["resume"] == {"accepted": True, "comment": "Très bien"}
-    assert call["messages"] == []  # l'état vit au checkpoint
+    # L'état vit au checkpoint : seul le system prompt (hors état) est repassé.
+    assert [m.role for m in call["messages"]] == ["system"]
     assert "propose_block_edit" in {t.name for t in call["tools"]}
     assert fake.dropped_threads == ["t-run"]  # purgé au done
 
@@ -437,11 +442,12 @@ def test_stream_block_exercise_context() -> None:
         [call] = fake.calls
         system = call["messages"][0].content
         assert "qui édite un exercice de son cours" in system
-        assert "## Bloc en cours d'édition" in system
-        assert "**Question 1** (ref: Q1) : Calculer $x^2$." in system
-        assert "(ref: Q2)" in system
-        assert str(Q1) not in system and str(Q2) not in system
         assert "propose_question_edit" in system and "propose_block_edit" not in system
+        turn = call["messages"][-1].content  # contexte du tour : l'exercice en entier
+        assert "## Bloc en cours d'édition" in turn
+        assert "**Question 1** (ref: Q1) : Calculer $x^2$." in turn
+        assert "(ref: Q2)" in turn
+        assert str(Q1) not in turn and str(Q2) not in turn
         specs = {t.name: t for t in call["tools"]}
         assert EXERCISE_TOOLS <= set(specs)
         assert "propose_block_edit" not in specs
@@ -620,10 +626,11 @@ def test_stream_module_context() -> None:
 
     [call] = fake.calls
     system = call["messages"][0].content
-    assert "## Module en cours d'édition" in system
-    assert "button { color: red; }" in system  # code du module, en entier
     assert "default-src 'none'" in system  # contraintes du bac à sable
     assert "```mermaid" not in system  # catalogue markdown hors sujet ici
+    turn = call["messages"][-1].content  # contexte du tour
+    assert "## Module en cours d'édition" in turn
+    assert "button { color: red; }" in turn  # code du module, en entier
     assert MODULE_TOOLS <= {t.name for t in call["tools"]}
     assert "propose_block_edit" not in {t.name for t in call["tools"]}
     assert call["thread_id"] is not None

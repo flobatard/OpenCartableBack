@@ -9,13 +9,15 @@ insérés par référence courte sont réécrits en UUID à l'émission.
 
 from app.core.ai import AIToolCall, AIToolResult, AIToolSpec
 from app.course_assistant.editing.base import (
+    SUMMARY_SCHEMA,
     TARGET_BLOCK,
     EditContext,
     Handler,
     ProposalTool,
+    hitl_description,
     hitl_gate,
 )
-from app.course_assistant.prompts import edit_system_prompt
+from app.course_assistant.prompts import CONTENT_PRESERVATION_RULE, edit_system_prompt
 from app.course_assistant.refs import CourseRefs
 from app.models.ai_conversation import CONTEXT_BLOCK_TEXT
 from app.models.block import TYPE_TEXT
@@ -29,33 +31,17 @@ PROPOSAL_MAX_CHARS = 100_000
 
 _MISSION = """\
 Vous êtes l'assistant pédagogique d'OpenCartable, aux côtés d'un professeur \
-qui édite un bloc de texte de son cours. Votre mission : l'aider à réécrire, \
-améliorer ou compléter ce bloc — clarté, style, exactitude, progression \
-pédagogique — en cohérence avec le reste du cours, fourni pour contexte. \
-Vouvoyez toujours votre interlocuteur et répondez en français, en markdown.\
+qui édite un bloc de texte de son cours : vous l'aidez à réécrire, améliorer \
+ou compléter ce bloc (clarté, style, exactitude, progression pédagogique), en \
+cohérence avec le reste du cours.\
 """
 
-_EDIT_RULES = """\
-Règles d'édition du bloc — impératives :
+_EDIT_RULES = f"""\
+Règles d'édition du bloc : un seul outil, `propose_block_edit` \
+(`new_markdown` = markdown intégral de remplacement du bloc). Le bloc édité \
+est fourni en entier dans le message du tour.
 
-- Toute proposition de modification du bloc passe EXCLUSIVEMENT par l'outil \
-`propose_block_edit` : ne réécrivez jamais le bloc (ni un long extrait \
-remanié) directement dans le texte de votre réponse — le professeur ne \
-pourrait pas l'appliquer.
-- L'appel est BLOQUANT : le professeur examine votre proposition dans un \
-comparatif, et le résultat de l'outil vous donne sa décision — acceptée (et \
-appliquée à son éditeur) ou rejetée — avec son éventuel commentaire. Une \
-seule proposition à la fois ; si elle est rejetée avec un commentaire, vous \
-pouvez en soumettre une nouvelle version qui en tient compte.
-- `new_markdown` est le contenu INTÉGRAL de remplacement du bloc : recopiez à \
-l'identique tout ce que vous ne modifiez pas.
-- Préservez à l'identique les formules $…$ / $$…$$ et les liens \
-`oc-resource:` / `oc-module:` déjà présents dans le markdown du bloc, \
-identifiants longs compris — c'est la SEULE exception à la règle « jamais \
-d'identifiant long » : elle vaut pour le contenu recopié du bloc, jamais pour \
-votre prose ni vos citations. Pour INSÉRER une nouvelle ressource ou un \
-nouveau module de la bibliothèque, utilisez sa référence courte \
-(`oc-resource:R2`, `oc-module:M1`) : elle sera résolue automatiquement.\
+{CONTENT_PRESERVATION_RULE}\
 """
 
 
@@ -63,13 +49,8 @@ def _spec(refs: CourseRefs) -> AIToolSpec:
     """Spec du tool (aucune référence en paramètre : ``refs`` inutilisé)."""
     return AIToolSpec(
         name=PROPOSE_BLOCK_EDIT,
-        description=(
-            "Propose au professeur une réécriture du bloc texte en cours "
-            "d'édition et ATTEND sa décision : le comparatif lui est présenté "
-            "dans son éditeur, et le résultat de l'appel est sa décision — "
-            "proposition acceptée (et appliquée) ou rejetée, avec son "
-            "éventuel commentaire. Ne modifie rien par lui-même. Une seule "
-            "proposition à la fois."
+        description=hitl_description(
+            "Propose au professeur une réécriture du bloc texte en cours d'édition"
         ),
         parameters={
             "type": "object",
@@ -77,17 +58,11 @@ def _spec(refs: CourseRefs) -> AIToolSpec:
                 "new_markdown": {
                     "type": "string",
                     "description": (
-                        "Contenu markdown INTÉGRAL de remplacement du bloc — "
-                        "recopier à l'identique tout ce qui ne change pas."
+                        "Markdown INTÉGRAL de remplacement du bloc (l'inchangé recopié "
+                        "à l'identique)."
                     ),
                 },
-                "summary": {
-                    "type": "string",
-                    "description": (
-                        "Une phrase, en français, décrivant le changement "
-                        "proposé (affichée au professeur)."
-                    ),
-                },
+                "summary": SUMMARY_SCHEMA,
             },
             "required": ["new_markdown"],
         },

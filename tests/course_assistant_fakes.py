@@ -87,6 +87,7 @@ def message_row(position, role="user", **overrides):
         sources={},
         input_tokens=None,
         output_tokens=None,
+        cached_input_tokens=None,
         created_at=NOW,
     )
     defaults.update(overrides)

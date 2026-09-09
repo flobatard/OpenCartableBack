@@ -12,7 +12,16 @@ from pypdf import PdfWriter
 from app.core.ai import AIToolCall
 from app.course_assistant import hitl
 from app.course_assistant import tools as tools_module
-from app.course_assistant.context import build_course_context, build_refs, extract_sources
+from app.course_assistant.context import (
+    OUTLINE_MAX_CHARS,
+    build_refs,
+    build_turn_context,
+    extract_sources,
+    render_outline,
+    system_prompt_for,
+    teacher_message,
+    turn_message,
+)
 from app.course_assistant.editing import base as editing_base
 from app.course_assistant.editing.block_exercise import (
     BLOCK_EXERCISE,
@@ -36,8 +45,18 @@ from app.course_assistant.editing.module import (
     PROPOSE_HTML_EDIT,
     PROPOSE_JS_EDIT,
 )
-from app.course_assistant.render import format_block, format_module
-from app.course_assistant.replay import replay_messages
+from app.course_assistant.prompts import COURSE_SYSTEM_PROMPT
+from app.course_assistant.render import (
+    format_block,
+    format_module,
+    markdown_outline,
+    outline_block,
+)
+from app.course_assistant.replay import (
+    REPLAY_ARG_CHARS,
+    REPLAY_TOOL_RESULT_CHARS,
+    replay_messages,
+)
 from app.course_assistant.tools import (
     IMAGE_MAX_BYTES,
     PDF_MAX_BYTES,
@@ -218,121 +237,175 @@ def test_format_module_code_blocks_and_cap() -> None:
     assert capped.endswith("[Module tronqué : plafond de lecture atteint]")
 
 
-def test_build_course_context_full_mode() -> None:
-    context = build_course_context(_COURSE, _refs(modules=[]))
-    assert "# Cours : Géométrie" in context
-    assert "### Bloc 1 — Introduction (ref: B1)" in context
-    assert "Le théorème de Pythagore." in context
-    assert "cours.pdf (ref: R1" in context
-    assert "(aucun module)" in context
-    assert "oc-block:<ref>" in context  # consigne de citation
-    assert str(BLOCK_ID) not in context and str(RESOURCE_ID) not in context
-    for tool in ("read_block", "read_resource_pdf", "read_resource_image", "read_module"):
-        assert f"`{tool}`" in context
+def test_markdown_outline_skips_fences_and_normalises_levels() -> None:
+    markdown = (
+        "## Partie A\n\ntexte\n\n```python\n# pas un titre\n```\n\n"
+        "### Sous-partie\n\n~~~\n## ni celui-ci\n~~~\n\n## Partie B ##\n#pasuntitre\n"
+    )
+    assert markdown_outline(markdown) == [(1, "Partie A"), (2, "Sous-partie"), (1, "Partie B")]
+    assert markdown_outline("") == []
 
 
-def test_build_course_context_names_modules_of_module_blocks() -> None:
-    block = _block(type="module", title=None, content={}, module_id=MODULE_ID)
-    context = build_course_context(_COURSE, _refs(blocks=[block]))
-    assert "Module interactif pointé : « Balance interactive » (ref: M1)" in context
-    assert "- Balance interactive (ref: M1)" in context
+def test_outline_block_never_carries_content() -> None:
+    text_block = _block(
+        content={"markdown": "# Énoncé\n\nLe théorème de Pythagore.\n\n## Preuve\n\nDétail."}
+    )
+    text = outline_block(text_block, _refs(blocks=[text_block]))
+    assert text.startswith("### Bloc 1 — Introduction (ref: B1)")
+    assert "Texte — plan :" in text
+    assert "- Énoncé" in text and "  - Preuve" in text
+    assert "Pythagore" not in text and "Détail" not in text
+    assert outline_block(_block(), _refs()).endswith("\nTexte")
+
+    exercise = _exercise()
+    ex_text = outline_block(exercise, _refs(blocks=[exercise]))
+    assert "Exercice — 2 questions" in ex_text
+    assert "Calculer" not in ex_text and "x au carré" not in ex_text  # ni énoncé ni corrigé
+
+    headings = "\n".join(f"# T{i}" for i in range(1, 21))
+    many = outline_block(_block(content={"markdown": headings}), _refs())
+    assert "- T12" in many and "- T13" not in many and "(+8 titres)" in many
+    bare = outline_block(_block(content={"markdown": headings}), _refs(), headings=False)
+    assert bare == "### Bloc 1 — Introduction (ref: B1)\nTexte"
 
 
-def test_build_course_context_summary_mode() -> None:
-    blocks = [
-        _block(id=uuid.uuid4(), content={"markdown": "mot " * 500}) for _ in range(5)
-    ]
-    context = build_course_context(_COURSE, _refs(blocks=blocks), max_chars=2000)
-    assert "extraits" in context
-    assert "read_block" in context
-    # Chaque en-tête de bloc reste présent, le corps est tronqué.
-    for i in range(1, 6):
-        assert f"(ref: B{i})" in context
-    assert "mot " * 100 not in context
+def test_outline_block_points_resources_and_modules() -> None:
+    doc = _block(
+        type="document",
+        title="Le sujet",
+        content={"caption": "Légende bavarde"},
+        resource_id=RESOURCE_ID,
+    )
+    text = outline_block(doc, _refs(blocks=[doc]))
+    assert "Document — Ressource pointée : « cours.pdf » (ref: R1)" in text
+    assert "Légende bavarde" not in text
+    module_block = _block(type="module", title=None, content={}, module_id=MODULE_ID)
+    text = outline_block(module_block, _refs(blocks=[module_block]))
+    assert "### Bloc 1 — Module interactif (ref: B1)" in text
+    assert "Module interactif pointé : « Balance interactive » (ref: M1)" in text
 
 
-def test_build_course_context_block_text_focus() -> None:
+def test_render_outline_lists_blocks_without_content() -> None:
+    outline = render_outline(_COURSE, _refs(modules=[]))
+    assert "# Cours : Géométrie" in outline
+    assert "## Sommaire du cours" in outline and "`read_block`" in outline
+    assert "### Bloc 1 — Introduction (ref: B1)" in outline
+    assert "Le théorème de Pythagore." not in outline
+    assert "cours.pdf (ref: R1" in outline
+    assert "(aucun module)" in outline
+    assert str(BLOCK_ID) not in outline and str(RESOURCE_ID) not in outline
+    with_module = _block(type="module", title=None, content={}, module_id=MODULE_ID)
+    outline = render_outline(_COURSE, _refs(blocks=[with_module]))
+    assert "Module interactif pointé : « Balance interactive » (ref: M1)" in outline
+    assert "- Balance interactive (ref: M1)" in outline
+
+
+def test_render_outline_drops_headings_when_too_long() -> None:
+    headings = "\n".join(f"# Titre numéro {i} " + "x" * 60 for i in range(12))
+    blocks = [_block(id=uuid.uuid4(), content={"markdown": headings}) for _ in range(40)]
+    outline = render_outline(_COURSE, _refs(blocks=blocks))
+    assert len(outline) <= OUTLINE_MAX_CHARS
+    assert "plan :" not in outline
+    for i in range(1, 41):
+        assert f"(ref: B{i})" in outline
+    # En deçà du garde-fou, les plans internes sont là.
+    assert "plan :" in render_outline(_COURSE, _refs(blocks=blocks[:2]))
+
+
+def test_system_prompt_for_is_static_per_context() -> None:
+    prompt = system_prompt_for(None)
+    assert prompt == COURSE_SYSTEM_PROMPT
+    assert "oc-block:<ref>" in prompt  # consigne de citation
+    assert "`read_block`" in prompt and "Vouvoyez" in prompt
+    assert "```tikz" not in prompt and "propose_block_edit" not in prompt
+    assert "Pythagore" not in prompt  # jamais de contenu de cours
+    assert system_prompt_for(BLOCK_TEXT) == BLOCK_TEXT.system_prompt
+
+
+def test_build_turn_context_course_is_the_outline() -> None:
+    context = build_turn_context(_COURSE, _refs())
+    assert context.startswith("# Cours : Géométrie")
+    assert "Le théorème de Pythagore." not in context
+
+
+def test_build_turn_context_block_text_focus() -> None:
     other = _block(id=uuid.uuid4(), title="Suite", content={"markdown": "La suite du cours."})
     focus = _block()
-    context = build_course_context(
+    context = build_turn_context(
         _COURSE, _refs(blocks=[focus, other]), focus_block=focus, edit=BLOCK_TEXT
     )
-    # Mission et règles d'édition substituées à la mission « course ».
-    assert "un bloc de texte de son cours" in context
-    assert "propose_block_edit" in context
-    assert "L'appel est BLOQUANT" in context
-    # Syntaxes d'édition déclarées (le modèle connaît tous ses outils).
-    assert "```mermaid" in context
-    assert "```tikz" in context
-    assert "```geogebra" in context
-    assert "```jsxgraph" in context
-    assert "oc-module:<cible>" in context
-    # Bloc édité en entier dans la section dédiée, pointeur dans la liste.
-    assert "## Bloc en cours d'édition" in context
+    # Bloc édité en entier dans la section dédiée, pointeur dans le sommaire.
+    assert context.startswith("## Bloc en cours d'édition")
     assert context.count("Le théorème de Pythagore.") == 1
     assert "(bloc en cours d'édition — contenu complet dans la section dédiée ci-dessus)" in context
-    # Le reste du cours reste rendu.
-    assert "La suite du cours." in context
-    # Les syntaxes/règles d'édition ne polluent pas le contexte « course ».
-    course_context = build_course_context(_COURSE, _refs(blocks=[focus, other]))
-    assert "```tikz" not in course_context
-    assert "propose_block_edit" not in course_context
+    # Le reste du cours n'est que sommaire.
+    assert "### Bloc 2 — Suite (ref: B2)" in context
+    assert "La suite du cours." not in context
+    # System prompt du contexte : mission, outil, protocole, syntaxes d'édition.
+    prompt = BLOCK_TEXT.system_prompt
+    assert "un bloc de texte de son cours" in prompt
+    assert "propose_block_edit" in prompt
+    assert "Chaque appel est BLOQUANT" in prompt
+    for fence in ("```mermaid", "```tikz", "```geogebra", "```jsxgraph"):
+        assert fence in prompt
+    assert "oc-module:<cible>" in prompt
+    assert "propose_question_edit" not in prompt
 
 
-def test_build_course_context_block_exercise_focus() -> None:
+def test_build_turn_context_block_exercise_focus() -> None:
     exercise = _exercise()
     other = _block(id=uuid.uuid4(), title="Suite", content={"markdown": "La suite du cours."})
-    context = build_course_context(
+    context = build_turn_context(
         _COURSE,
         _refs(blocks=[exercise, other], focus_block=exercise),
         focus_block=exercise,
         edit=BLOCK_EXERCISE,
     )
-    assert "qui édite un exercice de son cours" in context
-    for tool in EXERCISE_TOOLS:
-        assert f"`{tool}`" in context
-    assert "Chaque appel est BLOQUANT" in context
-    assert "UNE opération par appel" in context
-    assert "```mermaid" in context  # syntaxes d'édition déclarées
     assert "## Bloc en cours d'édition" in context
     assert "(ref: Q1)" in context and "(ref: Q2)" in context
     assert str(Q1) not in context and str(Q2) not in context
-    assert "propose_block_edit" not in context
-    assert "La suite du cours." in context
-    # Rien de tout cela dans le contexte « course » ni dans « block_text ».
-    course_context = build_course_context(_COURSE, _refs(blocks=[exercise, other]))
-    assert "propose_question_edit" not in course_context
+    assert "La suite du cours." not in context
+    prompt = BLOCK_EXERCISE.system_prompt
+    assert "qui édite un exercice de son cours" in prompt
+    for tool in EXERCISE_TOOLS:
+        assert f"`{tool}`" in prompt
+    assert "Chaque appel est BLOQUANT" in prompt
+    assert "UNE opération par appel" in prompt
+    assert "```mermaid" in prompt  # syntaxes d'édition déclarées
+    assert "propose_block_edit" not in prompt
+    # Rien de tout cela dans le contexte « course » : ni référence de question,
+    # ni corrigé (le sommaire ne porte jamais de contenu).
+    course_context = build_turn_context(_COURSE, _refs(blocks=[exercise, other]))
     assert "(ref: Q1)" not in course_context
-    text_context = build_course_context(
-        _COURSE, _refs(blocks=[other]), focus_block=other, edit=BLOCK_TEXT
-    )
-    assert "propose_question_edit" not in text_context
+    assert "x au carré" not in course_context
+    assert "Exercice — 2 questions" in course_context
 
 
-def test_build_course_context_requires_edit_with_focus() -> None:
+def test_build_turn_context_requires_edit_with_focus() -> None:
     """``focus_block`` et ``edit`` vont ensemble (contexte d'édition)."""
     focus = _block()
     with pytest.raises(ValueError):
-        build_course_context(_COURSE, _refs(blocks=[focus]), focus_block=focus)
+        build_turn_context(_COURSE, _refs(blocks=[focus]), focus_block=focus)
     with pytest.raises(ValueError):
-        build_course_context(_COURSE, _refs(blocks=[focus]), edit=BLOCK_TEXT)
+        build_turn_context(_COURSE, _refs(blocks=[focus]), edit=BLOCK_TEXT)
 
 
-def test_build_course_context_block_text_focus_full_even_in_summary_mode() -> None:
-    others = [
-        _block(id=uuid.uuid4(), content={"markdown": "mot " * 500}) for _ in range(5)
-    ]
+def test_build_turn_context_focus_full_even_when_outline_is_bare() -> None:
+    headings = "\n".join(f"# Titre {i} " + "x" * 70 for i in range(12))
+    others = [_block(id=uuid.uuid4(), content={"markdown": headings}) for _ in range(40)]
     focus = _block(content={"markdown": "CONTENU ÉDITÉ INTÉGRAL. " * 40})
-    context = build_course_context(
-        _COURSE,
-        _refs(blocks=[focus, *others]),
-        max_chars=2000,
-        focus_block=focus,
-        edit=BLOCK_TEXT,
+    context = build_turn_context(
+        _COURSE, _refs(blocks=[focus, *others]), focus_block=focus, edit=BLOCK_TEXT
     )
-    assert "extraits" in context
-    # Le bloc édité reste rendu EN ENTIER (jamais excerpté), une seule fois.
+    assert "plan :" not in context  # sommaire réduit aux titres de blocs
+    # Le bloc édité reste rendu EN ENTIER, une seule fois.
     assert context.count("CONTENU ÉDITÉ INTÉGRAL. " * 40) == 1
+
+
+def test_turn_message_layout() -> None:
+    message = turn_message("CONTEXTE", teacher_message("Question ?"), notice="Note.")
+    assert message == "CONTEXTE\n\nNote.\n\n---\n\n## Demande du professeur\n\nQuestion ?"
+    assert turn_message("C", "M") == "C\n\n---\n\nM"
 
 
 # ------------------------------------------------------------------- specs
@@ -368,42 +441,44 @@ def test_tool_specs_propose_only_on_demand() -> None:
     spec = specs[PROPOSE_BLOCK_EDIT]
     assert spec.parameters["required"] == ["new_markdown"]
     assert set(spec.parameters["properties"]) == {"new_markdown", "summary"}
-    assert "ATTEND sa décision" in spec.description
+    assert "ATTEND la décision" in spec.description
     assert not EXERCISE_TOOLS & set(specs)  # les tools exercice n'y sont pas
 
 
-def test_build_course_context_module_focus() -> None:
+def test_build_turn_context_module_focus() -> None:
     """Contexte module : le module édité est rendu EN ENTIER dans sa section,
     les contraintes du bac à sable remplacent le catalogue markdown."""
     module = _module()
     other = _block(id=uuid.uuid4(), title="Suite", content={"markdown": "La suite du cours."})
-    context = build_course_context(
+    context = build_turn_context(
         _COURSE,
         _refs(blocks=[other], modules=[module]),
         focus_module=module,
         edit=MODULE,
     )
-    assert "qui édite un module interactif de son cours" in context
-    for tool in MODULE_TOOLS:
-        assert f"`{tool}`" in context
-    assert "UN fichier par appel" in context
     # Code du module en entier, dans sa section dédiée.
-    assert "## Module en cours d'édition" in context
+    assert context.startswith("## Module en cours d'édition")
     assert "#scale { color: red; }" in context
     assert "console.log('go');" in context
+    # Le reste du cours n'est que sommaire.
+    assert "### Bloc 1 — Suite (ref: B1)" in context
+    assert "La suite du cours." not in context
+    prompt = MODULE.system_prompt
+    assert "qui édite un module interactif de son cours" in prompt
+    for tool in MODULE_TOOLS:
+        assert f"`{tool}`" in prompt
+    assert "UN fichier par appel" in prompt
     # Contraintes d'exécution déclarées, catalogue markdown écarté.
-    assert "default-src 'none'" in context
-    assert "window.ocModule.emit" in context
-    assert "```mermaid" not in context
-    assert "propose_block_edit" not in context
-    # Le reste du cours reste rendu.
-    assert "La suite du cours." in context
+    assert "default-src 'none'" in prompt
+    assert "window.ocModule.emit" in prompt
+    assert "```mermaid" not in prompt
+    assert "propose_block_edit" not in prompt
 
 
-def test_build_course_context_rejects_two_focus_targets() -> None:
+def test_build_turn_context_rejects_two_focus_targets() -> None:
     module, block = _module(), _block()
     with pytest.raises(ValueError):
-        build_course_context(
+        build_turn_context(
             _COURSE,
             _refs(blocks=[block], modules=[module]),
             focus_block=block,
@@ -412,7 +487,7 @@ def test_build_course_context_rejects_two_focus_targets() -> None:
         )
     # Une cible sans descripteur d'édition (et inversement) reste refusée.
     with pytest.raises(ValueError):
-        build_course_context(_COURSE, _refs(), focus_module=module)
+        build_turn_context(_COURSE, _refs(), focus_module=module)
 
 
 def test_tool_specs_module() -> None:
@@ -548,6 +623,50 @@ def test_replay_truncates_at_round_boundary() -> None:
     # Fenêtre de 2 : [tool, assistant] → le tool orphelin est écarté.
     assert [m.role for m in messages] == ["assistant"]
     assert messages[0].content == "Fin"
+
+
+def test_replay_window_hysteresis() -> None:
+    """Au-delà du seuil, la fenêtre saute à ``keep`` messages (préfixe stable
+    plusieurs tours durant) ; en deçà, tout est rejoué."""
+    rows = [_row("user", f"Q{i}") for i in range(25)]
+    messages, truncated = replay_messages(rows, "ollama", limit=20, keep=10)
+    assert truncated
+    assert [m.content for m in messages] == [f"Q{i}" for i in range(15, 25)]
+    messages, truncated = replay_messages(rows[:20], "ollama", limit=20, keep=10)
+    assert not truncated and len(messages) == 20
+
+
+def test_replay_abridges_tool_results_and_long_arguments() -> None:
+    """Résultats d'outils et contenus de propositions passés ne sont jamais
+    rejoués en entier ; références et résumés courts passent tels quels."""
+    long_result = "R" * (REPLAY_TOOL_RESULT_CHARS + 100)
+    proposal = {
+        "id": "call_2",
+        "name": "propose_block_edit",
+        "arguments": {"new_markdown": "M" * 1000, "summary": "Court"},
+    }
+    rows = [
+        _row("user", "Question"),
+        _row("assistant", "", tool_calls=[_CALL, proposal], provider="ollama"),
+        _row("tool", long_result, tool_call_id="call_1"),
+        _row("tool", "ACCEPTÉ", tool_call_id="call_2"),
+        _row("assistant", "Réponse", provider="ollama"),
+    ]
+    messages, _ = replay_messages(rows, "ollama")
+    result = messages[2].content
+    assert result.startswith("R" * REPLAY_TOOL_RESULT_CHARS)
+    assert "abrégé au replay" in result and len(result) < len(long_result)
+    assert messages[3].content == "ACCEPTÉ"
+    args = messages[1].tool_calls[1].arguments
+    assert args["summary"] == "Court"
+    assert args["new_markdown"].startswith("M" * REPLAY_ARG_CHARS)
+    assert "1000 caractères" in args["new_markdown"]
+    assert messages[1].tool_calls[0].arguments == {"block_id": "b1"}
+    # Déterministe : même entrée, même sortie (préfixe cacheable).
+    assert replay_messages(rows, "ollama") == (messages, False)
+    # Round d'un autre provider : les arguments repliés sont abrégés aussi.
+    folded, _ = replay_messages(rows, "mistral")
+    assert "M" * 1000 not in folded[1].content and "Court" in folded[1].content
 
 
 # ---------------------------------------------------------------- read_pdf_sync
@@ -887,12 +1006,37 @@ async def test_executor_exercise_tools_return_the_decision(
 
 
 @pytest.mark.anyio
-async def test_executor_exercise_add_tells_the_model_to_reread_the_block(monkeypatch) -> None:
+async def test_executor_exercise_add_gives_the_new_reference_or_asks_to_reread(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(editing_base, "agent_interrupt", lambda payload: {"accepted": True})
-    executor, _ = _exercise_executor()
     arguments = {"statement": "?", "after_ref": "Q1"}
+    # Sans numérotation rejouée (aucune reprise) : relecture demandée.
+    executor, _ = _exercise_executor()
     result = await executor(AIToolCall(id="c", name=PROPOSE_QUESTION_ADD, arguments=arguments))
     assert "read_block" in result.content
+    # À la reprise, l'instantané rechargé porte la question ajoutée : sa
+    # référence est donnée au modèle, aucune relecture nécessaire.
+    grown = _exercise(
+        content={
+            "statement": "",
+            "questions": [
+                {"id": str(Q1), "statement": "Calculer $x^2$.", "type": "free_text",
+                 "expected_answer": ""},
+                {"id": str(uuid.uuid4()), "statement": "?", "type": "free_text",
+                 "expected_answer": ""},
+                {"id": str(Q2), "statement": "Conclure.", "type": "free_text",
+                 "expected_answer": ""},
+            ],
+        }
+    )
+    executor, refs = _exercise_executor(
+        exercise=grown, question_refs={"Q1": str(Q1), "Q2": str(Q2)}
+    )
+    assert refs.new_question_refs == ("Q3",)
+    result = await executor(AIToolCall(id="c", name=PROPOSE_QUESTION_ADD, arguments=arguments))
+    assert "Sa référence est Q3." in result.content
+    assert "read_block" not in result.content
 
 
 @pytest.mark.anyio

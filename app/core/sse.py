@@ -13,17 +13,21 @@ Bearer). Format de référence :
     data: {"delta": "…"}
 
     event: done
-    data: {"usage": {"input_tokens": 12, "output_tokens": 87}}
+    data: {"usage": {"input_tokens": 12, "output_tokens": 87,
+                     "cached_input_tokens": 0}}
 
     event: error
     data: {"status": 503, "detail": "Fournisseur IA injoignable"}
 
 ``thinking`` relaie les deltas de raisonnement quand le provider en émet
-(absent sinon — le front doit le tolérer). Les routes agent étendent ce
-contrat avec ``tool_call``/``tool_result``/``interrupt`` et enrichissent le
-payload de ``done`` — voir :mod:`app.course_assistant.streaming` et
+(absent sinon — le front doit le tolérer). ``usage`` est ``null`` si le
+provider est muet ; ``cached_input_tokens`` (part de ``input_tokens`` servie
+depuis le cache de prompt du provider) est ``null`` s'il ne relaie pas ce
+détail. Les routes agent étendent ce contrat avec
+``tool_call``/``tool_result``/``interrupt`` et enrichissent le payload de
+``done`` — voir :mod:`app.course_assistant.streaming` et
 :mod:`app.student_exercises.streaming`. Le contrat est **additif** : le
-parseur du front tolère les événements inconnus.
+parseur du front tolère les événements et champs inconnus.
 
 JSON compact ``ensure_ascii=False``, chaque événement terminé par ``\\n\\n``,
 flux clos après ``done`` ou ``error``. Rationale de l'événement ``error`` : une

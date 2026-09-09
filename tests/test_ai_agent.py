@@ -15,9 +15,15 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from app.core.ai import (
     AIClient,
@@ -32,9 +38,11 @@ from app.core.ai import (
     agent_interrupt,
 )
 from app.core.ai import client as client_module
-from app.core.ai.messages import to_langchain_messages
+from app.core.ai.agent import build_agent
+from app.core.ai.messages import to_langchain_messages, to_usage
 
 MESSAGES = [ChatMessage(role="user", content="Bonjour")]
+SYSTEM = ChatMessage(role="system", content="SYS")
 CONFIG = AIRequestConfig(provider=AIProvider.OLLAMA, model="llama3.2")
 
 READ_BLOCK = AIToolSpec(
@@ -100,14 +108,24 @@ def _tool_call_message(block_id: str = "b1", call_id: str = "call_1") -> AIMessa
     return AIMessage(
         content="",
         tool_calls=[{"name": "read_block", "args": {"block_id": block_id}, "id": call_id}],
-        usage_metadata={"input_tokens": 10, "output_tokens": 3, "total_tokens": 13},
+        usage_metadata={
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "total_tokens": 13,
+            "input_token_details": {"cache_read": 4},
+        },
     )
 
 
 def _final_message(text: str = "Synthèse finale") -> AIMessage:
     return AIMessage(
         content=text,
-        usage_metadata={"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
+        usage_metadata={
+            "input_tokens": 20,
+            "output_tokens": 5,
+            "total_tokens": 25,
+            "input_token_details": {"cache_read": 16},
+        },
     )
 
 
@@ -143,6 +161,80 @@ async def test_agent_without_tool_call(fake_build) -> None:
     assert events[-1].type == "done"
     assert events[-1].usage.input_tokens == 20
     assert events[-1].usage.output_tokens == 5
+    assert events[-1].usage.cached_input_tokens == 16
+
+
+def test_to_usage_cache_detail() -> None:
+    """``input_token_details.cache_read`` (normalisation langchain) devient
+    ``cached_input_tokens`` ; absent → ``None``."""
+    assert to_usage(
+        {"input_tokens": 10, "output_tokens": 2, "input_token_details": {"cache_read": 7}}
+    ) == AIUsage(input_tokens=10, output_tokens=2, cached_input_tokens=7)
+    assert to_usage({"input_tokens": 10, "output_tokens": 2}) == AIUsage(
+        input_tokens=10, output_tokens=2
+    )
+    assert to_usage(None) is None
+
+
+@pytest.mark.anyio
+async def test_agent_system_prompt_goes_to_the_graph(fake_build) -> None:
+    """Le message système de tête devient le system prompt du graphe : le
+    modèle le reçoit à chaque round, en tête, une seule fois."""
+    model = SeqToolModel(responses=[_tool_call_message(), _final_message()])
+    fake_build["model"] = model
+    events = [
+        e
+        async for e in AIClient().stream_agent(
+            [SYSTEM, *MESSAGES], CONFIG, tools=[READ_BLOCK], tool_executor=_ok_executor
+        )
+    ]
+    assert events[-1].type == "done"
+    assert len(model.received) == 2
+    for received in model.received:
+        assert isinstance(received[0], SystemMessage) and received[0].content == "SYS"
+        assert isinstance(received[1], HumanMessage)
+        assert sum(isinstance(m, SystemMessage) for m in received) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_prompt_cache_only_for_anthropic(fake_build, monkeypatch) -> None:
+    """Le middleware de cache de prompt n'est demandé que pour Anthropic ; le
+    graphe qui l'embarque tourne tel quel avec un autre modèle (ignoré)."""
+    seen: list[dict] = []
+    real_build_agent = client_module.build_agent
+
+    def recording(*args, **kwargs):
+        seen.append(kwargs)
+        return real_build_agent(*args, **kwargs)
+
+    monkeypatch.setattr(client_module, "build_agent", recording)
+    anthropic = AIRequestConfig(
+        provider=AIProvider.ANTHROPIC, model="claude-opus-5", api_key=SecretStr("k")
+    )
+    fake_build["model"] = SeqToolModel(responses=[_final_message()])
+    events = [
+        e
+        async for e in AIClient().stream_agent(
+            [SYSTEM, *MESSAGES], anthropic, tools=[READ_BLOCK], tool_executor=_ok_executor
+        )
+    ]
+    assert events[-1].type == "done"
+    assert seen[-1]["prompt_cache"] is True and seen[-1]["system_prompt"] == "SYS"
+
+    fake_build["model"] = SeqToolModel(responses=[_final_message()])
+    [e async for e in _agent_events(fake_build)]
+    assert seen[-1]["prompt_cache"] is False and seen[-1]["system_prompt"] is None
+
+
+@pytest.mark.anyio
+async def test_build_agent_with_prompt_cache_runs() -> None:
+    model = SeqToolModel(responses=[_final_message()])
+    agent = build_agent(
+        model, [READ_BLOCK], _ok_executor, 5, system_prompt="SYS", prompt_cache=True
+    )
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Bonjour")]})
+    assert result["messages"][-1].content == "Synthèse finale"
+    assert isinstance(model.received[0][0], SystemMessage)
 
 
 @pytest.mark.anyio
@@ -152,7 +244,8 @@ async def test_agent_interrupt_and_resume(fake_build) -> None:
     reprise (même client + thread_id, ``resume=``) ré-exécute le tool — qui
     reçoit la valeur de reprise — puis le run continue jusqu'au ``done``, sans
     ré-émettre le ``tool_call`` ; son usage repart de zéro (seuls ses rounds :
-    la somme des deux vaut le tour)."""
+    la somme des deux vaut le tour). Le system prompt, hors état, est repassé
+    à la reprise."""
     model = SeqToolModel(responses=[_tool_call_message(), _final_message()])
     fake_build["model"] = model
     client = AIClient()
@@ -161,9 +254,9 @@ async def test_agent_interrupt_and_resume(fake_build) -> None:
         decision = agent_interrupt({"tool_call_id": call.id})
         return AIToolResult(content=f"décision : {decision['accepted']}")
 
-    def _events(resume=None, messages=MESSAGES):
+    def _events(resume=None, messages=(SYSTEM, *MESSAGES)):
         return client.stream_agent(
-            messages,
+            list(messages),
             CONFIG,
             tools=[READ_BLOCK],
             tool_executor=interrupting_executor,
@@ -179,15 +272,22 @@ async def test_agent_interrupt_and_resume(fake_build) -> None:
     assert first[-1].type == "interrupt"
     assert first[-1].interrupt_value == {"tool_call_id": "call_1"}
     assert first[-1].interrupt_id
-    assert first[-1].usage == AIUsage(input_tokens=10, output_tokens=3)
+    assert first[-1].usage == AIUsage(input_tokens=10, output_tokens=3, cached_input_tokens=4)
 
-    second = [e async for e in _events(resume={"accepted": True}, messages=[])]
+    second = [e async for e in _events(resume={"accepted": True}, messages=[SYSTEM])]
     kinds = [e.type for e in second]
     assert "tool_call" not in kinds  # l'appel n'est pas ré-émis à la reprise
     tool_result = next(e for e in second if e.type == "tool_result")
     assert tool_result.delta == "décision : True"
     assert second[-1].type == "done"
-    assert second[-1].usage == AIUsage(input_tokens=20, output_tokens=5)
+    assert second[-1].usage == AIUsage(input_tokens=20, output_tokens=5, cached_input_tokens=16)
+    # Le round de la reprise voit le system prompt une fois, en tête.
+    assert [type(m).__name__ for m in model.received[1]] == [
+        "SystemMessage",
+        "HumanMessage",
+        "AIMessage",
+        "ToolMessage",
+    ]
 
 
 @pytest.mark.anyio
@@ -233,10 +333,11 @@ async def test_agent_one_tool_round(fake_build) -> None:
     assert tool_messages[0].tool_call_id == "call_1"
     assert tool_messages[0].content == "CONTENU du bloc b1"
 
-    # Usage cumulé sur les deux rounds.
+    # Usage cumulé sur les deux rounds, tokens lus en cache compris.
     assert events[-1].type == "done"
     assert events[-1].usage.input_tokens == 30
     assert events[-1].usage.output_tokens == 8
+    assert events[-1].usage.cached_input_tokens == 20
 
 
 @pytest.mark.anyio

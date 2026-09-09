@@ -30,11 +30,17 @@ from pydantic import SecretStr, ValidationError
 
 from app.core.ai.agent import build_agent
 from app.core.ai.errors import invalid_config, translate_provider_error
-from app.core.ai.messages import delta_events, to_langchain_messages, to_usage
+from app.core.ai.messages import (
+    cached_input_tokens,
+    delta_events,
+    to_langchain_messages,
+    to_usage,
+)
 from app.core.ai.observability import build_run_config
 from app.core.ai.providers import build_chat_model
 from app.core.ai.types import (
     AICompletion,
+    AIProvider,
     AIRequestConfig,
     AIStreamEvent,
     AIToolCall,
@@ -203,22 +209,31 @@ class AIClient:
         exception imprévue est rattrapée et convertie en échec générique, sans
         fuiter son message.
 
+        **System prompt** : un message ``system`` en tête de ``messages`` n'entre
+        pas dans l'état du graphe — il devient le ``system_prompt`` du graphe,
+        re-fourni à chaque appel modèle (et marqué par le middleware de cache
+        Anthropic, cf. :mod:`app.core.ai.agent`). À la reprise HITL, l'appelant
+        le repasse donc (``messages=[system]``), l'état checkpointé ne le
+        portant pas.
+
         **HITL** : avec un ``thread_id``, le run est checkpointé (InMemorySaver
         du client) — un ``tool_executor`` peut alors appeler
         :func:`~app.core.ai.agent.agent_interrupt` pour figer le run : le flux
         émet un événement ``interrupt`` (portant le payload) et se termine SANS
         ``done``. La reprise est un nouvel appel avec le même ``thread_id`` et
-        ``resume=<valeur>`` (les ``messages`` sont alors ignorés — l'état vit
-        au checkpoint) : le nœud interrompu se ré-exécute, ``agent_interrupt``
-        retourne la valeur, le flux continue (``tool_result``… ``done``).
-        Le graphe de la reprise doit être bâti avec les MÊMES tools.
+        ``resume=<valeur>`` (les ``messages`` sont alors ignorés, hors le
+        message système — l'état vit au checkpoint) : le nœud interrompu se
+        ré-exécute, ``agent_interrupt`` retourne la valeur, le flux continue
+        (``tool_result``… ``done``). Le graphe de la reprise doit être bâti
+        avec les MÊMES tools et le même system prompt.
 
         ``max_tool_rounds`` borne le nombre d'appels au modèle (rounds de tools
         + réponse finale) ; à la coupure, un token d'avertissement clôt le texte
         (:data:`_TOOL_ROUNDS_EXCEEDED_NOTICE`) — jamais de boucle infinie.
-        L'usage de ``done`` cumule tous les rounds de l'appel ; un ``interrupt``
-        porte celui des rounds déjà joués par CET appel (la reprise repart de
-        zéro : la somme des deux vaut le tour). Un résultat porteur d'une
+        L'usage de ``done`` cumule tous les rounds de l'appel (tokens lus en
+        cache compris, dans ``cached_input_tokens``) ; un ``interrupt`` porte
+        celui des rounds déjà joués par CET appel (la reprise repart de zéro :
+        la somme des deux vaut le tour). Un résultat porteur d'une
         :class:`AIToolImage` est montré au modèle (message utilisateur joint,
         cf. :mod:`app.core.ai.agent`) ; seul son ``content`` texte est relayé
         en ``tool_result``.
@@ -226,14 +241,23 @@ class AIClient:
         cfg = self.resolve_config(config)
         model = build_chat_model(cfg)
         checkpointer = self._get_checkpointer() if thread_id is not None else None
-        agent = build_agent(model, tools, tool_executor, max_tool_rounds, checkpointer)
+        system_prompt, history = _split_system_prompt(messages)
+        agent = build_agent(
+            model,
+            tools,
+            tool_executor,
+            max_tool_rounds,
+            checkpointer,
+            system_prompt=system_prompt,
+            prompt_cache=cfg.provider is AIProvider.ANTHROPIC,
+        )
         run_config = build_run_config(trace_name=trace_name, user_id=user_id)
         if thread_id is not None:
             run_config["configurable"] = {
                 **run_config.get("configurable", {}),
                 "thread_id": thread_id,
             }
-        return self._stream_agent(agent, cfg, messages, run_config, resume=resume)
+        return self._stream_agent(agent, cfg, history, run_config, resume=resume)
 
     async def _stream_agent(
         self,
@@ -251,14 +275,20 @@ class AIClient:
             agent_input = Command(resume=resume)
         input_tokens = 0
         output_tokens = 0
+        cached_tokens = 0
         has_usage = False
+        has_cache_detail = False
         interrupted = False
 
         def _usage() -> AIUsage | None:
             """Cumul des rounds déjà joués par cet appel (``None`` : provider muet)."""
             if not has_usage:
                 return None
-            return AIUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+            return AIUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_input_tokens=cached_tokens if has_cache_detail else None,
+            )
 
         try:
             async for mode, payload in agent.astream(
@@ -274,6 +304,10 @@ class AIClient:
                             has_usage = True
                             input_tokens += chunk.usage_metadata.get("input_tokens") or 0
                             output_tokens += chunk.usage_metadata.get("output_tokens") or 0
+                            cached = cached_input_tokens(chunk.usage_metadata)
+                            if cached is not None:
+                                has_cache_detail = True
+                                cached_tokens += cached
                         for event in delta_events(chunk):
                             yield event
                     elif node == _TOOLS_NODE:
@@ -337,6 +371,16 @@ class AIClient:
             # attend la reprise (nouvel appel avec resume=).
             return
         yield AIStreamEvent(type="done", usage=_usage())
+
+
+def _split_system_prompt(
+    messages: Sequence[ChatMessage],
+) -> tuple[str | None, Sequence[ChatMessage]]:
+    """``(system prompt, reste)`` : le message ``system`` de tête, s'il existe,
+    est retiré de l'état du graphe (docstring de :meth:`AIClient.stream_agent`)."""
+    if messages and messages[0].role == "system":
+        return messages[0].content, messages[1:]
+    return None, messages
 
 
 @lru_cache

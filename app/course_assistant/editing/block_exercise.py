@@ -21,6 +21,10 @@ de contenu ``oc-resource:``/``oc-module:`` des champs markdown : le front
 reçoit un payload directement applicable au formulaire de l'éditeur, qui
 applique lui-même sur acceptation (ids de questions stables — le PATCH du
 bloc conserve les ids existants et le back génère ceux des nouvelles).
+À la reprise d'un ajout accepté, la référence de la question ajoutée
+(:attr:`~app.course_assistant.refs.CourseRefs.new_question_refs`, instantané
+rechargé) est donnée au modèle dans le résultat du tool — aucune relecture du
+bloc nécessaire.
 
 Plafonds miroir de ``ExerciseContent``/``ExerciseQuestion``
 (app/courses/schemas.py), appliqués en validation — pas de ``maxLength``/
@@ -30,15 +34,17 @@ providers).
 
 from app.core.ai import AIToolCall, AIToolResult, AIToolSpec
 from app.course_assistant.editing.base import (
+    SUMMARY_SCHEMA,
     TARGET_BLOCK,
     EditContext,
     Handler,
     ProposalTool,
+    hitl_description,
     hitl_gate,
     string_arg,
     tool_error,
 )
-from app.course_assistant.prompts import edit_system_prompt
+from app.course_assistant.prompts import CONTENT_PRESERVATION_RULE, edit_system_prompt
 from app.course_assistant.refs import CourseRefs, RefEntry
 from app.models.ai_conversation import CONTEXT_BLOCK_EXERCISE
 from app.models.block import TYPE_EXERCISE
@@ -55,46 +61,26 @@ QUESTIONS_MAX = 50
 _MISSION = """\
 Vous êtes l'assistant pédagogique d'OpenCartable, aux côtés d'un professeur \
 qui édite un exercice de son cours : un sujet, suivi de questions à réponse \
-libre portant chacune le corrigé du professeur. Votre mission : l'aider à \
-améliorer, compléter ou restructurer cet exercice — clarté des énoncés, \
-progression des questions, exactitude des corrigés, cohérence avec le reste \
-du cours, fourni pour contexte. Vouvoyez toujours votre interlocuteur et \
-répondez en français, en markdown.\
+libre portant chacune le corrigé du professeur. Vous l'aidez à améliorer, \
+compléter ou restructurer cet exercice (clarté des énoncés, progression des \
+questions, exactitude des corrigés, cohérence avec le reste du cours).\
 """
 
-_EDIT_RULES = """\
-Règles d'édition de l'exercice — impératives :
+_EDIT_RULES = f"""\
+Règles d'édition de l'exercice : quatre outils — `propose_statement_edit` (le \
+sujet), `propose_question_edit` (énoncé et/ou corrigé d'une question \
+existante), `propose_question_add` (nouvelle question) et \
+`propose_question_delete` (suppression). UNE opération par appel : pour \
+plusieurs questions, enchaîner les appels, chacun après la décision du \
+précédent. Les questions existantes sont désignées par leur référence (ref: \
+Q1, Q2…), stable pendant tout l'échange : une question supprimée libère sa \
+référence (jamais réattribuée), une question ajoutée reçoit la suivante \
+(indiquée dans le résultat de l'outil). Le sujet et les énoncés sont en \
+markdown ; `expected_answer` est le corrigé du professeur, en texte simple, \
+jamais montré aux élèves. L'exercice édité est fourni en entier dans le \
+message du tour.
 
-- Toute modification passe EXCLUSIVEMENT par les outils de proposition : \
-`propose_statement_edit` (le sujet), `propose_question_edit` (l'énoncé et/ou \
-le corrigé d'une question existante), `propose_question_add` (une nouvelle \
-question) et `propose_question_delete` (supprimer une question). Ne \
-réécrivez jamais l'exercice, une question ou un corrigé directement dans le \
-texte de votre réponse — le professeur ne pourrait pas l'appliquer.
-- Chaque appel est BLOQUANT : le professeur examine votre proposition dans un \
-comparatif, et le résultat de l'outil vous donne sa décision — acceptée (et \
-appliquée à son éditeur) ou rejetée — avec son éventuel commentaire. Une \
-seule proposition à la fois, UNE opération par appel : pour modifier \
-plusieurs questions, enchaînez les appels, chacun après la décision du \
-précédent. Si une proposition est rejetée avec un commentaire, vous pouvez \
-en soumettre une nouvelle version qui en tient compte.
-- Les questions existantes sont désignées par leur référence (ref: Q1, \
-Q2…) indiquée dans l'exercice — stable pendant tout l'échange, même après \
-vos modifications : une question supprimée perd sa référence (jamais \
-réattribuée), une question ajoutée en reçoit une nouvelle — relisez le bloc \
-(`read_block`) avant de la viser.
-- `new_statement` et `statement` sont le contenu INTÉGRAL du champ (sujet ou \
-énoncé) : recopiez à l'identique tout ce que vous ne modifiez pas. \
-`expected_answer` est le corrigé du professeur, en texte simple (sans \
-markdown), jamais montré aux élèves ; le sujet et les énoncés sont en \
-markdown.
-- Préservez à l'identique les formules $…$ / $$…$$ et les liens \
-`oc-resource:` / `oc-module:` déjà présents dans le contenu recopié, \
-identifiants longs compris — c'est la SEULE exception à la règle « jamais \
-d'identifiant long » : elle vaut pour le contenu recopié, jamais pour votre \
-prose ni vos citations. Pour INSÉRER une nouvelle ressource ou un nouveau \
-module de la bibliothèque, utilisez sa référence courte (`oc-resource:R2`, \
-`oc-module:M1`) : elle sera résolue automatiquement.\
+{CONTENT_PRESERVATION_RULE}\
 """
 
 _REJECTED = "Le professeur a REJETÉ la proposition — l'exercice est inchangé."
@@ -103,26 +89,15 @@ _ACCEPTED_STATEMENT = (
 )
 _ACCEPTED_QUESTION_EDIT = "Le professeur a ACCEPTÉ la proposition et l'a appliquée à la question."
 _ACCEPTED_QUESTION_ADD = (
-    "Le professeur a ACCEPTÉ la proposition : la question a été ajoutée à l'exercice. "
-    "Relisez le bloc (`read_block`) pour connaître sa référence avant toute autre "
-    "modification la concernant."
+    "Le professeur a ACCEPTÉ la proposition : la question a été ajoutée à l'exercice."
+)
+_ACCEPTED_QUESTION_ADD_REREAD = (
+    f"{_ACCEPTED_QUESTION_ADD} Relisez le bloc (`read_block`) pour connaître sa "
+    "référence avant toute autre modification la concernant."
 )
 _ACCEPTED_QUESTION_DELETE = (
     "Le professeur a ACCEPTÉ la proposition : la question a été supprimée de l'exercice ; "
     "sa référence n'est plus valide, les autres questions conservent la leur."
-)
-
-_SUMMARY_SCHEMA = {
-    "type": "string",
-    "description": (
-        "Une phrase, en français, décrivant le changement proposé (affichée au professeur)."
-    ),
-}
-_HITL_NOTICE = (
-    " ATTEND la décision du professeur : le comparatif lui est présenté dans son "
-    "éditeur, et le résultat de l'appel est sa décision — proposition acceptée (et "
-    "appliquée) ou rejetée, avec son éventuel commentaire. Ne modifie rien par "
-    "lui-même. Une seule proposition à la fois."
 )
 
 
@@ -142,9 +117,9 @@ def _question_ref_schema(refs: CourseRefs, description: str) -> dict:
 def _statement_spec(refs: CourseRefs) -> AIToolSpec:
     return AIToolSpec(
         name=PROPOSE_STATEMENT_EDIT,
-        description=(
-            "Propose au professeur une nouvelle version du SUJET (énoncé général) "
-            "de l'exercice en cours d'édition et" + _HITL_NOTICE
+        description=hitl_description(
+            "Propose au professeur une nouvelle version du SUJET (énoncé général) de "
+            "l'exercice en cours d'édition"
         ),
         parameters={
             "type": "object",
@@ -152,11 +127,11 @@ def _statement_spec(refs: CourseRefs) -> AIToolSpec:
                 "new_statement": {
                     "type": "string",
                     "description": (
-                        "Sujet de l'exercice, markdown INTÉGRAL de remplacement — "
-                        "recopier à l'identique tout ce qui ne change pas."
+                        "Sujet de l'exercice, markdown INTÉGRAL de remplacement "
+                        "(l'inchangé recopié à l'identique)."
                     ),
                 },
-                "summary": _SUMMARY_SCHEMA,
+                "summary": SUMMARY_SCHEMA,
             },
             "required": ["new_statement"],
         },
@@ -166,33 +141,31 @@ def _statement_spec(refs: CourseRefs) -> AIToolSpec:
 def _question_edit_spec(refs: CourseRefs) -> AIToolSpec:
     return AIToolSpec(
         name=PROPOSE_QUESTION_EDIT,
-        description=(
+        description=hitl_description(
             "Propose au professeur la modification d'UNE question existante de "
-            "l'exercice (son énoncé et/ou son corrigé) et" + _HITL_NOTICE
+            "l'exercice (son énoncé et/ou son corrigé)"
         ),
         parameters={
             "type": "object",
             "properties": {
                 "question_ref": _question_ref_schema(
-                    refs,
-                    "Référence de la question à modifier, telle qu'indiquée dans "
-                    "l'exercice (ex. Q2).",
+                    refs, "Référence de la question à modifier (ex. Q2)."
                 ),
                 "statement": {
                     "type": "string",
                     "description": (
-                        "Nouvel énoncé de la question, markdown INTÉGRAL de "
-                        "remplacement — omettre pour conserver l'énoncé actuel."
+                        "Nouvel énoncé, markdown INTÉGRAL de remplacement — omettre "
+                        "pour conserver l'énoncé actuel."
                     ),
                 },
                 "expected_answer": {
                     "type": "string",
                     "description": (
-                        "Nouveau corrigé (réponse attendue), texte simple sans "
-                        "markdown — omettre pour conserver le corrigé actuel."
+                        "Nouveau corrigé, texte simple sans markdown — omettre pour "
+                        "conserver le corrigé actuel."
                     ),
                 },
-                "summary": _SUMMARY_SCHEMA,
+                "summary": SUMMARY_SCHEMA,
             },
             "required": ["question_ref"],
         },
@@ -202,9 +175,8 @@ def _question_edit_spec(refs: CourseRefs) -> AIToolSpec:
 def _question_add_spec(refs: CourseRefs) -> AIToolSpec:
     return AIToolSpec(
         name=PROPOSE_QUESTION_ADD,
-        description=(
-            "Propose au professeur l'AJOUT d'une nouvelle question à l'exercice et"
-            + _HITL_NOTICE
+        description=hitl_description(
+            "Propose au professeur l'AJOUT d'une nouvelle question à l'exercice"
         ),
         parameters={
             "type": "object",
@@ -216,16 +188,16 @@ def _question_add_spec(refs: CourseRefs) -> AIToolSpec:
                 "expected_answer": {
                     "type": "string",
                     "description": (
-                        "Corrigé (réponse attendue) de la nouvelle question, texte "
-                        "simple sans markdown — chaîne vide si aucun."
+                        "Corrigé de la nouvelle question, texte simple sans markdown "
+                        "— chaîne vide si aucun."
                     ),
                 },
                 "after_ref": _question_ref_schema(
                     refs,
-                    "Référence de la question APRÈS laquelle insérer la nouvelle "
-                    "(ex. Q2) — omettre pour l'ajouter en fin d'exercice.",
+                    "Référence de la question APRÈS laquelle insérer (ex. Q2) — "
+                    "omettre pour ajouter en fin d'exercice.",
                 ),
-                "summary": _SUMMARY_SCHEMA,
+                "summary": SUMMARY_SCHEMA,
             },
             "required": ["statement"],
         },
@@ -235,19 +207,16 @@ def _question_add_spec(refs: CourseRefs) -> AIToolSpec:
 def _question_delete_spec(refs: CourseRefs) -> AIToolSpec:
     return AIToolSpec(
         name=PROPOSE_QUESTION_DELETE,
-        description=(
-            "Propose au professeur la SUPPRESSION d'une question de l'exercice et"
-            + _HITL_NOTICE
+        description=hitl_description(
+            "Propose au professeur la SUPPRESSION d'une question de l'exercice"
         ),
         parameters={
             "type": "object",
             "properties": {
                 "question_ref": _question_ref_schema(
-                    refs,
-                    "Référence de la question à supprimer, telle qu'indiquée dans "
-                    "l'exercice (ex. Q2).",
+                    refs, "Référence de la question à supprimer (ex. Q2)."
                 ),
-                "summary": _SUMMARY_SCHEMA,
+                "summary": SUMMARY_SCHEMA,
             },
             "required": ["question_ref"],
         },
@@ -303,6 +272,16 @@ def _build_question_edit_handler(refs: CourseRefs) -> Handler:
     return propose_question_edit
 
 
+def accepted_question_add_text(refs: CourseRefs) -> str:
+    """Résultat d'un ajout accepté : la référence de la question ajoutée
+    quand l'instantané rechargé à la reprise en révèle exactement une
+    (``new_question_refs``) — sinon, invitation à relire le bloc."""
+    new_refs = refs.new_question_refs
+    if len(new_refs) == 1:
+        return f"{_ACCEPTED_QUESTION_ADD} Sa référence est {new_refs[0]}."
+    return _ACCEPTED_QUESTION_ADD_REREAD
+
+
 def _build_question_add_handler(refs: CourseRefs) -> Handler:
     async def propose_question_add(call: AIToolCall) -> AIToolResult:
         _, failure = string_arg(
@@ -325,7 +304,11 @@ def _build_question_add_handler(refs: CourseRefs) -> Handler:
             _, failure = _resolve_question(refs, after_ref)
             if failure is not None:
                 return failure
-        return hitl_gate(call, accepted_text=_ACCEPTED_QUESTION_ADD, rejected_text=_REJECTED)
+        # À la reprise, ``refs`` est l'instantané rechargé : la question
+        # acceptée y a reçu sa référence (aucune relecture du bloc).
+        return hitl_gate(
+            call, accepted_text=accepted_question_add_text(refs), rejected_text=_REJECTED
+        )
 
     return propose_question_add
 

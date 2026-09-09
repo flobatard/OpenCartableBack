@@ -123,10 +123,17 @@ class ChatMessage(BaseModel):
 
 
 class AIUsage(BaseModel):
-    """Consommation de tokens relayée par le provider (souvent partielle)."""
+    """Consommation de tokens relayée par le provider (souvent partielle).
+
+    ``cached_input_tokens`` : part de ``input_tokens`` servie depuis le cache
+    de prompt du provider (``input_token_details.cache_read`` normalisé par
+    langchain — Anthropic, OpenAI, Gemini…) ; ``None`` si le provider ne le
+    relaie pas.
+    """
 
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cached_input_tokens: int | None = None
 
 
 class AICompletion(BaseModel):

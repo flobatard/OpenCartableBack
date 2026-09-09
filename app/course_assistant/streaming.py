@@ -66,7 +66,14 @@ from app.core.database import touch
 from app.core.http import invalid, not_found
 from app.core.storage import Storage
 from app.course_assistant import hitl
-from app.course_assistant.context import build_course_context, build_refs, extract_sources
+from app.course_assistant.context import (
+    build_refs,
+    build_turn_context,
+    extract_sources,
+    system_prompt_for,
+    teacher_message,
+    turn_message,
+)
 from app.course_assistant.editing import TARGET_MODULE, EditContext, edit_context_for
 from app.course_assistant.refs import CourseRefs
 from app.course_assistant.replay import TRUNCATED_HISTORY_NOTICE, replay_messages
@@ -128,10 +135,18 @@ async def sse_stream(
     premier message ; ``updated_at`` bumpé) puis commit. Le generator retourné
     insère ensuite les messages du tour (un execute + commit à la clôture).
 
+    Messages du modèle : ``[system, *historique, user]`` — le system prompt
+    est **statique** par contexte (:func:`system_prompt_for`), l'historique
+    est rejoué abrégé (:mod:`app.course_assistant.replay`), et le message
+    user du tour porte en tête le **contexte du tour** (cible d'édition en
+    entier + sommaire du cours, :func:`build_turn_context`) puis la demande
+    du professeur (:func:`turn_message`) : le préfixe cacheable ne change pas
+    quand la cible change. Seule la demande brute est persistée.
+
     Contexte d'édition (même ordre d'execute) : la cible éditée — bloc ou
     module selon le descripteur — est retrouvée dans l'instantané (404
-    défensif si elle a disparu), mise en avant dans le system prompt, le run
-    est **checkpointé** (``thread_id``) et les tools de proposition du
+    défensif si elle a disparu), rendue en entier dans le contexte du tour,
+    le run est **checkpointé** (``thread_id``) et les tools de proposition du
     descripteur sont exposés. Un nouveau message alors qu'une proposition
     attendait abandonne la reprise (registre + thread purgés).
     """
@@ -167,16 +182,21 @@ async def sse_stream(
         stale = hitl.drop(conversation.id)
         if stale is not None:
             client.drop_agent_thread(stale.thread_id)
-    system_content = build_course_context(
+    context = build_turn_context(
         course, refs, focus_block=focus_block, focus_module=focus_module, edit=edit
     )
     history, truncated = replay_messages(existing, provider)
-    if truncated:
-        system_content += TRUNCATED_HISTORY_NOTICE
     model_messages = [
-        ChatMessage(role="system", content=system_content),
+        ChatMessage(role="system", content=system_prompt_for(edit)),
         *history,
-        ChatMessage(role="user", content=payload.content),
+        ChatMessage(
+            role="user",
+            content=turn_message(
+                context,
+                teacher_message(payload.content),
+                notice=TRUNCATED_HISTORY_NOTICE if truncated else None,
+            ),
+        ),
     ]
 
     executor = build_tool_executor(storage, refs, edit=edit)
@@ -251,8 +271,8 @@ async def sse_resume_stream(
     d'origine** (registre in-process — même provider garanti, pas de nouvelle
     cascade ni de quota : un tour HITL = un appel compté) ; pas de nouveau
     message user, les positions continuent le tour persisté. Le graphe est
-    rebâti avec les tools du **même contexte d'édition** (contrat de
-    ``stream_agent``).
+    rebâti avec les tools et le system prompt du **même contexte d'édition**
+    (contrat de ``stream_agent``).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) conversation
     (scopée), 3) messages existants (position suivante), 4) blocs, 5)
@@ -284,8 +304,9 @@ async def sse_resume_stream(
     )
 
     try:
+        # Seul le system prompt (statique, hors état checkpointé) est repassé.
         events = client.stream_agent(
-            [],
+            [ChatMessage(role="system", content=system_prompt_for(edit))],
             pending.config,
             tools=build_tool_specs(refs, edit=edit),
             tool_executor=build_tool_executor(storage, refs, edit=edit),
@@ -454,6 +475,7 @@ class _AssistantTurn:
         if usage is not None and rows[-1]["role"] == ROLE_ASSISTANT:
             rows[-1]["input_tokens"] = usage.get("input_tokens")
             rows[-1]["output_tokens"] = usage.get("output_tokens")
+            rows[-1]["cached_input_tokens"] = usage.get("cached_input_tokens")
         ids = [uuid.uuid4() for _ in rows]
         # Clés homogènes obligatoires (executemany Core) : chaque ligne est
         # normalisée sur le jeu complet de colonnes.
@@ -473,6 +495,7 @@ class _AssistantTurn:
                     "sources": row.get("sources", {}),
                     "input_tokens": row.get("input_tokens"),
                     "output_tokens": row.get("output_tokens"),
+                    "cached_input_tokens": row.get("cached_input_tokens"),
                 }
                 for i, (row_id, row) in enumerate(zip(ids, rows, strict=True))
             ],

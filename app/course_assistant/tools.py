@@ -111,39 +111,34 @@ def build_tool_specs(refs: CourseRefs, *, edit: EditContext | None = None) -> li
         _ref_spec(
             READ_BLOCK,
             "Lit le contenu complet d'un bloc du cours (texte, exercice avec "
-            "corrigé, document ou module) à partir de sa référence (B1, B2…).",
+            "corrigé, document ou module pointé) par sa référence (B1, B2…).",
             "block_ref",
-            "Référence du bloc à lire, telle qu'indiquée dans le cours (ex. B3)",
+            "Référence du bloc, telle qu'indiquée dans le sommaire (ex. B3)",
             refs.refs("block"),
         ),
         _ref_spec(
             READ_RESOURCE_PDF,
-            "Extrait le texte d'une ressource PDF de la bibliothèque du cours à "
-            "partir de sa référence (R1, R2…). Seules les ressources PDF "
-            "disponibles sont lisibles.",
+            "Extrait le texte d'une ressource PDF disponible de la bibliothèque du "
+            "cours par sa référence (R1, R2…).",
             "resource_ref",
-            "Référence de la ressource PDF à lire, telle qu'indiquée dans la "
-            "bibliothèque (ex. R2)",
+            "Référence de la ressource PDF, telle qu'indiquée dans la bibliothèque (ex. R2)",
             [e.ref for e in refs.entries["resource"] if _is_readable_pdf(e.entity)],
         ),
         _ref_spec(
             READ_RESOURCE_IMAGE,
-            "Vous montre une ressource image de la bibliothèque du cours (PNG, JPEG, "
-            "GIF ou WebP, disponible) à partir de sa référence (R1, R2…), pour que "
-            "vous puissiez la regarder. Nécessite un modèle acceptant les images ; "
-            "l'image n'est visible que pour le tour en cours.",
+            "Montre une ressource image de la bibliothèque du cours (PNG, JPEG, GIF "
+            "ou WebP) par sa référence (R1, R2…) — modèle à vision requis ; l'image "
+            "n'est visible que pour le tour en cours.",
             "resource_ref",
-            "Référence de la ressource image à regarder, telle qu'indiquée dans la "
-            "bibliothèque (ex. R2)",
+            "Référence de la ressource image, telle qu'indiquée dans la bibliothèque (ex. R2)",
             [e.ref for e in refs.entries["resource"] if _is_readable_image(e.entity)],
         ),
         _ref_spec(
             READ_MODULE,
-            "Lit le code HTML, CSS et JavaScript d'un module interactif du cours à "
-            "partir de sa référence (M1, M2…) — un bloc « module » ne donne que la "
-            "référence du module pointé.",
+            "Lit le code HTML, CSS et JavaScript d'un module interactif du cours par "
+            "sa référence (M1, M2…).",
             "module_ref",
-            "Référence du module à lire, telle qu'indiquée dans le cours (ex. M1)",
+            "Référence du module, telle qu'indiquée dans le sommaire (ex. M1)",
             refs.refs("module"),
         ),
     ]

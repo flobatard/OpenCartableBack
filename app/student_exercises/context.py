@@ -7,6 +7,12 @@ les élèves), donc **aucun ``expected_answer``** n'existe dans le contexte, ni
 dans ce que rendent les tools de lecture (``read_block`` lit ces mêmes
 copies). Seul le corrigé de la **question cible** est ajouté, dans une section
 dédiée explicitement confidentielle.
+
+Le contexte du tour (:func:`build_tutor_context`) voyage en tête du message
+utilisateur (:func:`~app.course_assistant.context.turn_message`), après
+l'historique : le system prompt (:mod:`app.student_exercises.prompts`) reste
+statique. Le cours n'y figure qu'en **sommaire** (jamais le contenu des
+autres blocs, lisibles avec ``read_block``).
 """
 
 import uuid
@@ -14,15 +20,19 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.core.ai import ChatMessage
-from app.course_assistant.context import assemble_context
+from app.course_assistant.context import render_outline
 from app.course_assistant.refs import CourseRefs
 from app.course_assistant.render import format_block
+from app.course_assistant.replay import abridge
 from app.models.exercise_submission import KIND_ANSWER
 from app.public.service import public_content
-from app.student_exercises.prompts import TUTOR_SYSTEM_PROMPT
 
-# Tours du fil rejoués au modèle (motif REPLAY_MESSAGE_LIMIT de l'assistant).
-HISTORY_TURN_LIMIT = 30
+# Fenêtre des tours du fil rejoués au modèle (hystérésis, motif
+# REPLAY_MESSAGE_LIMIT/KEEP de l'assistant) et plafond (caractères) d'un
+# message ou retour rejoué.
+HISTORY_TURN_LIMIT = 12
+HISTORY_TURN_KEEP = 8
+HISTORY_MESSAGE_CHARS = 2_000
 
 FOCUS_NOTE = "exercice en cours de résolution"
 
@@ -85,26 +95,19 @@ def build_tutor_context(
     question_number: int,
     expected_answer: str | None,
 ) -> str:
-    """System prompt du tuteur : consignes, exercice en cours (redacté, en
-    entier, question cible désignée), corrigé confidentiel de CETTE question,
-    puis le cours et ses bibliothèques (assemblage commun de l'assistant —
-    mode sommaire au-delà du plafond, l'exercice restant rendu en entier)."""
-    focus_section = [
-        "\n## Exercice en cours de résolution",
+    """Contexte du tour du tuteur : exercice en cours (redacté, en entier,
+    question cible désignée), corrigé confidentiel de CETTE question, puis le
+    sommaire du cours (l'exercice y est remplacé par un pointeur)."""
+    sections = [
+        "## Exercice en cours de résolution",
         format_block(block, refs),
         f"L'élève travaille sur la **Question {question_number}** de cet exercice.",
-        f"\n## Corrigé confidentiel de la question {question_number} (professeur)",
+        f"## Corrigé confidentiel de la question {question_number} (professeur)",
         expected_answer.strip() if expected_answer and expected_answer.strip()
         else NO_EXPECTED_ANSWER_NOTICE,
+        render_outline(course, refs, focus_block=block, focus_note=FOCUS_NOTE),
     ]
-    return assemble_context(
-        TUTOR_SYSTEM_PROMPT,
-        course,
-        refs,
-        focus_section=focus_section,
-        focus_block=block,
-        focus_note=FOCUS_NOTE,
-    )
+    return "\n\n".join(sections)
 
 
 def student_message(kind: str, content: str) -> str:
@@ -113,13 +116,20 @@ def student_message(kind: str, content: str) -> str:
     return f"{label} :\n\n{content}"
 
 
-def history_messages(rows: Sequence, *, limit: int = HISTORY_TURN_LIMIT) -> list[ChatMessage]:
-    """Fil précédent de la question rejoué en messages user/assistant (les
-    ``limit`` derniers tours ; un tour sans ``feedback`` — échec provider —
-    n'a que son message élève)."""
+def history_messages(
+    rows: Sequence, *, limit: int = HISTORY_TURN_LIMIT, keep: int = HISTORY_TURN_KEEP
+) -> list[ChatMessage]:
+    """Fil précédent de la question rejoué en messages user/assistant — au-delà
+    de ``limit`` tours, seuls les ``keep`` derniers (fenêtre à hystérésis :
+    préfixe stable pour le cache) ; un tour sans ``feedback`` (échec provider)
+    n'a que son message élève ; messages et retours abrégés au-delà de
+    :data:`HISTORY_MESSAGE_CHARS`."""
+    window = rows[-min(keep, limit) :] if len(rows) > limit else rows
     messages: list[ChatMessage] = []
-    for row in rows[-limit:]:
-        messages.append(ChatMessage(role="user", content=student_message(row.kind, row.content)))
+    for row in window:
+        content = abridge(row.content, HISTORY_MESSAGE_CHARS, what="message")
+        messages.append(ChatMessage(role="user", content=student_message(row.kind, content)))
         if row.feedback:
-            messages.append(ChatMessage(role="assistant", content=row.feedback))
+            feedback = abridge(row.feedback, HISTORY_MESSAGE_CHARS, what="retour")
+            messages.append(ChatMessage(role="assistant", content=feedback))
     return messages

@@ -428,7 +428,7 @@ def test_stream_nominal() -> None:
     assert events == [
         ("token", '{"delta": "Bonjour"}'),
         ("token", '{"delta": " !"}'),
-        ("done", '{"usage": {"input_tokens": 3, "output_tokens": 2}}'),
+        ("done", '{"usage": {"input_tokens": 3, "output_tokens": 2, "cached_input_tokens": null}}'),
     ]
 
 

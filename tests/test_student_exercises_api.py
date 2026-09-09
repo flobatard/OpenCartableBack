@@ -113,6 +113,7 @@ def _turn_row(question_id=Q1, **overrides):
         revealed=False,
         input_tokens=None,
         output_tokens=None,
+        cached_input_tokens=None,
         created_at=NOW,
     )
     defaults.update(overrides)
@@ -298,16 +299,19 @@ def test_stream_nominal_without_reveal() -> None:
     names = [name for name, _ in events]
     assert names == ["thinking", "tool_call", "tool_result", "token", "done"]
 
-    # Le modèle a reçu : system (contexte tuteur), le fil, le tour courant.
+    # Le modèle a reçu : system (statique), le fil, le tour courant (contexte
+    # tuteur + message de l'élève).
     [call] = fake.calls
     system, *rest = call["messages"]
     assert system.role == "system"
-    assert SECRET in system.content
-    assert SECRET_Q2 not in system.content
-    assert "Réponse attendue" not in system.content
-    assert "## Corrigé confidentiel de la question 1" in system.content
+    assert SECRET not in system.content and "record_verdict" in system.content
     assert [m.role for m in rest] == ["user", "assistant", "user"]
-    assert rest[-1].content == "Réponse de l'élève :\n\nJe pense 5"
+    turn = rest[-1].content
+    assert SECRET in turn
+    assert SECRET_Q2 not in turn
+    assert "Réponse attendue" not in turn
+    assert "## Corrigé confidentiel de la question 1" in turn
+    assert turn.endswith("\n\n---\n\nRéponse de l'élève :\n\nJe pense 5")
     assert any(spec.name == "record_verdict" for spec in call["tools"])
     assert call["user_id"] == "prof-123"
 
@@ -320,7 +324,7 @@ def test_stream_nominal_without_reveal() -> None:
     assert done["effort"] == "insufficient"
     assert done["revealed"] is False
     assert done["expected_answer"] is None
-    assert done["usage"] == {"input_tokens": 10, "output_tokens": 5}
+    assert done["usage"] == {"input_tokens": 10, "output_tokens": 5, "cached_input_tokens": None}
     assert uuid.UUID(done["submission_id"])
 
     inserted = _inserted(session)
@@ -333,6 +337,7 @@ def test_stream_nominal_without_reveal() -> None:
     assert updated["verdict"] == "incorrect"
     assert updated["revealed"] is False
     assert updated["input_tokens"] == 10
+    assert updated["cached_input_tokens"] is None
     assert session.commits >= 2
 
 
@@ -379,7 +384,9 @@ def test_stream_message_kind() -> None:
     client, _ = make_client(session, fake)
     response = _post(client, body={"kind": "message", "content": "Donne-moi la réponse"})
     assert response.status_code == 200
-    assert fake.calls[0]["messages"][-1].content.startswith("Message de l'élève :")
+    assert fake.calls[0]["messages"][-1].content.endswith(
+        "\n\n---\n\nMessage de l'élève :\n\nDonne-moi la réponse"
+    )
     assert _inserted(session)["kind"] == "message"
 
 

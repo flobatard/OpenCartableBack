@@ -85,6 +85,8 @@ class AIMessage(Base):
     )
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # Part de input_tokens servie depuis le cache de prompt du provider.
+    cached_input_tokens: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

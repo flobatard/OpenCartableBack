@@ -28,10 +28,12 @@ supporté par les providers).
 
 from app.core.ai import AIToolCall, AIToolResult, AIToolSpec
 from app.course_assistant.editing.base import (
+    SUMMARY_SCHEMA,
     TARGET_MODULE,
     EditContext,
     Handler,
     ProposalTool,
+    hitl_description,
     hitl_gate,
     string_arg,
 )
@@ -50,55 +52,26 @@ MODULE_CODE_MAX_CHARS = 200_000
 
 _MISSION = """\
 Vous êtes l'assistant pédagogique d'OpenCartable, aux côtés d'un professeur \
-qui édite un module interactif de son cours : une petite application \
-autonome en HTML, CSS et JavaScript (animation, simulation, quiz, \
-grapheur…), destinée à ses élèves. Votre mission : l'aider à écrire, corriger \
-et améliorer ce module — justesse du code, clarté du rendu, valeur \
-pédagogique, accessibilité — en cohérence avec le cours, fourni pour \
-contexte. Vouvoyez toujours votre interlocuteur et répondez en français, en \
-markdown.\
+qui édite un module interactif de son cours : une petite application autonome \
+en HTML, CSS et JavaScript (animation, simulation, quiz, grapheur…) destinée à \
+ses élèves. Vous l'aidez à écrire, corriger et améliorer ce module (justesse \
+du code, clarté du rendu, valeur pédagogique, accessibilité), en cohérence \
+avec le cours.\
 """
 
 _EDIT_RULES = """\
-Règles d'édition du module — impératives :
-
-- Toute modification du module passe EXCLUSIVEMENT par les outils de \
-proposition : `propose_html_edit`, `propose_css_edit` et `propose_js_edit`. \
-N'écrivez jamais le code du module (ni un long extrait remanié) directement \
-dans le texte de votre réponse — le professeur ne pourrait pas l'appliquer. \
-Vos messages expliquent, les outils modifient.
-- Chaque appel est BLOQUANT : le professeur examine votre proposition dans un \
-comparatif, l'aperçu du module exécutant déjà le code proposé, et le résultat \
-de l'outil vous donne sa décision — acceptée (et appliquée à son éditeur) ou \
-rejetée — avec son éventuel commentaire. Une seule proposition à la fois, UN \
-fichier par appel. Si une proposition est rejetée avec un commentaire, vous \
-pouvez en soumettre une nouvelle version qui en tient compte.
-- Un changement qui touche plusieurs fichiers s'enchaîne : annoncez d'abord \
-brièvement votre plan, puis appelez un outil, attendez la décision, puis le \
-suivant. Faites en sorte que chaque étape laisse le module dans un état qui \
-fonctionne (par exemple, ajoutez l'élément HTML avant le JavaScript qui le \
-manipule).
-- `new_code` est le contenu INTÉGRAL de remplacement du fichier : recopiez à \
-l'identique tout ce que vous ne modifiez pas. Le HTML est le contenu du \
-`<body>` seul (ni `<html>`, ni `<head>`, ni balise `<style>`/`<script>` : le \
-CSS et le JavaScript ont leur propre fichier).\
+Règles d'édition du module : trois outils — `propose_html_edit`, \
+`propose_css_edit` et `propose_js_edit` (`new_code` = contenu intégral de \
+remplacement du fichier visé). UN fichier par appel ; un changement sur \
+plusieurs fichiers s'enchaîne (annoncer brièvement le plan, puis un outil, la \
+décision, le suivant), chaque étape laissant le module dans un état qui \
+fonctionne (ex. l'élément HTML avant le JavaScript qui le manipule). Le HTML \
+est le contenu du `<body>` seul (ni `<html>`, ni `<head>`, ni balise \
+`<style>`/`<script>` : le CSS et le JavaScript ont leur propre fichier). Le \
+module édité est fourni en entier dans le message du tour.\
 """
 
 _REJECTED = "Le professeur a REJETÉ la proposition — le module est inchangé."
-
-_SUMMARY_SCHEMA = {
-    "type": "string",
-    "description": (
-        "Une phrase, en français, décrivant le changement proposé (affichée au professeur)."
-    ),
-}
-_HITL_NOTICE = (
-    " ATTEND la décision du professeur : le comparatif lui est présenté dans son "
-    "éditeur, avec un aperçu du module tel que votre code le rendrait, et le "
-    "résultat de l'appel est sa décision — proposition acceptée (et appliquée) ou "
-    "rejetée, avec son éventuel commentaire. Ne modifie rien par lui-même. Une "
-    "seule proposition à la fois."
-)
 
 
 def _spec(name: str, label: str, language: str, hint: str) -> AIToolSpec:
@@ -106,9 +79,9 @@ def _spec(name: str, label: str, language: str, hint: str) -> AIToolSpec:
     paramètre — la cible est le module édité, il n'y en a qu'un)."""
     return AIToolSpec(
         name=name,
-        description=(
+        description=hitl_description(
             f"Propose au professeur une nouvelle version du {label} du module "
-            "interactif en cours d'édition et" + _HITL_NOTICE
+            "interactif en cours d'édition"
         ),
         parameters={
             "type": "object",
@@ -116,11 +89,11 @@ def _spec(name: str, label: str, language: str, hint: str) -> AIToolSpec:
                 "new_code": {
                     "type": "string",
                     "description": (
-                        f"Code {language} INTÉGRAL de remplacement du fichier — "
-                        f"recopier à l'identique tout ce qui ne change pas. {hint}"
+                        f"Code {language} INTÉGRAL de remplacement du fichier "
+                        f"(l'inchangé recopié à l'identique). {hint}"
                     ),
                 },
-                "summary": _SUMMARY_SCHEMA,
+                "summary": SUMMARY_SCHEMA,
             },
             "required": ["new_code"],
         },

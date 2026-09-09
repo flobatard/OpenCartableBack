@@ -36,6 +36,18 @@ Handler = Callable[[AIToolCall], Awaitable[AIToolResult]]
 TARGET_BLOCK = "block"
 TARGET_MODULE = "module"
 
+# Paramètre ``summary`` commun à tous les tools de proposition.
+SUMMARY_SCHEMA = {
+    "type": "string",
+    "description": "Une phrase en français résumant la proposition (affichée au professeur).",
+}
+
+
+def hitl_description(action: str) -> str:
+    """Description d'un tool de proposition : l'action, puis le rappel du
+    protocole HITL (détaillé une seule fois dans le system prompt)."""
+    return f"{action} et ATTEND la décision du professeur : le résultat de l'appel est sa décision."
+
 
 @dataclass(frozen=True)
 class ProposalTool:

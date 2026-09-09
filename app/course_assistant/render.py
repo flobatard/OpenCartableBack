@@ -1,19 +1,26 @@
-"""Rendu textuel du cours pour le modèle : blocs, modules, bibliothèques.
+"""Rendu textuel du cours pour le modèle : blocs, sommaire, modules, bibliothèques.
 
 Helpers purs (aucune I/O), partagés entre le contexte du tour
 (:mod:`app.course_assistant.context`), les tools de lecture (``read_block``,
 ``read_module``) et le tuteur d'exercice. Le modèle ne voit **jamais
 d'UUID** : chaque entité est désignée par sa référence courte (``B3``,
 ``R2``, ``M1``, ``Q1`` — :class:`~app.course_assistant.refs.CourseRefs`).
+
+Deux niveaux de rendu d'un bloc : :func:`format_block` (contenu complet — la
+cible d'un tour et le résultat de ``read_block``) et :func:`outline_block`
+(entrée de **sommaire** : type, description, plan des titres internes —
+jamais le contenu, que le modèle lit à la demande).
 """
 
+import re
 import uuid
 
 from app.course_assistant.refs import CourseRefs
 from app.models.block import TYPE_DOCUMENT, TYPE_EXERCISE, TYPE_MODULE, TYPE_TEXT
 
-# Extrait d'un bloc en mode sommaire (contexte trop long pour tout rendre).
-SUMMARY_EXCERPT_CHARS = 300
+# Plan d'un bloc dans le sommaire : titres ATX du markdown, plafonnés.
+OUTLINE_MAX_HEADINGS = 12
+OUTLINE_HEADING_CHARS = 80
 
 # Plafond (caractères) du code d'un module lu par ``read_module`` — même ordre
 # de grandeur que la lecture d'un PDF (contrainte contexte + persistance).
@@ -28,6 +35,9 @@ _TYPE_LABELS = {
     TYPE_DOCUMENT: "Document",
     TYPE_MODULE: "Module interactif",
 }
+
+_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def block_title(block) -> str:
@@ -80,6 +90,79 @@ def format_block(block, refs: CourseRefs) -> str:
     return "\n\n".join(line for line in lines if line)
 
 
+def markdown_outline(markdown: str) -> list[tuple[int, str]]:
+    """Plan d'un markdown : ``(niveau, titre)`` de ses titres ATX, hors blocs
+    de code clôturés ; niveaux normalisés (le titre le plus haut vaut 1)."""
+    headings: list[tuple[int, str]] = []
+    fence: str | None = None
+    for line in (markdown or "").splitlines():
+        opened = _FENCE_RE.match(line)
+        if fence is None and opened:
+            fence = opened.group(1)[0]
+            continue
+        if fence is not None:
+            if opened and opened.group(1)[0] == fence:
+                fence = None
+            continue
+        match = _HEADING_RE.match(line)
+        if match is None:
+            continue
+        title = " ".join(match.group(2).split())
+        if title:
+            headings.append((len(match.group(1)), title))
+    if not headings:
+        return []
+    top = min(level for level, _ in headings)
+    return [(level - top + 1, title) for level, title in headings]
+
+
+def _outline_lines(markdown: str) -> list[str]:
+    """Lignes du plan d'un markdown (liste indentée par niveau), plafonnées."""
+    headings = markdown_outline(markdown)
+    lines = []
+    for level, title in headings[:OUTLINE_MAX_HEADINGS]:
+        if len(title) > OUTLINE_HEADING_CHARS:
+            title = title[:OUTLINE_HEADING_CHARS].rstrip() + "…"
+        lines.append("  " * (level - 1) + f"- {title}")
+    if len(headings) > OUTLINE_MAX_HEADINGS:
+        lines.append(f"- … (+{len(headings) - OUTLINE_MAX_HEADINGS} titres)")
+    return lines
+
+
+def outline_block(block, refs: CourseRefs, *, headings: bool = True) -> str:
+    """Entrée de sommaire d'un bloc : même en-tête que :func:`format_block`,
+    description, puis type et structure — **jamais le contenu** (``read_block``
+    le sert à la demande). ``headings=False`` omet le plan des titres internes
+    (sommaire trop long)."""
+    ref = refs.ref_of("block", block.id) or "B?"
+    lines = [f"### Bloc {ref[1:]} — {block_title(block)} (ref: {ref})"]
+    if block.description:
+        lines.append(f"*{block.description}*")
+    content = block.content or {}
+    if block.type == TYPE_TEXT:
+        plan = _outline_lines(content.get("markdown", "")) if headings else []
+        lines.append("Texte — plan :\n" + "\n".join(plan) if plan else "Texte")
+    elif block.type == TYPE_EXERCISE:
+        questions = [q for q in content.get("questions", []) if isinstance(q, dict)]
+        count = len(questions)
+        label = f"Exercice — {count} question{'s' if count != 1 else ''}"
+        plan = _outline_lines(content.get("statement", "")) if headings else []
+        lines.append(label + (" ; plan du sujet :\n" + "\n".join(plan) if plan else ""))
+    elif block.type == TYPE_DOCUMENT:
+        if block.resource_id:
+            lines.append(
+                "Document — " + _pointed("Ressource pointée", refs, "resource", block.resource_id)
+            )
+        else:
+            lines.append("Document (aucune ressource pointée)")
+    elif block.type == TYPE_MODULE:
+        if block.module_id:
+            lines.append(_pointed("Module interactif pointé", refs, "module", block.module_id))
+        else:
+            lines.append("Module interactif (aucun module pointé)")
+    return "\n".join(lines)
+
+
 def _question_ref(refs: CourseRefs, question: dict) -> str | None:
     """Référence courte d'une question (``Q2``) si elle est numérotée dans
     l'instantané (questions du bloc édité), ``None`` sinon."""
@@ -122,16 +205,6 @@ def format_module(module, refs: CourseRefs, *, max_chars: int = MODULE_MAX_CHARS
     return text
 
 
-def excerpt_block(block, refs: CourseRefs) -> str:
-    """En-tête + extrait court, pour le mode sommaire."""
-    full = format_block(block, refs)
-    header, _, body = full.partition("\n\n")
-    body = " ".join(body.split())
-    if len(body) > SUMMARY_EXCERPT_CHARS:
-        body = body[:SUMMARY_EXCERPT_CHARS] + "…"
-    return f"{header}\n\n{body}" if body else header
-
-
 def libraries_section(refs: CourseRefs) -> str:
     """Sections « Bibliothèque de ressources » et « Modules interactifs »."""
     lines = ["\n## Bibliothèque de ressources du cours"]
@@ -140,7 +213,7 @@ def libraries_section(refs: CourseRefs) -> str:
             r = entry.entity
             lines.append(
                 f"- {r.original_name} (ref: {entry.ref}, type: {r.type}, mime: {r.mime}, "
-                f"taille: {r.size} octets, statut: {r.status})"
+                f"statut: {r.status})"
             )
     else:
         lines.append("(aucune ressource)")
@@ -153,8 +226,8 @@ def libraries_section(refs: CourseRefs) -> str:
 
 
 def focus_pointer(block, refs: CourseRefs, note: str) -> str:
-    """Pointeur d'une ligne remplaçant le bloc mis en avant dans la liste du
-    cours (son contenu complet vit dans la section dédiée de l'appelant —
+    """Pointeur d'une ligne remplaçant le bloc mis en avant dans le sommaire
+    (son contenu complet vit dans la section dédiée de l'appelant —
     « Bloc en cours d'édition », « Exercice en cours de résolution »…)."""
     ref = refs.ref_of("block", block.id) or "B?"
     return (

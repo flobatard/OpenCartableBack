@@ -46,7 +46,7 @@ from app.core.ai import AIClient, AIStreamEvent, AIToolCall, AIToolResult, AIToo
 from app.core.auth import AuthenticatedUser
 from app.core.http import invalid
 from app.core.storage import Storage
-from app.course_assistant.context import build_refs
+from app.course_assistant.context import build_refs, turn_message
 from app.course_assistant.editing.base import tool_error
 from app.course_assistant.service import load_snapshot
 from app.course_assistant.tools import build_tool_executor, build_tool_specs
@@ -66,6 +66,7 @@ from app.student_exercises.context import (
     redact_blocks,
     student_message,
 )
+from app.student_exercises.prompts import TUTOR_SYSTEM_PROMPT
 from app.student_exercises.schemas import SubmissionCreate
 from app.student_exercises.service import (
     MAX_TURNS_PER_QUESTION,
@@ -79,12 +80,13 @@ MAX_TOOL_ROUNDS = 5
 
 RECORD_VERDICT = "record_verdict"
 
+# Les critères (règles 1, 2 et 4) sont dans le system prompt : la spec ne
+# porte que les libellés des valeurs.
 RECORD_VERDICT_SPEC = AIToolSpec(
     name=RECORD_VERDICT,
     description=(
-        "Enregistre ton évaluation du tour AVANT de rédiger ton retour à l'élève : "
-        "verdict sur sa réponse, effort fourni, et si le corrigé du professeur "
-        "peut lui être révélé. Appel obligatoire, une fois par tour."
+        "Enregistre l'évaluation du tour (verdict, effort, révélation du corrigé) — "
+        "obligatoire, une fois par tour, AVANT de rédiger le retour à l'élève."
     ),
     parameters={
         "type": "object",
@@ -93,26 +95,18 @@ RECORD_VERDICT_SPEC = AIToolSpec(
                 "type": "string",
                 "enum": list(VERDICTS),
                 "description": (
-                    "correct : réponse juste ; partial : partiellement juste ; "
-                    "incorrect : fausse ; none : pas une réponse (demande d'aide, "
-                    "question sur le cours)"
+                    "Réponse juste (correct), partielle (partial), fausse (incorrect) "
+                    "ou pas une réponse (none)."
                 ),
             },
             "effort": {
                 "type": "string",
                 "enum": list(EFFORTS),
-                "description": (
-                    "sufficient : l'élève a raisonné, essayé, progressé ; "
-                    "insufficient : réponse au hasard, sans justification, ou "
-                    "simple demande de la solution"
-                ),
+                "description": "Effort de l'élève : sufficient ou insufficient.",
             },
             "reveal": {
                 "type": "boolean",
-                "description": (
-                    "true UNIQUEMENT si la réponse est juste, ou si l'élève a compris "
-                    "l'essentiel et fourni un effort suffisant"
-                ),
+                "description": "Révéler le corrigé du professeur (règle 4).",
             },
         },
         "required": ["verdict", "effort", "reveal"],
@@ -218,17 +212,22 @@ async def sse_stream(
     redacted = redact_blocks(blocks)
     focus = next(b for b in redacted if b.id == block.id)
     refs = build_refs(redacted, resources, modules)
-    system_content = build_tutor_context(
+    context = build_tutor_context(
         course,
         refs,
         block=focus,
         question_number=question_number,
         expected_answer=question.get("expected_answer"),
     )
+    # System prompt statique ; le contexte du tour (exercice, corrigé cible,
+    # sommaire) précède le message de l'élève, après l'historique (cache).
     model_messages = [
-        ChatMessage(role="system", content=system_content),
+        ChatMessage(role="system", content=TUTOR_SYSTEM_PROMPT),
         *history_messages(turns),
-        ChatMessage(role="user", content=student_message(payload.kind, payload.content)),
+        ChatMessage(
+            role="user",
+            content=turn_message(context, student_message(payload.kind, payload.content)),
+        ),
     ]
 
     holder = VerdictHolder()
@@ -319,6 +318,7 @@ class _TutorTurn:
                 revealed=self.holder.reveal,
                 input_tokens=(usage or {}).get("input_tokens"),
                 output_tokens=(usage or {}).get("output_tokens"),
+                cached_input_tokens=(usage or {}).get("cached_input_tokens"),
             )
         )
         await self.db.commit()
