@@ -1,17 +1,22 @@
-"""Credential IA de l'utilisateur : lecture, écriture chiffrée, cascade.
+"""Configurations IA nommées de l'utilisateur : CRUD chiffré, bascule, cascade.
 
 Seul consommateur de :mod:`app.core.crypto` (confinement). L'ordre des
 ``execute`` de chaque fonction est stable et documenté : les tests le
 rejouent avec une fausse session FIFO (voir tests/test_ai_credentials_api.py).
 
+Plusieurs configurations par utilisateur (table ``ai_configurations``,
+plafond ``MAX_CONFIGURATIONS``), au plus une **active** (index partiel unique
+en base) ; aucune active = IA par défaut du serveur. Créer une configuration
+l'active ; supprimer l'active ramène à l'IA par défaut.
+
 Cascade de résolution des appels IA (``effective_config``) :
-config explicite de la requête > credential utilisateur déchiffré > ``None``
+config explicite de la requête > configuration ACTIVE déchiffrée > ``None``
 (le ``resolve_config`` d'AIClient applique alors le fallback serveur AI_*).
-Le credential porte aussi les préférences de raisonnement de l'utilisateur
-(``users.ai_reasoning`` / ``ai_reasoning_effort``, règles par provider en 422
-dans les schémas) : elles voyagent dans l'``AIRequestConfig`` qu'il produit ;
-le fallback serveur porte les siennes (settings ``AI_REASONING*``, posés par
-l'opérateur, résolus par ``AIClient.resolve_config``).
+La configuration porte aussi les préférences de raisonnement de
+l'utilisateur (``reasoning`` / ``reasoning_effort``, règles par provider en
+422 dans les schémas) : elles voyagent dans l'``AIRequestConfig`` qu'elle
+produit ; le fallback serveur porte les siennes (settings ``AI_REASONING*``,
+posés par l'opérateur, résolus par ``AIClient.resolve_config``).
 Le repli sur le fallback serveur est le SEUL cas soumis au quota QUOTIDIEN
 d'appels (``AI_DEFAULT_DAILY_QUOTA`` / ``users.ai_daily_call_quota``, comptage
 par jour UTC dans la table ``ai_daily_usage``) : les appels BYO token
@@ -30,16 +35,17 @@ from datetime import UTC, date, datetime
 
 from fastapi import HTTPException, status
 from pydantic import SecretStr
-from sqlalchemy import select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_credentials.schemas import (
     PROVIDERS_WITH_OPTIONAL_KEY,
+    AIConfigurationIn,
+    AIConfigurationRead,
     AIConnectionTestIn,
     AIConnectionTestRead,
     AICredentialsRead,
-    AICredentialsUpdate,
     AIModelListIn,
     AIModelListRead,
     ReasoningOptionsIn,
@@ -57,10 +63,16 @@ from app.core.ai import (
 )
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
-from app.core.http import invalid, unavailable
+from app.core.database import touch
+from app.core.http import invalid, not_found, unavailable
+from app.models.ai_configuration import AIConfiguration
 from app.models.ai_daily_usage import AIDailyUsage
 from app.models.user import User
 from app.users import service as users_service
+
+# Plafond de configurations par utilisateur (miroir front AI_CONFIGURATIONS_MAX).
+MAX_CONFIGURATIONS = 10
+NOT_FOUND_DETAIL = "Configuration introuvable"
 
 
 def _master_key() -> bytes:
@@ -93,15 +105,47 @@ async def _usage_for_day(db: AsyncSession, user: User) -> int:
     return result.scalars().one_or_none() or 0
 
 
-def _read(user: User, calls_today: int) -> AICredentialsRead:
+async def _list_configurations(db: AsyncSession, user: User) -> list[AIConfiguration]:
+    """Toutes les configurations de l'utilisateur, de la plus ancienne à la
+    plus récente (tri stable ``created_at, id``). 1 select."""
+    result = await db.execute(
+        select(AIConfiguration)
+        .where(AIConfiguration.user_id == user.id)
+        .order_by(AIConfiguration.created_at, AIConfiguration.id)
+    )
+    return list(result.scalars().all())
+
+
+def _configuration_read(config: AIConfiguration) -> AIConfigurationRead:
+    return AIConfigurationRead(
+        id=config.id,
+        name=config.name,
+        provider=config.provider,
+        model=config.model,
+        base_url=config.base_url,
+        api_key_set=config.api_key_encrypted is not None,
+        reasoning=config.reasoning,
+        reasoning_effort=config.reasoning_effort,
+        reasoning_options=options_for(config.provider, config.model),
+    )
+
+
+def _active_id(configurations: list[AIConfiguration]) -> uuid.UUID | None:
+    return next((c.id for c in configurations if c.is_active), None)
+
+
+def _read(
+    user: User,
+    configurations: list[AIConfiguration],
+    calls_today: int,
+    active_id: uuid.UUID | None,
+) -> AICredentialsRead:
+    """Enveloppe. ``active_id`` est passé explicitement : après une bascule ou
+    une création, les instances chargées ne reflètent pas encore l'UPDATE de
+    désactivation exécuté en Core."""
     return AICredentialsRead(
-        provider=user.ai_provider,
-        model=user.ai_model,
-        base_url=user.ai_base_url,
-        api_key_set=user.ai_api_key_encrypted is not None,
-        reasoning=user.ai_reasoning,
-        reasoning_effort=user.ai_reasoning_effort,
-        reasoning_options=options_for(user.ai_provider, user.ai_model),
+        configurations=[_configuration_read(c) for c in configurations],
+        active_id=active_id,
         default_ai_available=bool(settings.AI_PROVIDER),
         daily_quota=_effective_quota(user),
         calls_today=calls_today,
@@ -111,55 +155,183 @@ def _read(user: User, calls_today: int) -> AICredentialsRead:
 
 
 async def read_credentials(db: AsyncSession, user: User) -> AICredentialsRead:
-    """Projection sûre du credential — 200 même sans config (tout null).
+    """Enveloppe des configurations — 200 même sans aucune (liste vide).
 
     Porte aussi l'état de l'IA par défaut (disponibilité + quota du jour),
     affiché par l'écran de réglages IA du front. Ordre des execute :
-    1 select (usage du jour).
+    1) configurations, 2) usage du jour.
     """
-    return _read(user, await _usage_for_day(db, user))
+    configurations = await _list_configurations(db, user)
+    calls_today = await _usage_for_day(db, user)
+    return _read(user, configurations, calls_today, _active_id(configurations))
 
 
-async def update_credentials(
-    db: AsyncSession, user: User, payload: AICredentialsUpdate
-) -> AICredentialsRead:
-    """Enregistre le credential (remplacement provider/model/base_url et
-    préférences de raisonnement).
+def _find(configurations: list[AIConfiguration], config_id: uuid.UUID) -> AIConfiguration:
+    """La configuration d'id donné parmi celles de l'utilisateur — 404 sinon
+    (une configuration d'autrui est introuvable, jamais interdite)."""
+    for config in configurations:
+        if config.id == config_id:
+            return config
+    raise not_found(NOT_FOUND_DETAIL)
 
-    ``api_key`` absente = conserver le blob+sel existants ; fournie =
-    re-chiffrement avec un NOUVEAU sel. Ni fournie ni existante alors que le
-    provider l'exige → 422. Ordre des execute : mutation d'attributs de
-    l'instance chargée par ``get_or_create_by_sub``, puis 1 select (usage du
-    jour, pour la réponse), un commit.
-    """
+
+def _apply_key(config: AIConfiguration, payload: AIConfigurationIn) -> None:
+    """Applique la sémantique de la clé : fournie = re-chiffrement avec un
+    NOUVEAU sel ; absente = conserver blob+sel ; ni fournie ni existante alors
+    que le provider l'exige → 422."""
     if payload.api_key is not None:
         master_key = _master_key()
         salt = crypto.new_salt()
-        user.ai_api_key_encrypted = crypto.encrypt_secret(
+        config.api_key_encrypted = crypto.encrypt_secret(
             payload.api_key.get_secret_value(), master_key, salt
         )
-        user.ai_encryption_salt = salt
-    elif user.ai_api_key_encrypted is None and payload.provider not in PROVIDERS_WITH_OPTIONAL_KEY:
+        config.encryption_salt = salt
+    elif config.api_key_encrypted is None and payload.provider not in PROVIDERS_WITH_OPTIONAL_KEY:
         raise invalid(f"Clé API requise pour le provider {payload.provider.value}")
 
-    user.ai_provider = payload.provider.value
-    user.ai_model = payload.model
-    user.ai_base_url = payload.base_url
-    user.ai_reasoning = payload.reasoning
-    user.ai_reasoning_effort = payload.reasoning_effort
-    response = _read(user, await _usage_for_day(db, user))
+
+def _apply_fields(config: AIConfiguration, payload: AIConfigurationIn) -> None:
+    config.name = payload.name
+    config.provider = payload.provider.value
+    config.model = payload.model
+    config.base_url = payload.base_url
+    config.reasoning = payload.reasoning
+    config.reasoning_effort = payload.reasoning_effort
+
+
+async def _deactivate_all(db: AsyncSession, user: User) -> None:
+    """UPDATE Core immédiat : l'index partiel unique n'est pas différable, la
+    désactivation doit précéder toute activation dans la même transaction."""
+    await db.execute(
+        update(AIConfiguration)
+        .where(AIConfiguration.user_id == user.id, AIConfiguration.is_active.is_(True))
+        .values(is_active=False)
+    )
+
+
+async def create_configuration(
+    db: AsyncSession, user: User, payload: AIConfigurationIn
+) -> AICredentialsRead:
+    """Crée une configuration nommée et l'ACTIVE (ce qu'on vient d'enregistrer
+    est utilisé tout de suite ; revenir à l'IA par défaut reste un clic).
+
+    Clé requise à la création pour les providers qui l'exigent (422). Plafond
+    ``MAX_CONFIGURATIONS`` (422). Ordre des execute : 1) configurations
+    (plafond + liste de la réponse), 2) update de désactivation, 3) insert de
+    la ligne (timestamps posés en Python, sans RETURNING), 4) usage du jour,
+    un commit. Réponse construite avant le commit.
+    """
+    configurations = await _list_configurations(db, user)
+    if len(configurations) >= MAX_CONFIGURATIONS:
+        raise invalid(f"Au plus {MAX_CONFIGURATIONS} configurations IA par utilisateur")
+    now = datetime.now(UTC)
+    config = AIConfiguration(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        api_key_encrypted=None,
+        encryption_salt=None,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    _apply_key(config, payload)
+    _apply_fields(config, payload)
+    await _deactivate_all(db, user)
+    await db.execute(
+        insert(AIConfiguration).values(
+            id=config.id,
+            user_id=config.user_id,
+            name=config.name,
+            provider=config.provider,
+            model=config.model,
+            base_url=config.base_url,
+            api_key_encrypted=config.api_key_encrypted,
+            encryption_salt=config.encryption_salt,
+            reasoning=config.reasoning,
+            reasoning_effort=config.reasoning_effort,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    calls_today = await _usage_for_day(db, user)
+    response = _read(user, [*configurations, config], calls_today, config.id)
     await db.commit()
     return response
 
 
-def _decrypt_stored_key(user: User) -> SecretStr | None:
-    """Clé enregistrée déchiffrée (``None`` sans clé) ; credential illisible
+async def update_configuration(
+    db: AsyncSession, user: User, config_id: uuid.UUID, payload: AIConfigurationIn
+) -> AICredentialsRead:
+    """Remplace une configuration (nom, provider/modèle/base_url, préférences
+    de raisonnement) sans toucher à son statut actif.
+
+    ``api_key`` absente = conserver le blob+sel existants ; fournie =
+    re-chiffrement avec un NOUVEAU sel ; ni fournie ni existante alors que le
+    provider l'exige → 422. Ordre des execute : 1) configurations (404 si la
+    cible n'en fait pas partie), mutation d'attributs de la cible chargée,
+    2) usage du jour, un commit.
+    """
+    configurations = await _list_configurations(db, user)
+    config = _find(configurations, config_id)
+    _apply_key(config, payload)
+    _apply_fields(config, payload)
+    touch(config)
+    calls_today = await _usage_for_day(db, user)
+    response = _read(user, configurations, calls_today, _active_id(configurations))
+    await db.commit()
+    return response
+
+
+async def delete_configuration(db: AsyncSession, user: User, config_id: uuid.UUID) -> None:
+    """Supprime une configuration (seule façon d'effacer sa clé). Supprimer
+    l'active ramène à l'IA par défaut. Ordre des execute : 1) configurations
+    (404 si absente), 2) delete, un commit.
+    """
+    configurations = await _list_configurations(db, user)
+    config = _find(configurations, config_id)
+    await db.execute(
+        delete(AIConfiguration).where(
+            AIConfiguration.id == config.id, AIConfiguration.user_id == user.id
+        )
+    )
+    await db.commit()
+
+
+async def set_active_configuration(
+    db: AsyncSession, user: User, config_id: uuid.UUID | None
+) -> AICredentialsRead:
+    """Bascule : ``config_id`` = la configuration à utiliser (404 si absente),
+    ``None`` = revenir à l'IA par défaut.
+
+    Deux instructions séparées (désactivation Core puis activation ORM de la
+    cible) : l'index partiel unique n'est pas différable, un seul UPDATE
+    ``is_active = (id = :x)`` pourrait le violer en cours de route. Ordre des
+    execute : 1) configurations, 2) update de désactivation, 3) usage du
+    jour, un commit (l'activation part au flush).
+    """
+    configurations = await _list_configurations(db, user)
+    target = _find(configurations, config_id) if config_id is not None else None
+    await _deactivate_all(db, user)
+    if target is not None:
+        target.is_active = True
+        touch(target)
+    calls_today = await _usage_for_day(db, user)
+    response = _read(user, configurations, calls_today, target.id if target else None)
+    await db.commit()
+    return response
+
+
+def _decrypt_stored_key(config: AIConfiguration) -> SecretStr | None:
+    """Clé enregistrée déchiffrée (``None`` sans clé) ; configuration illisible
     (clé maître changée) → 422 « ré-enregistrez », JAMAIS un repli silencieux."""
-    if user.ai_api_key_encrypted is None:
+    if config.api_key_encrypted is None:
         return None
     try:
         return SecretStr(
-            crypto.decrypt_secret(user.ai_api_key_encrypted, _master_key(), user.ai_encryption_salt)
+            crypto.decrypt_secret(
+                config.api_key_encrypted, _master_key(), config.encryption_salt
+            )
         )
     except crypto.DecryptionError:
         raise invalid(
@@ -167,12 +339,27 @@ def _decrypt_stored_key(user: User) -> SecretStr | None:
         ) from None
 
 
-def _probe_api_key(
-    user: User, provider: AIProvider, provided: SecretStr | None
+async def _probe_api_key(
+    db: AsyncSession,
+    user: User,
+    provider: AIProvider,
+    provided: SecretStr | None,
+    config_id: uuid.UUID | None,
 ) -> SecretStr | None:
-    """Clé effective d'un test/listing : fournie, sinon clé enregistrée (même
-    sémantique que le PUT), sinon 422 pour les providers qui l'exigent."""
-    api_key = provided if provided is not None else _decrypt_stored_key(user)
+    """Clé effective d'un test/listing : fournie, sinon clé enregistrée de la
+    configuration ``config_id`` (1 select, 404 si absente), sinon aucune —
+    422 pour les providers qui l'exigent."""
+    api_key = provided
+    if api_key is None and config_id is not None:
+        result = await db.execute(
+            select(AIConfiguration).where(
+                AIConfiguration.id == config_id, AIConfiguration.user_id == user.id
+            )
+        )
+        config = result.scalars().one_or_none()
+        if config is None:
+            raise not_found(NOT_FOUND_DETAIL)
+        api_key = _decrypt_stored_key(config)
     if api_key is None and provider not in PROVIDERS_WITH_OPTIONAL_KEY:
         raise invalid(f"Clé API requise pour le provider {provider.value}")
     return api_key
@@ -186,20 +373,23 @@ _TEST_TRACE_NAME = "ai-credentials-test"
 
 
 async def test_connection(
-    user: User, payload: AIConnectionTestIn, ai: AIClient
+    db: AsyncSession, user: User, payload: AIConnectionTestIn, ai: AIClient
 ) -> AIConnectionTestRead:
     """Teste la config du formulaire par un mini-appel provider réel.
 
-    Valide exactement ce que le PUT enregistrerait (``api_key`` omise = clé
-    déjà enregistrée). BYO token intégral : jamais le fallback serveur
-    ``AI_*``, donc jamais de quota consommé — et aucune écriture DB. Les
+    Valide exactement ce que l'écriture enregistrerait (``api_key`` omise +
+    ``config_id`` = clé déjà enregistrée de cette configuration). BYO token
+    intégral : jamais le fallback serveur ``AI_*``, donc jamais de quota
+    consommé — et aucune écriture DB (au plus 1 select, celui de la clé). Les
     échecs remontent en HTTPException déjà traduites par ``app/core/ai``
     (422 config, 400 clé refusée, 429, 503 injoignable).
     """
     config = AIRequestConfig(
         provider=payload.provider,
         model=payload.model,
-        api_key=_probe_api_key(user, payload.provider, payload.api_key),
+        api_key=await _probe_api_key(
+            db, user, payload.provider, payload.api_key, payload.config_id
+        ),
         base_url=payload.base_url,
         reasoning=payload.reasoning,
         reasoning_effort=payload.reasoning_effort,
@@ -213,14 +403,18 @@ async def test_connection(
     return AIConnectionTestRead()
 
 
-async def list_provider_models(user: User, payload: AIModelListIn) -> AIModelListRead:
+async def list_provider_models(
+    db: AsyncSession, user: User, payload: AIModelListIn
+) -> AIModelListRead:
     """Modèles proposés par le provider (auto-complétion du champ modèle).
 
     Même sémantique de clé que le test ; délégation à
     :func:`app.core.ai.list_models` (REST direct du provider, erreurs
     traduites). Aucune écriture DB, jamais de quota.
     """
-    api_key = _probe_api_key(user, payload.provider, payload.api_key)
+    api_key = await _probe_api_key(
+        db, user, payload.provider, payload.api_key, payload.config_id
+    )
     return AIModelListRead(models=await list_models(payload.provider, api_key, payload.base_url))
 
 
@@ -229,18 +423,6 @@ def read_reasoning_options(payload: ReasoningOptionsIn) -> ReasoningOptionsRead:
     lecture DB, aucun appel provider) ; un modèle inconnu reçoit les options
     génériques du provider avec ``known=False``."""
     return ReasoningOptionsRead.from_options(reasoning_options(payload.provider, payload.model))
-
-
-async def delete_credentials(db: AsyncSession, user: User) -> None:
-    """Efface tout le credential (les 7 colonnes à NULL) — idempotent."""
-    user.ai_provider = None
-    user.ai_model = None
-    user.ai_base_url = None
-    user.ai_api_key_encrypted = None
-    user.ai_encryption_salt = None
-    user.ai_reasoning = None
-    user.ai_reasoning_effort = None
-    await db.commit()
 
 
 @dataclass(frozen=True)
@@ -335,9 +517,9 @@ async def refund_on_error(
 async def effective_config(
     db: AsyncSession, auth: AuthenticatedUser, explicit: AIRequestConfig | None
 ) -> tuple[AIRequestConfig | None, QuotaTicket | None]:
-    """Cascade : config explicite > credential utilisateur > None (fallback AI_*).
+    """Cascade : config explicite > configuration active > None (fallback AI_*).
 
-    Une config explicite court-circuite toute lecture DB. Un credential
+    Une config explicite court-circuite toute lecture DB. Une configuration
     illisible (clé maître changée) → 422 explicite, JAMAIS un repli
     silencieux sur le fallback serveur : l'utilisateur croirait sa clé
     utilisée. Le repli sur le fallback serveur (retour ``None`` avec un
@@ -347,21 +529,28 @@ async def effective_config(
     cas : rien n'a été consommé) ; sans fallback configuré, rien n'est
     consommé (le 422 de ``resolve_config`` suivra). Ordre des execute : ceux
     de ``get_or_create_by_sub`` (1 insert, 1 select) quand la config n'est
-    pas explicite, + l'upsert de ``_consume_default_quota`` en cas de repli.
+    pas explicite, + 1 select (configuration active, ou aucune), + l'upsert
+    de ``_consume_default_quota`` en cas de repli.
     """
     if explicit is not None:
         return explicit, None
     user = await users_service.get_or_create_by_sub(db, auth)
-    if user.ai_provider is None:
+    result = await db.execute(
+        select(AIConfiguration).where(
+            AIConfiguration.user_id == user.id, AIConfiguration.is_active.is_(True)
+        )
+    )
+    active = result.scalars().one_or_none()
+    if active is None:
         if settings.AI_PROVIDER:
             return None, await _consume_default_quota(db, user)
         return None, None
-    api_key = _decrypt_stored_key(user)
+    api_key = _decrypt_stored_key(active)
     return AIRequestConfig(
-        provider=AIProvider(user.ai_provider),
-        model=user.ai_model,
+        provider=AIProvider(active.provider),
+        model=active.model,
         api_key=api_key,
-        base_url=user.ai_base_url,
-        reasoning=user.ai_reasoning,
-        reasoning_effort=user.ai_reasoning_effort,
+        base_url=active.base_url,
+        reasoning=active.reasoning,
+        reasoning_effort=active.reasoning_effort,
     ), None

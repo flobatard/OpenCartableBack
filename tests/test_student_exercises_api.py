@@ -22,6 +22,7 @@ from tests.course_assistant_fakes import (
     NOW,
     USER_ID,
     FakeAssistantAI,
+    config_row,
     make_client,
     resource_row,
     user_row,
@@ -169,6 +170,7 @@ def _stream_session(*, course=None, link=None, turns=(), blocks=None):
             [_exercise_row()],
             list(turns),
             [user_row()],
+            [config_row()],  # cascade : configuration active
             list(blocks) if blocks is not None else [_text_row(), _exercise_row()],
             [resource_row()],
             [],
@@ -264,7 +266,8 @@ def test_stream_quota_exhausted_is_429_before_stream(monkeypatch) -> None:
         [_course_row()],
         [_exercise_row()],
         [],
-        [user_row(ai_provider=None, ai_model=None)],
+        [user_row()],
+        [],  # aucune configuration active : IA par défaut
     ]
     session = FakeSession(fifo, upsert_rowcount=0)
     client, fake = make_client(session, FakeTutorAI())

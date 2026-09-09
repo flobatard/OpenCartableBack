@@ -5,9 +5,10 @@ faux client IA scriptable et files FIFO des flux, au-dessus des fakes
 génériques de :mod:`tests.fakes`.
 
 Ordre FIFO du flux de stream (docstring de ``sse_stream``) : [user] (router),
-[course], [conversation], [messages], [user] (cascade ``effective_config``),
-[blocks], [resources], [modules] — puis le generator insère le tour. Celui de
-la reprise (``sse_resume_stream``) : idem SANS la cascade IA.
+[course], [conversation], [messages], [user] puis [config active] (cascade
+``effective_config``), [blocks], [resources], [modules] — puis le generator
+insère le tour. Celui de la reprise (``sse_resume_stream``) : idem SANS la
+cascade IA.
 """
 
 import uuid
@@ -21,6 +22,7 @@ from tests.fakes import make_client as _make_client
 
 NOW = datetime.now(UTC)
 USER_ID = uuid.uuid4()
+CONFIG_ID = uuid.uuid4()
 COURSE_ID = uuid.uuid4()
 CONVERSATION_ID = uuid.uuid4()
 BLOCK_ID = uuid.uuid4()
@@ -32,18 +34,27 @@ STREAM_PATH = f"{BASE}/conversations/{CONVERSATION_ID}/messages/stream"
 
 
 def user_row(**overrides):
+    defaults = dict(id=USER_ID, sub="prof-123", email=None, ai_daily_call_quota=None)
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def config_row(**overrides):
+    """La configuration IA ACTIVE de l'utilisateur (ollama, sans clé)."""
     defaults = dict(
-        id=USER_ID,
-        sub="prof-123",
-        email=None,
-        ai_provider="ollama",
-        ai_model="llama3.2",
-        ai_base_url=None,
-        ai_api_key_encrypted=None,
-        ai_encryption_salt=None,
-        ai_reasoning=None,
-        ai_reasoning_effort=None,
-        ai_daily_call_quota=None,
+        id=CONFIG_ID,
+        user_id=USER_ID,
+        name="Pi",
+        provider="ollama",
+        model="llama3.2",
+        base_url=None,
+        api_key_encrypted=None,
+        encryption_salt=None,
+        reasoning=None,
+        reasoning_effort=None,
+        is_active=True,
+        created_at=NOW,
+        updated_at=NOW,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -202,8 +213,13 @@ def inserted_message_rows(session):
     return None
 
 
-def stream_session(messages=(), conversation=None, user=None, blocks=None, modules=()):
-    """FIFO de ``sse_stream`` (docstring du module)."""
+def stream_session(
+    messages=(), conversation=None, user=None, config="default", blocks=None, modules=()
+):
+    """FIFO de ``sse_stream`` (docstring du module). ``config`` = la ligne
+    active servie à la cascade (``None`` = aucune : IA par défaut)."""
+    if config == "default":
+        config = config_row()
     return FakeSession(
         [
             [user or user_row()],  # router : get_or_create_by_sub
@@ -211,6 +227,7 @@ def stream_session(messages=(), conversation=None, user=None, blocks=None, modul
             [conversation or conversation_row()],
             list(messages),
             [user or user_row()],  # cascade effective_config
+            [config] if config is not None else [],  # configuration active
             list(blocks) if blocks is not None else [block_row()],
             [resource_row()],
             list(modules),

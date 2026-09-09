@@ -25,6 +25,7 @@ from tests.course_assistant_fakes import (
     STREAM_PATH,
     FakeAssistantAI,
     block_row,
+    config_row,
     conversation_row,
     course_row,
     inserted_message_rows,
@@ -236,8 +237,7 @@ def test_stream_nominal() -> None:
 def test_stream_passes_reasoning_preferences() -> None:
     """Les préférences du credential atteignent ``stream_agent`` par la cascade
     (la reprise HITL hérite de ``pending.config``, rien de plus à vérifier)."""
-    user = user_row(ai_reasoning=False, ai_reasoning_effort="low")
-    session = stream_session(user=user)
+    session = stream_session(config=config_row(reasoning=False, reasoning_effort="low"))
     client, fake = make_client(session, FakeAssistantAI(events=_nominal_events()))
     assert client.post(STREAM_PATH, json={"content": "Bonjour"}).status_code == 200
     [call] = fake.calls
@@ -320,14 +320,14 @@ def test_stream_conversation_full_422() -> None:
 def test_stream_default_quota_exhausted_429(monkeypatch) -> None:
     monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
     monkeypatch.setattr(settings, "AI_MODEL", "llama3.2")
-    no_credential = user_row(ai_provider=None, ai_model=None)
     session = FakeSession(
         [
-            [no_credential],
+            [user_row()],
             [course_row()],
             [conversation_row()],
             [],
-            [no_credential],
+            [user_row()],
+            [],  # aucune configuration active : IA par défaut
         ],
         upsert_rowcount=0,  # garde du DO UPDATE non satisfaite : quota épuisé
     )
@@ -340,14 +340,14 @@ def test_stream_eager_error_refunds_quota(monkeypatch) -> None:
     """Erreur eager de stream_agent : vraie HTTPException + remboursement."""
     monkeypatch.setattr(settings, "AI_PROVIDER", "ollama")
     monkeypatch.setattr(settings, "AI_MODEL", "llama3.2")
-    no_credential = user_row(ai_provider=None, ai_model=None)
     session = FakeSession(
         [
-            [no_credential],
+            [user_row()],
             [course_row()],
             [conversation_row()],
             [],
-            [no_credential],
+            [user_row()],
+            [],  # aucune configuration active : IA par défaut
             [block_row()],
             [resource_row()],
             [],

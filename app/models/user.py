@@ -14,13 +14,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean,
     CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
     Integer,
-    LargeBinary,
     String,
     Table,
     UniqueConstraint,
@@ -49,20 +47,6 @@ class User(Base):
             "AND avatar_status IN ('pending', 'available'))",
             name="ck_users_avatar_consistency",
         ),
-        # Cohérence structurelle du credential IA : tout-NULL (pas de config)
-        # ou au moins provider+model. Les règles PAR provider (clé requise ou
-        # non, base_url requise/interdite) sont métier → 422 en service,
-        # jamais en CHECK (ajouter un provider ne doit pas exiger de migration).
-        CheckConstraint(
-            "(ai_provider IS NULL AND ai_model IS NULL AND ai_base_url IS NULL "
-            "AND ai_api_key_encrypted IS NULL AND ai_encryption_salt IS NULL) "
-            "OR (ai_provider IS NOT NULL AND ai_model IS NOT NULL)",
-            name="ck_users_ai_consistency",
-        ),
-        CheckConstraint(
-            "(ai_api_key_encrypted IS NULL) = (ai_encryption_salt IS NULL)",
-            name="ck_users_ai_key_salt",
-        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -88,29 +72,16 @@ class User(Base):
     avatar_s3_key: Mapped[str | None] = mapped_column(String(1024))
     avatar_mime: Mapped[str | None] = mapped_column(String(255))
     avatar_status: Mapped[str | None] = mapped_column(String(20))
-    # Credential IA de l'utilisateur (une seule config, app/ai_credentials/) :
-    # provider ∈ AIProvider (validé Pydantic), clé API chiffrée par
-    # app/core/crypto.py (AES-256-GCM, blob versionné) avec un sel par
-    # utilisateur régénéré à chaque écriture de clé. Comme avatar_s3_key,
-    # la clé (chiffrée ou non) ne figure dans AUCUN schéma de réponse — seule
-    # sort la projection api_key_set: bool.
-    ai_provider: Mapped[str | None] = mapped_column(String(50))
-    ai_model: Mapped[str | None] = mapped_column(String(200))
-    ai_base_url: Mapped[str | None] = mapped_column(String(2000))
-    ai_api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary)
-    ai_encryption_salt: Mapped[bytes | None] = mapped_column(LargeBinary)
-    # Préférences de raisonnement du modèle, enregistrées avec le credential :
-    # NULL = défaut du provider/modèle ; ai_reasoning True = raisonnement
-    # demandé et affiché, False = coupé ; ai_reasoning_effort ∈ low/medium/high
-    # (validé Pydantic). Les règles PAR provider restent en 422 service (pas de
-    # CHECK, même doctrine que ci-dessus) ; effacées avec le credential.
-    ai_reasoning: Mapped[bool | None] = mapped_column(Boolean)
-    ai_reasoning_effort: Mapped[str | None] = mapped_column(String(20))
+    # Les configurations IA nommées de l'utilisateur (provider, modèle, clé
+    # chiffrée, préférences de raisonnement) vivent dans la table
+    # ai_configurations (app/models/ai_configuration.py) : plusieurs par
+    # utilisateur, au plus une active ; aucune active = IA par défaut.
+    #
     # Quota QUOTIDIEN d'appels à l'IA PAR DÉFAUT (le fallback serveur AI_*) :
     # NULL = quota standard (settings.AI_DEFAULT_DAILY_QUOTA), 0 = illimité,
     # sinon plafond individuel par jour. Aucune route ne l'écrit (l'utilisateur
     # pourrait se dé-limiter) : posé à la main par l'opérateur. Les appels BYO
-    # token (config explicite ou credential ci-dessus) ne sont jamais comptés ;
+    # token (config explicite ou configuration active) ne sont jamais comptés ;
     # le comptage par jour vit dans la table ai_daily_usage.
     ai_daily_call_quota: Mapped[int | None] = mapped_column(Integer)
     is_teacher: Mapped[bool] = mapped_column(default=False, server_default="false")
