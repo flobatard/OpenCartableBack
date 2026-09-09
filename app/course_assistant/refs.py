@@ -165,6 +165,14 @@ def _question_entries(
     return entries
 
 
+def _uuid_str(raw: str) -> str | None:
+    """Forme canonique d'un UUID, ``None`` si ``raw`` n'en est pas un."""
+    try:
+        return str(uuid.UUID(str(raw)))
+    except ValueError:
+        return None
+
+
 def _question_entry(number: int, qid: uuid.UUID, question: dict) -> RefEntry:
     return RefEntry(
         ref=f"Q{number}", id=qid, title=_question_title(question, number), entity=question
@@ -178,12 +186,16 @@ class CourseRefs:
     ``new_question_refs`` : références des questions apparues depuis la
     numérotation rejouée (``question_refs`` de :meth:`build`) — à la reprise
     d'un ajout accepté, c'est la référence de la question ajoutée ; vide sans
-    numérotation rejouée."""
+    numérotation rejouée. ``stale_questions`` en est le miroir : les
+    références de la numérotation rejouée dont la question a DISPARU du bloc
+    (ref → id d'origine) — à la reprise d'une suppression acceptée, c'est la
+    question que le front vient de supprimer (cf. :meth:`question_gone`)."""
 
     entries: dict[Kind, list[RefEntry]] = field(
         default_factory=lambda: {"block": [], "resource": [], "module": [], "question": []}
     )
     new_question_refs: tuple[str, ...] = ()
+    stale_questions: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def build(
@@ -217,9 +229,15 @@ class CourseRefs:
         refs.entries["question"] = _question_entries(questions, question_refs)
         if question_refs:
             replayed = {str(ref) for ref in question_refs}
+            present = {e.ref for e in refs.entries["question"]}
             refs.new_question_refs = tuple(
                 e.ref for e in refs.entries["question"] if e.ref not in replayed
             )
+            refs.stale_questions = {
+                str(ref): str(raw_id)
+                for ref, raw_id in question_refs.items()
+                if _QUESTION_REF_RE.match(str(ref)) and str(ref) not in present
+            }
         return refs
 
     # ------------------------------------------------------------ lookups
@@ -250,6 +268,30 @@ class CourseRefs:
                     if entry.ref == wanted:
                         return entry
         return None
+
+    def question_gone(self, raw: object) -> bool:
+        """Vrai si ``raw`` désigne une question de la numérotation REJOUÉE qui
+        a disparu du bloc depuis (``stale_questions`` — référence ou UUID
+        d'origine). Sert aux validations idempotentes des tools de
+        proposition : à la reprise d'une suppression acceptée, la question
+        visée a déjà été retirée par le front."""
+        if not self.stale_questions:
+            return False
+        query = str(raw or "").strip()
+        if not query:
+            return False
+        match = _REF_RE.match(query.casefold())
+        if match:
+            word, number = match.groups()
+            if (word is None or word in _KIND_WORDS["question"]) and (
+                f"Q{int(number)}" in self.stale_questions
+            ):
+                return True
+        try:
+            parsed = uuid.UUID(query)
+        except ValueError:
+            return False
+        return any(str(parsed) == _uuid_str(v) for v in self.stale_questions.values())
 
     def by_uuid(self, kind: Kind, raw: str) -> RefEntry | None:
         try:

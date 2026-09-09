@@ -24,7 +24,11 @@ bloc conserve les ids existants et le back génère ceux des nouvelles).
 À la reprise d'un ajout accepté, la référence de la question ajoutée
 (:attr:`~app.course_assistant.refs.CourseRefs.new_question_refs`, instantané
 rechargé) est donnée au modèle dans le résultat du tool — aucune relecture du
-bloc nécessaire.
+bloc nécessaire. Symétriquement, à la reprise d'une suppression acceptée la
+question visée a déjà disparu de cet instantané : sa référence n'est plus
+résoluble, et seul
+:meth:`~app.course_assistant.refs.CourseRefs.question_gone` garde la
+validation du tool idempotente.
 
 Plafonds miroir de ``ExerciseContent``/``ExerciseQuestion``
 (app/courses/schemas.py), appliqués en validation — pas de ``maxLength``/
@@ -315,8 +319,17 @@ def _build_question_add_handler(refs: CourseRefs) -> Handler:
 
 def _build_question_delete_handler(refs: CourseRefs) -> Handler:
     async def propose_question_delete(call: AIToolCall) -> AIToolResult:
-        _, failure = _resolve_question(refs, call.arguments.get("question_ref"))
-        if failure is not None:
+        question_ref = call.arguments.get("question_ref")
+        _, failure = _resolve_question(refs, question_ref)
+        # Validation idempotente (docstring de ``hitl_gate``) : à la reprise
+        # d'une suppression ACCEPTÉE, le front a déjà retiré la question de
+        # l'exercice — elle a donc disparu de l'instantané rechargé et sa
+        # référence n'est plus résoluble. Le tool étant ré-exécuté depuis le
+        # début, refuser ici rendrait un échec au modèle alors que la
+        # suppression a bien eu lieu : une référence de la numérotation
+        # rejouée dont la question a disparu passe la validation, le gate
+        # rend la décision du professeur.
+        if failure is not None and not refs.question_gone(question_ref):
             return failure
         return hitl_gate(
             call, accepted_text=_ACCEPTED_QUESTION_DELETE, rejected_text=_REJECTED

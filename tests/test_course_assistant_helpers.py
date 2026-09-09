@@ -1040,6 +1040,42 @@ async def test_executor_exercise_add_gives_the_new_reference_or_asks_to_reread(
 
 
 @pytest.mark.anyio
+async def test_executor_exercise_delete_tolerates_the_question_already_removed(
+    monkeypatch,
+) -> None:
+    """Reprise d'une suppression ACCEPTÉE : le front a déjà retiré la question,
+    l'instantané rechargé ne la porte plus — la validation reste idempotente
+    (sinon le modèle recevrait « introuvable » alors que la suppression a
+    bien eu lieu). Une référence jamais numérotée reste, elle, une erreur."""
+    monkeypatch.setattr(editing_base, "agent_interrupt", lambda payload: {"accepted": True})
+    shrunk = _exercise(
+        content={
+            "statement": "",
+            "questions": [
+                {"id": str(Q2), "statement": "Conclure.", "type": "free_text",
+                 "expected_answer": ""},
+            ],
+        }
+    )
+    executor, refs = _exercise_executor(
+        exercise=shrunk, question_refs={"Q1": str(Q1), "Q2": str(Q2)}
+    )
+    assert refs.refs("question") == ["Q2"]
+    assert refs.stale_questions == {"Q1": str(Q1)}
+    for raw in ("Q1", "q1", str(Q1)):
+        result = await executor(
+            AIToolCall(id="c", name=PROPOSE_QUESTION_DELETE, arguments={"question_ref": raw})
+        )
+        assert not result.is_error
+        assert "a été supprimée" in result.content
+    # Une référence jamais attribuée reste un échec actionnable.
+    unknown = await executor(
+        AIToolCall(id="c", name=PROPOSE_QUESTION_DELETE, arguments={"question_ref": "Q9"})
+    )
+    assert unknown.is_error and "introuvable" in unknown.content
+
+
+@pytest.mark.anyio
 async def test_executor_exercise_validates_before_interrupting(monkeypatch) -> None:
     """Args invalides : échec immédiat et actionnable, JAMAIS d'interrupt."""
     _no_interrupt(monkeypatch)

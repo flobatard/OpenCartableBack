@@ -310,6 +310,23 @@ def test_build_question_refs_replays_mapping_never_reuses_a_freed_ref() -> None:
     assert "Questions de l'exercice : Q1 — a; Q3 — c; Q4 — nouvelle." in missing.error
 
 
+def test_build_question_refs_reports_the_questions_that_disappeared() -> None:
+    """``stale_questions`` : les références rejouées dont la question a disparu
+    (reprise d'une suppression appliquée) — reconnues par référence ou par
+    UUID d'origine, jamais confondues avec une référence inconnue."""
+    mapping = {"Q1": str(Q1), "Q2": str(Q2), "Q3": str(Q3)}
+    refs = _question_refs(questions=[_question(Q1, "a"), _question(Q3, "c")], question_refs=mapping)
+    assert refs.refs("question") == ["Q1", "Q3"]
+    assert refs.stale_questions == {"Q2": str(Q2)}
+    for raw in ("Q2", "q2", " 2 ", "question 2", str(Q2), str(Q2).upper()):
+        assert refs.question_gone(raw) is True
+    for raw in ("Q1", "Q9", str(Q1), str(uuid.uuid4()), "Conclure.", "", None):
+        assert refs.question_gone(raw) is False
+    # Sans numérotation rejouée, aucune question n'est « disparue ».
+    assert _question_refs().stale_questions == {}
+    assert _question_refs().question_gone("Q9") is False
+
+
 def test_build_question_refs_mapping_tolerates_garbage() -> None:
     mapping = {"Q1": str(Q1), "bidule": str(Q2), "Q7": "pas-un-uuid"}
     refs = _question_refs(questions=[_question(Q1, "a"), _question(Q2, "b")], question_refs=mapping)
