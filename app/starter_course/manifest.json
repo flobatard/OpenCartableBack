@@ -80,9 +80,9 @@
       "position": 5,
       "type": "exercise",
       "title": "Un exercice à réponse libre",
-      "description": "Un sujet, deux questions, deux corrigés qui restent chez toi.",
+      "description": "Un sujet, deux questions, deux corrigés que le lien public n'emporte pas.",
       "content": {
-        "statement": "Ce bloc est un **exercice**. Son sujet accepte le même markdown que les blocs de cours, formules comprises.\n\nOn considère la suite définie par $u_0 = 2$ et, pour tout entier $n$, $u_{n+1} = \\frac{u_n + 3}{2}$.\n\nChaque question porte un énoncé et un corrigé. Le corrigé n'est **jamais** envoyé à l'élève et **jamais** indexé par la recherche : il ne quitte pas ton éditeur.\n",
+        "statement": "Ce bloc est un **exercice**. Son sujet accepte le même markdown que les blocs de cours, formules comprises.\n\nOn considère la suite définie par $u_0 = 2$ et, pour tout entier $n$, $u_{n+1} = \\frac{u_n + 3}{2}$.\n\nChaque question porte un énoncé et un corrigé. Le corrigé ne part **jamais** avec le cours partagé et n'est **jamais** indexé par la recherche : un élève qui suit ton lien ne le voit pas. Seule exception, le tuteur IA d'un élève **connecté** peut le lui dévoiler une fois sa réponse juste ou son effort suffisant — écris-le en pensant qu'il sera lu à ce moment-là.\n",
         "questions": [
           {
             "statement": "Calcule $u_1$ puis $u_2$.",
