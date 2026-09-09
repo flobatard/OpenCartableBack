@@ -1,56 +1,78 @@
+# Dépendances de l'API — VERSIONS EXACTES.
+#
+# Pourquoi des pins et pas des fourchettes : le Dockerfile fait un
+# `pip install -r requirements.txt` AU BUILD. Avec des fourchettes, l'image de
+# préprod reçoit ce qui est le plus récent le jour du build, pas ce qui tourne
+# en dev — dérive constatée sur langchain-google-genai, dont le registre de
+# profils de modèles avait changé entre les deux (options de raisonnement
+# fantaisistes proposées pour Gemini 2.0 ; cf. docs/decisions.md, décision 24).
+#
+# Mise à jour : `pip install -U <paquet>` dans le venv, `pytest` + `ruff check`,
+# puis reporter ici la version obtenue (`pip show <paquet>`).
+#
+# Pas de lock complet (transitives figées par `pip freeze`) : sur x86 la pile
+# ML tire des wheels nvidia/cuda qui n'existent pas en ARM64, un tel fichier
+# casserait le build de l'image du Raspberry Pi. Les pins portent donc sur les
+# dépendances DIRECTES — les paquets partenaires du client IA, seuls à porter
+# des données qui changent le comportement, en font tous partie.
+
 # API
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-python-multipart>=0.0.9
-python-dotenv>=1.0.0
-pydantic-settings[yaml]>=2.4.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+python-multipart==0.0.32
+python-dotenv==1.2.3
+pydantic-settings[yaml]==2.15.0
 
 # Base de données SQL
-alembic==1.13.1
-psycopg2-binary==2.9.9
-sqlalchemy>=2.0.0
-asyncpg>=0.29.0
+alembic==1.19.2
+psycopg2-binary==2.9.12
+sqlalchemy==2.0.52
+asyncpg==0.31.0
 
 # LangChain & IA — noyau 1.x (client multi-provider confiné dans app/core/ai/)
-langchain>=1.3,<2
-langchain-core>=1.4,<2
-langgraph>=1.2,<2                 # runtime agent (create_agent) — déjà transitif, pin explicite
-langchain-text-splitters>=1.1,<2
-# Partenaires alignés core 1.x — un package par provider du client IA
-langchain-openai>=1.3,<2          # OpenAI + tout endpoint "openai_compatible" (Groq, vLLM, LM Studio…)
-langchain-anthropic>=1.6,<2
-langchain-google-genai>=4.2,<5
-langchain-mistralai>=1.1,<2
-langchain-ollama>=1.1,<2
-langchain-huggingface>=1.2,<2
+langchain==1.4.0
+langchain-core==1.6.2
+langgraph==1.2.11                 # runtime agent (create_agent) — déjà transitif, pin explicite
+langchain-text-splitters==1.1.2
+# Partenaires alignés core 1.x — un package par provider du client IA.
+# Ils embarquent le registre de profils de modèles lu par app/core/ai/profiles.py :
+# le contenu varie d'une version à l'autre, d'où le pin exact.
+langchain-openai==1.6.1           # OpenAI + tout endpoint "openai_compatible" (Groq, vLLM, LM Studio…)
+langchain-anthropic==1.7.1
+langchain-google-genai==4.4.0
+langchain-mistralai==1.1.6
+langchain-ollama==1.1.0
+langchain-huggingface==1.2.2
 # Héritage conservé (décision actée) — 0.4.x = la ligne compatible langchain-core 1.x
-langchain-community>=0.4,<0.5
-sentence-transformers>=5.0,<6
+langchain-community==0.4.2
+# Non importé par app/ : maintenu sur la ligne 5.x (la 6.x remuerait torch et
+# ses wheels CUDA pour rien).
+sentence-transformers==5.6.0
 
-# Base vectorielle
-chromadb>=1.0,<2
-langchain-chroma>=1.1,<2
+# Base vectorielle — non importée par app/ non plus (RAG éventuel, cf. TODO.md)
+chromadb==1.5.9
+langchain-chroma==1.1.0
 
 # Observabilité IA — opt-in via LANGFUSE_* (voir app/core/ai/observability.py)
-langfuse>=3.15
+langfuse==4.15.2
 
 # Extraction de texte PDF (tool read_resource_pdf de l'assistant de cours) —
 # pur Python, ARM64 OK
-pypdf>=6,<7
+pypdf==6.18.0
 
 # Crypto / JWT (validation des tokens Zitadel via JWKS)
-pyjwt[crypto]>=2.9.0
-cryptography>=42.0.0
+pyjwt[crypto]==2.13.0
+cryptography==50.0.1
 
-# HTTP
-httpx>=0.27.0
+# HTTP
+httpx==0.28.1
 
 # S3
-boto3>=1.35.0
+boto3==1.43.90
 
 # Cache
-redis>=5.0.0
+redis==8.1.0
 
 # Dev / tests
-pytest>=8.0.0
-ruff>=0.6.0
+pytest==9.1.1
+ruff==0.16.6

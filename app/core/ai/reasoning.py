@@ -2,9 +2,19 @@
 
 Aucun provider ne publie par API les niveaux d'effort de ses modèles : ce
 catalogue est **maintenu à la main** (règles par préfixe de nom, ordonnées de
-la plus précise à la plus générale), adossé au profil embarqué de langchain
-(:mod:`app.core.ai.profiles`) — niveaux Anthropic déclarés par modèle, et
-« ne raisonne pas » (``reasoning_output`` False) chez Anthropic/OpenAI/Google.
+la plus précise à la plus générale), raffiné par le profil embarqué de
+langchain (:mod:`app.core.ai.profiles`) — niveaux Anthropic déclarés par
+modèle, et « ne raisonne pas » (``reasoning_output`` False).
+
+Les règles se suffisent à elles-mêmes : le profil est une donnée **tierce**
+dont le contenu change d'une version du paquet partenaire à l'autre — au
+passage de ``langchain-google-genai`` 4.2 à 4.4, l'entrée de
+``gemini-2.0-flash`` a disparu du registre, et une image de préprod construite
+sur la seconde proposait donc des options de raisonnement à un modèle qui n'en
+a pas. Une famille qui ne raisonne pas doit avoir sa règle ici ; le pin exact
+de ``requirements.txt`` borne le risque à une montée de version délibérée, il
+ne l'annule pas. Corollaire côté tests : la table du catalogue s'exécute
+profil neutralisé.
 
 Sémantique de :class:`ReasoningOptions` :
 
@@ -47,8 +57,13 @@ NOTHING = ReasoningOptions(toggle=(), efforts=(), known=True)
 # plus général. Les noms sont normalisés (minuscules, sans « models/ »).
 
 _LOW_MED_HIGH = ("low", "medium", "high")
+_ALL_FIVE = (*_LOW_MED_HIGH, "xhigh", "max")
 
 _ANTHROPIC_RULES = (
+    # Générations sans réflexion étendue (antérieures à claude-3-7).
+    (("claude-3-5", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku", "claude-2"), NOTHING),
+    # Famille 5 : niveaux natifs jusqu'à max (miroir du profil embarqué).
+    (("claude-opus-5", "claude-sonnet-5"), ReasoningOptions(BOTH, _ALL_FIVE, True)),
     (("claude-opus-4-5",), ReasoningOptions(BOTH, _LOW_MED_HIGH, True)),
     (
         ("claude-opus-4-6", "claude-sonnet-4-6"),
@@ -62,9 +77,11 @@ _ANTHROPIC_RULES = (
 )
 # Inconnu = récent (thinking adaptatif, tous les niveaux) — cohérent avec le
 # palier « adaptive » de providers.py.
-_ANTHROPIC_DEFAULT = ReasoningOptions(BOTH, (*_LOW_MED_HIGH, "xhigh", "max"), False)
+_ANTHROPIC_DEFAULT = ReasoningOptions(BOTH, _ALL_FIVE, False)
 
 _OPENAI_RULES = (
+    # Familles sans raisonnement (gpt-4o, gpt-4.1, gpt-4-turbo, gpt-3.5…).
+    (("gpt-4", "gpt-3.5", "chatgpt-4o"), NOTHING),
     (("gpt-5-pro",), ReasoningOptions((), ("high",), True)),
     (("gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro"), ReasoningOptions((), ("medium", "high"), True)),
     (("gpt-5.1-codex-max",), ReasoningOptions((), (*_LOW_MED_HIGH, "xhigh"), True)),
@@ -85,6 +102,8 @@ _OPENAI_RULES = (
 _OPENAI_DEFAULT = ReasoningOptions((), _LOW_MED_HIGH, False)
 
 _GOOGLE_RULES = (
+    # Générations sans réflexion (1.x et 2.0).
+    (("gemini-1", "gemini-2.0"), NOTHING),
     # 2.5 Pro ne se coupe pas (thinking_budget 0 refusé) ; presets → budget.
     (("gemini-2.5-pro",), ReasoningOptions((ON,), _LOW_MED_HIGH, True)),
     (("gemini-2.5",), ReasoningOptions(BOTH, _LOW_MED_HIGH, True)),
