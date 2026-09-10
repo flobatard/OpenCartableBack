@@ -34,7 +34,9 @@ Formules : uniquement les délimiteurs dollar, seule syntaxe rendue par \
 l'application — en ligne $u_{n+1} = a u_n + b$, centrée seule sur sa ligne \
 $$u_n = (u_0 - \\alpha) a^n + \\alpha$$. Jamais \\( … \\), \\[ … \\], ( … ) ni \
 \\begin{equation} (affichés en texte brut). Tout symbole mathématique, même \
-$a$ ou $\\alpha$, va entre dollars.\
+$a$ ou $\\alpha$, va entre dollars. Chimie dans une formule : équation \
+$\\ce{2H2 + O2 -> 2H2O}$ (indices, charges Cu^2+, états (aq), <=>), unité \
+$\\pu{9.81 m.s^-2}$.\
 """
 
 REFS_RULE = """\

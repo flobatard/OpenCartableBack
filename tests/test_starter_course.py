@@ -1,7 +1,7 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
 Le contenu du manifeste est du markdown destiné à des moteurs de rendu du
-front (KaTeX, Mermaid, JSXGraph, TikZ), dont les contraintes ne sont vérifiées
+front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ), dont les contraintes ne sont vérifiées
 nulle part côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent
 ce qui est mécaniquement vérifiable — ils n'attestent pas du rendu final
 (cf. TODO.md), mais ils rattrapent les fautes qui donneraient au prof un
@@ -25,6 +25,10 @@ from tests.fakes import FakeSession, FakeStorage, inserts, make_client
 MANIFEST = service.load_manifest()
 
 _FENCE_RE = re.compile(r"^```(\w+)\n(.*?)^```", re.MULTILINE | re.DOTALL)
+# Code (fences et `en ligne`), puis formules : ce qui reste est de la prose.
+_CODE_RE = re.compile(r"^```.*?^```|`[^`\n]*`", re.MULTILINE | re.DOTALL)
+_MATH_RE = re.compile(r"\$\$.+?\$\$|\$[^$\n]+\$", re.DOTALL)
+_MHCHEM_RE = re.compile(r"\\(?:ce|pu)\{")
 
 
 def _markdowns() -> list[str]:
@@ -137,6 +141,17 @@ def test_manifest_tikz_fences_use_only_the_embedded_distribution():
     for body in fences:
         assert "\\usepackage" not in body
         assert "\\documentclass" not in body
+
+
+def test_manifest_mhchem_commands_stay_inside_formulas():
+    # `\ce`/`\pu` sont des commandes KaTeX (extension mhchem) : hors d'une
+    # formule, elles s'affichent en texte brut.
+    shown = 0
+    for markdown in _markdowns():
+        prose = _CODE_RE.sub("", markdown)
+        shown += len(_MHCHEM_RE.findall(prose))
+        assert not _MHCHEM_RE.search(_MATH_RE.sub("", prose)), markdown
+    assert shown, "le cours doit démontrer la notation chimique (mhchem)"
 
 
 def test_manifest_uses_no_katex_macro():

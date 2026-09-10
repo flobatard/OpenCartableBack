@@ -317,6 +317,7 @@ def test_system_prompt_for_is_static_per_context() -> None:
     assert prompt == COURSE_SYSTEM_PROMPT
     assert "oc-block:<ref>" in prompt  # consigne de citation
     assert "`read_block`" in prompt and "Vouvoyez" in prompt
+    assert "$\\ce{2H2 + O2 -> 2H2O}$" in prompt  # chimie (mhchem) : règle commune
     assert "```tikz" not in prompt and "propose_block_edit" not in prompt
     assert "Pythagore" not in prompt  # jamais de contenu de cours
     assert system_prompt_for(BLOCK_TEXT) == BLOCK_TEXT.system_prompt

@@ -4,7 +4,7 @@
   "exported_at": "2026-09-06T00:00:00Z",
   "course": {
     "title": "Cours d'exemple",
-    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, diagrammes, figures, schémas, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
+    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
     "preview_settings": {
       "fontSizePx": 17,
       "headingScale": 1.1,
@@ -27,7 +27,7 @@
       "title": "Bienvenue",
       "description": "Ce que fait ce cours, et pourquoi il est en brouillon.",
       "content": {
-        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. les diagrammes ;\n3. les figures de fonctions ;\n4. les schémas géométriques ;\n5. les exercices à réponse libre ;\n6. les modules interactifs.\n"
+        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les exercices à réponse libre ;\n7. les modules interactifs.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -46,6 +46,17 @@
     {
       "position": 2,
       "type": "text",
+      "title": "Écrire de la chimie",
+      "description": "Équations, ions et unités avec \\ce et \\pu — toujours à l'intérieur d'une formule.",
+      "content": {
+        "markdown": "La chimie s'écrit **dans une formule**, entre dollars, avec la commande `\\ce{…}` : indices, charges et flèches se placent tout seuls.\n\n$$\\ce{CH4 + 2O2 -> CO2 + 2H2O}$$\n\nLa source de cette équation :\n\n```\n$$\\ce{CH4 + 2O2 -> CO2 + 2H2O}$$\n```\n\nLes chiffres qui suivent un symbole deviennent des indices, le coefficient se place devant l'espèce. La charge d'un ion suit un accent circonflexe — $\\ce{Cu^2+}$, $\\ce{SO4^2-}$, $\\ce{H3O+}$ — et l'état physique se note entre parenthèses : $\\ce{H2O(l)}$, $\\ce{CO2(g)}$, $\\ce{Na+(aq)}$.\n\nUn équilibre s'écrit avec `<=>` :\n\n$$\\ce{CH3COOH + H2O <=> CH3COO- + H3O+}$$\n\nPour une grandeur physique, `\\pu{…}` écrit la valeur et son unité avec les bons espacements : $g = \\pu{9.81 m.s^-2}$, $e = \\pu{1.6e-19 C}$.\n\nDeux pièges :\n\n- `\\ce` et `\\pu` sont des commandes de formule : **hors des dollars**, elles restent du texte brut ;\n- une charge de plusieurs caractères exige l'accent circonflexe : `\\ce{Cu2+}` donnerait $\\ce{Cu2+}$ (un indice 2 et une charge +), pas l'ion cuivre $\\ce{Cu^2+}$.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 3,
+      "type": "text",
       "title": "Dessiner un diagramme",
       "description": "Arbres de décision, séquences, états — et pourquoi les nœuds n'acceptent pas de formules.",
       "content": {
@@ -55,7 +66,7 @@
       "module_ref": null
     },
     {
-      "position": 3,
+      "position": 4,
       "type": "text",
       "title": "Tracer une figure",
       "description": "Courbes de fonctions et points remarquables, avec le piège des fractions.",
@@ -66,7 +77,7 @@
       "module_ref": null
     },
     {
-      "position": 4,
+      "position": 5,
       "type": "text",
       "title": "Composer un schéma",
       "description": "Un schéma géométrique en LaTeX, et les trois limites du moteur embarqué.",
@@ -77,7 +88,7 @@
       "module_ref": null
     },
     {
-      "position": 5,
+      "position": 6,
       "type": "exercise",
       "title": "Un exercice à réponse libre",
       "description": "Un sujet, deux questions, deux corrigés que le lien public n'emporte pas.",
@@ -100,7 +111,7 @@
       "module_ref": null
     },
     {
-      "position": 6,
+      "position": 7,
       "type": "module",
       "title": "Un module interactif",
       "description": "Un widget HTML, CSS et JavaScript exécuté dans un bac à sable, sans réseau ni stockage.",
@@ -109,7 +120,7 @@
       "module_ref": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34"
     },
     {
-      "position": 7,
+      "position": 8,
       "type": "text",
       "title": "Appeler un module depuis le texte",
       "description": "Glisser un module dans un paragraphe avec une référence oc-module.",
@@ -120,7 +131,7 @@
       "module_ref": null
     },
     {
-      "position": 8,
+      "position": 9,
       "type": "text",
       "title": "Pour aller plus loin",
       "description": "Publier, partager, régler la lecture, exporter, se faire aider.",
