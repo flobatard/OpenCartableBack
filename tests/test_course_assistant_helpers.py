@@ -347,7 +347,7 @@ def test_build_turn_context_block_text_focus() -> None:
     assert "un bloc de texte de son cours" in prompt
     assert "propose_block_edit" in prompt
     assert "Chaque appel est BLOQUANT" in prompt
-    for fence in ("```mermaid", "```tikz", "```geogebra", "```jsxgraph"):
+    for fence in ("```mermaid", "```tikz", "```geogebra", "```jsxgraph", "```timeline"):
         assert fence in prompt
     assert "oc-module:<cible>" in prompt
     assert "propose_question_edit" not in prompt

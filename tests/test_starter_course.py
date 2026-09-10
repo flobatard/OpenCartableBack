@@ -1,7 +1,7 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
 Le contenu du manifeste est du markdown destiné à des moteurs de rendu du
-front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ), dont les contraintes ne sont vérifiées
+front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ, frise), dont les contraintes ne sont vérifiées
 nulle part côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent
 ce qui est mécaniquement vérifiable — ils n'attestent pas du rendu final
 (cf. TODO.md), mais ils rattrapent les fautes qui donneraient au prof un
@@ -141,6 +141,44 @@ def test_manifest_tikz_fences_use_only_the_embedded_distribution():
     for body in fences:
         assert "\\usepackage" not in body
         assert "\\documentclass" not in body
+
+
+_TIMELINE_DATE_RE = re.compile(r"-?\d{1,4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?")
+
+
+def _timeline_date(raw: str) -> float:
+    """Miroir de ``parseTimelineDate`` (front) : l'année suffit à ordonner."""
+    raw = raw.strip()
+    assert _TIMELINE_DATE_RE.fullmatch(raw), raw
+    year, _, rest = raw.lstrip("-").partition("-")
+    sign = -1 if raw.startswith("-") else 1
+    return sign * int(year) + (int(rest[:2]) - 1) / 12 if rest else sign * int(year)
+
+
+def test_manifest_timeline_fences_are_well_formed():
+    # Une ligne invalide est ignorée en silence par la frise (seul un compteur
+    # le signale) : l'exemple doit tracer chacune de ses lignes.
+    fences = _fences("timeline")
+    assert fences, "le cours doit démontrer une frise chronologique"
+    for body in fences:
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, value = line.partition("=")
+            assert key in {"start", "end", "step", "period", "event"}, line
+            if key == "period":
+                start, end, label = (part.strip() for part in value.split(",", 2))
+                assert _timeline_date(start) < _timeline_date(end), line
+                assert label, line
+            elif key == "event":
+                date, _, label = value.partition(",")
+                _timeline_date(date)
+                assert label.strip(), line
+            elif key == "step":
+                assert int(value) > 0, line
+            else:
+                _timeline_date(value)
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():
