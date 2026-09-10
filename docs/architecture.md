@@ -30,7 +30,7 @@ Les deux arbres sont aussi servis sans JWT sous `/public/*/tree` (facettes de re
 
 `blocks` : `position` sans unicité (le réordonnancement réécrit 0..n-1 ; tri stable `position, id`), `title`/`description` facultatifs communs, quatre types dont le `content` JSONB est le **contrat documenté dans `app/models/block.py`** et validé par les schémas `TextContent`/`ExerciseContent`/`DocumentContent` (union de formes disjointes, `extra="forbid"`) :
 
-- `text` : `{"markdown"}` — jamais de HTML brut ; formules LaTeX (chimie mhchem `\ce`/`\pu` comprise), Mermaid, TikZ, GeoGebra, JSXGraph, frises (`timeline`), molécules (`smiles`), graphiques (`vegalite`) et liens `oc-resource:`/`oc-module:` vivent dans la chaîne, rendus par le front.
+- `text` : `{"markdown"}` — jamais de HTML brut ; formules LaTeX (chimie mhchem `\ce`/`\pu` comprise), Mermaid, TikZ, GeoGebra, JSXGraph, frises (`timeline`), molécules (`smiles`), graphiques (`vegalite`), partitions (`abc`) et liens `oc-resource:`/`oc-module:` vivent dans la chaîne, rendus par le front.
 - `exercise` : `{"statement", "questions": [{id, statement, type, expected_answer}]}` — `expected_answer` = corrigé du prof en texte simple, jamais servi aux élèves ; les ids de questions sont générés en service et **stables à vie** (sémantique remplacement à l'édition : question absente = supprimée, id inconnu = 422).
 - `document` : `{"caption", "display"}` + **colonne** `resource_id` (nullable, FK CASCADE, réservée à ce type par CHECK).
 - `module` : `{}` + **colonne** `module_id` (idem). Le content d'un bloc module n'est pas éditable.

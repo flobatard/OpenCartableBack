@@ -1,13 +1,13 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
-Le contenu du manifeste est du markdown destiné à des moteurs de rendu du
-front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ, frise, SMILES, Vega-Lite),
-dont les contraintes ne sont vérifiées nulle part côté serveur. Les tests de
-gardes de syntaxe ci-dessous en encodent ce qui est mécaniquement
-vérifiable — ils n'attestent pas du rendu final
-(cf. TODO.md), mais ils rattrapent les fautes qui donneraient au prof un
-exemple faux : un dollar dans un nœud Mermaid, une fraction dans un
-``point=`` JSXGraph, une commande LaTeX indisponible.
+Le contenu du manifeste est du markdown destiné aux moteurs de rendu du
+front (KaTeX, Mermaid et les langages d'extension : JSXGraph, TikZ, frise,
+SMILES, Vega-Lite, ABC…), dont les contraintes ne sont vérifiées nulle part
+côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent ce qui est
+mécaniquement vérifiable — ils n'attestent pas du rendu final (cf. TODO.md),
+mais ils rattrapent les fautes qui donneraient au prof un exemple faux : un
+dollar dans un nœud Mermaid, une fraction dans un ``point=`` JSXGraph, une
+commande LaTeX indisponible.
 """
 
 import json
@@ -220,6 +220,18 @@ def test_manifest_vegalite_fences_are_inline_json():
         assert isinstance(spec, dict)
         assert not _has_url_key(spec), body
         assert spec["data"]["values"], body
+
+
+def test_manifest_abc_fences_are_playable_on_the_piano():
+    # Le front retire les directives MIDI (seul le piano est hébergé) : un
+    # exemple qui en porte montrerait un réglage sans effet.
+    fences = _fences("abc")
+    assert fences, "le cours doit démontrer une partition ABC"
+    for body in fences:
+        headers = [line.split(":", 1)[0] for line in body.splitlines() if re.match(r"[A-Z]:", line)]
+        assert headers[0] == "X", body
+        assert headers[-1] == "K", body  # K: clôt l'en-tête, les notes suivent
+        assert not re.search(r"%%MIDI|I:\s*MIDI", body, re.IGNORECASE), body
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():

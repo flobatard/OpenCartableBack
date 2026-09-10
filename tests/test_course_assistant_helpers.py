@@ -355,6 +355,7 @@ def test_build_turn_context_block_text_focus() -> None:
         "```timeline",
         "```smiles",
         "```vegalite",
+        "```abc",
     ):
         assert fence in prompt
     assert "oc-module:<cible>" in prompt

@@ -4,7 +4,7 @@
   "exported_at": "2026-09-06T00:00:00Z",
   "course": {
     "title": "Cours d'exemple",
-    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, frises, molécules, graphiques, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
+    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, frises, molécules, graphiques, partitions, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
     "preview_settings": {
       "fontSizePx": 17,
       "headingScale": 1.1,
@@ -27,7 +27,7 @@
       "title": "Bienvenue",
       "description": "Ce que fait ce cours, et pourquoi il est en brouillon.",
       "content": {
-        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les frises chronologiques ;\n7. les molécules ;\n8. les graphiques de données ;\n9. les exercices à réponse libre ;\n10. les modules interactifs.\n"
+        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les frises chronologiques ;\n7. les molécules ;\n8. les graphiques de données ;\n9. les partitions ;\n10. les exercices à réponse libre ;\n11. les modules interactifs.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -122,6 +122,17 @@
     },
     {
       "position": 9,
+      "type": "text",
+      "title": "Écrire une partition",
+      "description": "Une mélodie en notation ABC, gravée et jouée au piano.",
+      "content": {
+        "markdown": "Une partition s'écrit dans un bloc de code `abc`, en **notation ABC** : quelques en-têtes, puis les notes, une lettre par note.\n\n```abc\nX:1\nT:Frère Jacques\nM:4/4\nL:1/4\nQ:1/4=100\nK:F\nFGAF|FGAF|ABc2|ABc2|\nc/d/c/B/ AF|c/d/c/B/ AF|FCF2|FCF2|]\n```\n\nLe bouton **Écouter**, sous la partition, la joue au piano.\n\nLes en-têtes s'écrivent un par ligne : `X:` le numéro de la mélodie, `T:` son titre, `M:` la mesure, `L:` la durée d'une note sans indication (`1/4` pour une noire), `Q:` le tempo, et **toujours en dernier** `K:` la tonalité. Viennent ensuite les notes : `C D E F G A B` pour l'octave du milieu, en minuscules pour l'octave au-dessus ; un chiffre allonge la note (`c2`), une barre oblique l'abrège (`c/`) ; `|` sépare les mesures et `|]` termine le morceau.\n\nDeux limites :\n\n- seul le piano est disponible : une directive `%%MIDI` qui choisit un autre instrument est ignorée ;\n- une ligne que l'analyseur ne comprend pas est signalée dans des avertissements repliés sous la partition.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 10,
       "type": "exercise",
       "title": "Un exercice à réponse libre",
       "description": "Un sujet, deux questions, deux corrigés que le lien public n'emporte pas.",
@@ -144,7 +155,7 @@
       "module_ref": null
     },
     {
-      "position": 10,
+      "position": 11,
       "type": "module",
       "title": "Un module interactif",
       "description": "Un widget HTML, CSS et JavaScript exécuté dans un bac à sable, sans réseau ni stockage.",
@@ -153,7 +164,7 @@
       "module_ref": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34"
     },
     {
-      "position": 11,
+      "position": 12,
       "type": "text",
       "title": "Appeler un module depuis le texte",
       "description": "Glisser un module dans un paragraphe avec une référence oc-module.",
@@ -164,7 +175,7 @@
       "module_ref": null
     },
     {
-      "position": 12,
+      "position": 13,
       "type": "text",
       "title": "Pour aller plus loin",
       "description": "Publier, partager, régler la lecture, exporter, se faire aider.",

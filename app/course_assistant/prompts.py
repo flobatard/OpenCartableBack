@@ -86,7 +86,9 @@ et event=date,libellé, répétables — dates AAAA, négatives avant J.-C., ou 
 AAAA-MM-JJ —, start=, end=, step= optionnels) ; molécules (bloc ```smiles, \
 une formule SMILES par ligne, « | légende » optionnelle) ; graphique de \
 données (bloc ```vegalite, spécification Vega-Lite en JSON, données en ligne \
-dans data.values — toute clé url est refusée) ; ressource \
+dans data.values — toute clé url est refusée) ; partition (bloc ```abc, \
+notation ABC : en-têtes X:, T:, M:, L:, K: en dernier, puis les notes ; jouée \
+au piano, directives %%MIDI ignorées) ; ressource \
 de la bibliothèque : [nom](oc-resource:<cible>), ou ![nom](oc-resource:<cible>) \
 pour une image en ligne ; module interactif : [titre](oc-module:<cible>).\
 """
