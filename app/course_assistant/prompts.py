@@ -83,7 +83,8 @@ clé=valeur par ligne : equation=<expression de x>, point=x,y, \
 bbox=xmin,ymax,xmax,ymin — plusieurs equation=/point= possibles) ; frise \
 chronologique (bloc ```timeline, clé=valeur par ligne : period=début,fin,libellé \
 et event=date,libellé, répétables — dates AAAA, négatives avant J.-C., ou \
-AAAA-MM-JJ —, start=, end=, step= optionnels) ; ressource \
+AAAA-MM-JJ —, start=, end=, step= optionnels) ; molécules (bloc ```smiles, \
+une formule SMILES par ligne, « | légende » optionnelle) ; ressource \
 de la bibliothèque : [nom](oc-resource:<cible>), ou ![nom](oc-resource:<cible>) \
 pour une image en ligne ; module interactif : [titre](oc-module:<cible>).\
 """

@@ -1,8 +1,9 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
 Le contenu du manifeste est du markdown destiné à des moteurs de rendu du
-front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ, frise), dont les contraintes ne sont vérifiées
-nulle part côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent
+front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ, frise, SMILES), dont les
+contraintes ne sont vérifiées nulle part côté serveur. Les tests de gardes de
+syntaxe ci-dessous en encodent
 ce qui est mécaniquement vérifiable — ils n'attestent pas du rendu final
 (cf. TODO.md), mais ils rattrapent les fautes qui donneraient au prof un
 exemple faux : un dollar dans un nœud Mermaid, une fraction dans un
@@ -179,6 +180,25 @@ def test_manifest_timeline_fences_are_well_formed():
                 assert int(value) > 0, line
             else:
                 _timeline_date(value)
+
+
+_SMILES_RE = re.compile(r"[A-Za-z0-9@+\-\[\]()=#$:/\\%.*]+")
+
+
+def test_manifest_smiles_fences_are_well_formed():
+    # Parser dédié côté front : une molécule par ligne, « | légende » après.
+    fences = _fences("smiles")
+    assert fences, "le cours doit démontrer une molécule SMILES"
+    for body in fences:
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            smiles, _, _legend = line.partition("|")
+            smiles = smiles.strip()
+            assert _SMILES_RE.fullmatch(smiles), line
+            assert smiles.count("(") == smiles.count(")"), line
+            assert smiles.count("[") == smiles.count("]"), line
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():
