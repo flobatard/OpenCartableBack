@@ -63,7 +63,7 @@ AI_BASE_URL: https://api.mistral.ai/v1
 
 # Langfuse (observabilité LLM, opt-in) — actif ssi les 3 variables sont
 # renseignées ; les clés sont des secrets → .env du serveur.
-# LANGFUSE_HOST: https://cloud.langfuse.com
+LANGFUSE_HOST: "https://cloud.langfuse.com"
 
 # Purge périodique (app/maintenance/, service `purge` du compose de preprod).
 # TOUS les délais de purge vivent ici. Rétentions en JOURS, 0 = tâche
