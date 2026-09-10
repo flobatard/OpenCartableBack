@@ -1,15 +1,16 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
 Le contenu du manifeste est du markdown destiné à des moteurs de rendu du
-front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ, frise, SMILES), dont les
-contraintes ne sont vérifiées nulle part côté serveur. Les tests de gardes de
-syntaxe ci-dessous en encodent
-ce qui est mécaniquement vérifiable — ils n'attestent pas du rendu final
+front (KaTeX et mhchem, Mermaid, JSXGraph, TikZ, frise, SMILES, Vega-Lite),
+dont les contraintes ne sont vérifiées nulle part côté serveur. Les tests de
+gardes de syntaxe ci-dessous en encodent ce qui est mécaniquement
+vérifiable — ils n'attestent pas du rendu final
 (cf. TODO.md), mais ils rattrapent les fautes qui donneraient au prof un
 exemple faux : un dollar dans un nœud Mermaid, une fraction dans un
 ``point=`` JSXGraph, une commande LaTeX indisponible.
 """
 
+import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -199,6 +200,26 @@ def test_manifest_smiles_fences_are_well_formed():
             assert _SMILES_RE.fullmatch(smiles), line
             assert smiles.count("(") == smiles.count(")"), line
             assert smiles.count("[") == smiles.count("]"), line
+
+
+def _has_url_key(value: object) -> bool:
+    if isinstance(value, dict):
+        return "url" in value or any(_has_url_key(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_url_key(v) for v in value)
+    return False
+
+
+def test_manifest_vegalite_fences_are_inline_json():
+    # Le front refuse toute clé `url` (aucune requête vers un tiers depuis le
+    # navigateur d'un élève) et n'affiche qu'une notice pour un JSON invalide.
+    fences = _fences("vegalite")
+    assert fences, "le cours doit démontrer un graphique Vega-Lite"
+    for body in fences:
+        spec = json.loads(body)
+        assert isinstance(spec, dict)
+        assert not _has_url_key(spec), body
+        assert spec["data"]["values"], body
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():
