@@ -4,7 +4,7 @@
   "exported_at": "2026-09-06T00:00:00Z",
   "course": {
     "title": "Cours d'exemple",
-    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, circuits électriques, frises, molécules, graphiques, partitions, requêtes SQL, programmes Python, exercices et modules interactifs — simulations comprises, avec six bibliothèques embarquées. C'est un brouillon — modifie-le, casse-le, recommence.",
+    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : encadrés, formules, chimie, diagrammes, figures, schémas, circuits électriques, frises, textes numérotés, molécules, graphiques, partitions, requêtes SQL, programmes Python, exercices et modules interactifs — simulations comprises, avec six bibliothèques embarquées. C'est un brouillon — modifie-le, casse-le, recommence.",
     "preview_settings": {
       "fontSizePx": 17,
       "headingScale": 1.1,
@@ -27,13 +27,24 @@
       "title": "Bienvenue",
       "description": "Ce que fait ce cours, et pourquoi il est en brouillon.",
       "content": {
-        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les circuits électriques ;\n7. les frises chronologiques ;\n8. les molécules ;\n9. les graphiques de données ;\n10. les partitions ;\n11. les requêtes SQL exécutables ;\n12. les programmes Python ;\n13. les exercices à réponse libre ;\n14. les modules interactifs ;\n15. les bibliothèques des modules : physique, graphiques, animation, géométrie, données et 3D.\n"
+        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les encadrés ;\n2. les formules mathématiques ;\n3. la notation chimique ;\n4. les diagrammes ;\n5. les figures de fonctions ;\n6. les schémas géométriques ;\n7. les circuits électriques ;\n8. les frises chronologiques ;\n9. les textes à lignes numérotées ;\n10. les molécules ;\n11. les graphiques de données ;\n12. les partitions ;\n13. les requêtes SQL exécutables ;\n14. les programmes Python ;\n15. les exercices à réponse libre ;\n16. les modules interactifs ;\n17. les bibliothèques des modules : physique, graphiques, animation, géométrie, données et 3D.\n"
       },
       "resource_ref": null,
       "module_ref": null
     },
     {
       "position": 1,
+      "type": "text",
+      "title": "Encadrer l'essentiel",
+      "description": "Définitions, méthodes, points à retenir et mises en garde, dans des encadrés colorés.",
+      "content": {
+        "markdown": "Un **encadré** met une notion en valeur : c'est une citation dont la première ligne annonce le type.\n\n> [!DEFINITION]\n> Un **encadré** est une citation ouverte par un marqueur,\n> ici `[!DEFINITION]`. Sa couleur et son icône disent d'un\n> coup d'œil de quoi il s'agit.\n\nLa source de cet encadré :\n\n```\n> [!DEFINITION]\n> Un **encadré** est une citation ouverte par un marqueur,\n> ici `[!DEFINITION]`. Sa couleur et son icône disent d'un\n> coup d'œil de quoi il s'agit.\n```\n\nSix types existent : `[!DEFINITION]`, `[!RETENIR]`, `[!METHODE]`, `[!EXEMPLE]`, `[!REMARQUE]` et `[!ATTENTION]`. Le texte écrit après le marqueur, sur la même ligne, remplace le titre du type :\n\n> [!METHODE] Écrire un encadré\n> 1. Commence une ligne par `>` suivi du marqueur, puis, si tu veux, d'un titre.\n> 2. Écris le contenu sur les lignes suivantes, chacune précédée de `>` : listes, formules et figures y ont leur place.\n> 3. Laisse une ligne vide pour sortir de l'encadré.\n\n> [!RETENIR] Théorème de Pythagore\n> Si le triangle $ABC$ est rectangle en $C$, alors $AB^2 = AC^2 + BC^2$.\n\n> [!ATTENTION]\n> Une ligne collée à la dernière ligne `>` fait encore partie de l'encadré : seule la ligne vide le ferme. Et un type inconnu, comme `[!ASTUCE]`, laisse une simple citation.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 2,
       "type": "text",
       "title": "Écrire des formules",
       "description": "Formules en ligne et centrées, et les trois règles qui évitent les surprises.",
@@ -44,7 +55,7 @@
       "module_ref": null
     },
     {
-      "position": 2,
+      "position": 3,
       "type": "text",
       "title": "Écrire de la chimie",
       "description": "Équations, ions et unités avec \\ce et \\pu — toujours à l'intérieur d'une formule.",
@@ -55,7 +66,7 @@
       "module_ref": null
     },
     {
-      "position": 3,
+      "position": 4,
       "type": "text",
       "title": "Dessiner un diagramme",
       "description": "Arbres de décision, séquences, états — et pourquoi les nœuds n'acceptent pas de formules.",
@@ -66,7 +77,7 @@
       "module_ref": null
     },
     {
-      "position": 4,
+      "position": 5,
       "type": "text",
       "title": "Tracer une figure",
       "description": "Courbes de fonctions et points remarquables, avec le piège des fractions.",
@@ -77,7 +88,7 @@
       "module_ref": null
     },
     {
-      "position": 5,
+      "position": 6,
       "type": "text",
       "title": "Composer un schéma",
       "description": "Un schéma géométrique en LaTeX, et les trois limites du moteur embarqué.",
@@ -88,7 +99,7 @@
       "module_ref": null
     },
     {
-      "position": 6,
+      "position": 7,
       "type": "text",
       "title": "Dessiner un circuit électrique",
       "description": "Un schéma normalisé en TikZ : pile, lampe, résistance et appareils de mesure.",
@@ -99,7 +110,7 @@
       "module_ref": null
     },
     {
-      "position": 7,
+      "position": 8,
       "type": "text",
       "title": "Construire une frise chronologique",
       "description": "Périodes et événements sur un axe du temps, avant ou après J.-C.",
@@ -110,7 +121,18 @@
       "module_ref": null
     },
     {
-      "position": 8,
+      "position": 9,
+      "type": "text",
+      "title": "Numéroter les lignes d'un texte",
+      "description": "Un extrait à commenter, numéroté dans la marge toutes les cinq lignes.",
+      "content": {
+        "markdown": "Pour un commentaire ou une explication de texte, un bloc de code `passage` numérote les lignes d'un extrait : **une ligne de la source est une ligne du texte**, et un numéro s'affiche dans la marge toutes les cinq lignes. Tes élèves citent « v. 7 » ou « l. 12 » sans avoir à compter.\n\n```passage\nDemain, dès l’aube, à l’heure où blanchit la campagne,\nJe partirai. Vois-tu, je sais que tu m’attends.\nJ’irai par la forêt, j’irai par la montagne.\nJe ne puis demeurer loin de toi plus longtemps.\n\nJe marcherai les yeux fixés sur mes pensées,\nSans rien voir au dehors, sans entendre aucun bruit,\nSeul, inconnu, le dos courbé, les mains croisées,\nTriste, et le jour pour moi sera comme la nuit.\n\nJe ne regarderai ni l’or du soir qui tombe,\nNi les voiles au loin descendant vers Harfleur,\nEt quand j’arriverai, je mettrai sur ta tombe\nUn bouquet de houx vert et de bruyère en fleur.\n```\n\nVictor Hugo, *Les Contemplations*, 1856.\n\nPour un extrait pris au milieu d'une œuvre, une ligne `start=` en tête du bloc donne le numéro de la première ligne ; `step=` changerait le pas de la numérotation.\n\n```passage\nstart=10\nÀ ces mots le Corbeau ne se sent pas de joie ;\n    Et pour montrer sa belle voix,\nIl ouvre un large bec, laisse tomber sa proie.\nLe Renard s’en saisit, et dit : « Mon bon Monsieur,\n    Apprenez que tout flatteur\nVit aux dépens de celui qui l’écoute :\nCette leçon vaut bien un fromage, sans doute. »\n    Le Corbeau, honteux et confus,\nJura, mais un peu tard, qu’on ne l’y prendrait plus.\n```\n\nJean de La Fontaine, « Le Corbeau et le Renard », *Fables*, I, 2, 1668.\n\nTrois choses à savoir :\n\n- les lignes vides séparent strophes et paragraphes sans être comptées, et les espaces en début de ligne sont conservés, pour les vers en retrait ;\n- en prose, reproduis les retours à la ligne de l'édition : la numérotation suit ceux de la source, jamais la largeur de l'écran ;\n- le bloc affiche le texte tel quel, sans gras ni formule : la référence de l'œuvre s'écrit dessous, en markdown.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 10,
       "type": "text",
       "title": "Dessiner une molécule",
       "description": "Formules topologiques à partir de la notation SMILES, avec leur légende.",
@@ -121,7 +143,7 @@
       "module_ref": null
     },
     {
-      "position": 9,
+      "position": 11,
       "type": "text",
       "title": "Tracer un graphique de données",
       "description": "Barres, courbes ou secteurs à partir d'un tableau de valeurs, en Vega-Lite.",
@@ -132,7 +154,7 @@
       "module_ref": null
     },
     {
-      "position": 10,
+      "position": 12,
       "type": "text",
       "title": "Écrire une partition",
       "description": "Une mélodie en notation ABC, gravée et jouée au piano.",
@@ -143,7 +165,7 @@
       "module_ref": null
     },
     {
-      "position": 11,
+      "position": 13,
       "type": "text",
       "title": "Interroger une base de données",
       "description": "Des requêtes SQL que l'élève exécute et modifie dans son navigateur.",
@@ -154,7 +176,7 @@
       "module_ref": null
     },
     {
-      "position": 12,
+      "position": 14,
       "type": "text",
       "title": "Programmer en Python",
       "description": "Du code Python, avec numpy et matplotlib, que l'élève exécute et modifie dans son navigateur.",
@@ -165,7 +187,7 @@
       "module_ref": null
     },
     {
-      "position": 13,
+      "position": 15,
       "type": "exercise",
       "title": "Un exercice à réponse libre",
       "description": "Un sujet, deux questions, deux corrigés que le lien public n'emporte pas.",
@@ -188,7 +210,7 @@
       "module_ref": null
     },
     {
-      "position": 14,
+      "position": 16,
       "type": "module",
       "title": "Un module interactif",
       "description": "Un widget HTML, CSS et JavaScript exécuté dans un bac à sable, sans réseau ni stockage.",
@@ -197,7 +219,7 @@
       "module_ref": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34"
     },
     {
-      "position": 15,
+      "position": 17,
       "type": "text",
       "title": "Appeler un module depuis le texte",
       "description": "Glisser un module dans un paragraphe avec une référence oc-module.",
@@ -208,7 +230,7 @@
       "module_ref": null
     },
     {
-      "position": 16,
+      "position": 18,
       "type": "text",
       "title": "Des bibliothèques dans les modules",
       "description": "Six bibliothèques embarquées pour la physique, les graphiques, l'animation, la géométrie, les données et la 3D.",
@@ -219,7 +241,7 @@
       "module_ref": null
     },
     {
-      "position": 17,
+      "position": 19,
       "type": "module",
       "title": "Simuler la mécanique avec Matter.js",
       "description": "Un moteur physique 2D : rebonds, gravité des astres et suite géométrique des hauteurs.",
@@ -228,7 +250,7 @@
       "module_ref": "3b8f1c52-9a4e-4d0b-8c61-5e2a7f90d413"
     },
     {
-      "position": 18,
+      "position": 20,
       "type": "module",
       "title": "Tracer un modèle avec Chart.js",
       "description": "Le modèle de Lotka-Volterra intégré pas à pas, en courbes ou en portrait de phase.",
@@ -237,7 +259,7 @@
       "module_ref": "a41d7e06-2c95-4b3f-9e18-6f0b3d5c8a27"
     },
     {
-      "position": 19,
+      "position": 21,
       "type": "module",
       "title": "Animer une simulation avec p5.js",
       "description": "Des molécules qui franchissent une membrane jusqu'à l'équilibre des concentrations.",
@@ -246,7 +268,7 @@
       "module_ref": "c7e24b91-5f38-4a6d-b0c2-8d19e4f67a05"
     },
     {
-      "position": 20,
+      "position": 22,
       "type": "module",
       "title": "Construire une figure dynamique avec JSXGraph",
       "description": "Un point mobile sur une courbe saisie par l'élève, et la tangente qui l'accompagne.",
@@ -255,7 +277,7 @@
       "module_ref": "5d09a3f8-7b62-4e1c-a954-2c8e6b1f0d93"
     },
     {
-      "position": 21,
+      "position": 23,
       "type": "module",
       "title": "Visualiser des données avec D3",
       "description": "Un cladogramme repliable : chaque embranchement porte son caractère partagé.",
@@ -264,7 +286,7 @@
       "module_ref": "e8b6f2d4-1a73-4c95-8f0e-9b4d2a6c7e81"
     },
     {
-      "position": 22,
+      "position": 24,
       "type": "module",
       "title": "Explorer une scène 3D avec Three.js",
       "description": "Méthane, ammoniac, eau et dioxyde de carbone en 3D, doublets non liants compris.",
@@ -273,7 +295,7 @@
       "module_ref": "f2a95c17-6d84-4b2e-9c3a-7e0f5b8d1c64"
     },
     {
-      "position": 23,
+      "position": 25,
       "type": "text",
       "title": "Pour aller plus loin",
       "description": "Publier, partager, régler la lecture, exporter, se faire aider.",

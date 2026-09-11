@@ -75,7 +75,11 @@ COMMON_RULES = "\n\n".join(
 MARKDOWN_SYNTAXES = """\
 Syntaxes rendues dans le markdown d'un bloc, à utiliser librement dans les \
 propositions : markdown standard (titres, listes, tableaux, code, liens, \
-images) ; formules KaTeX entre dollars ; diagrammes Mermaid (bloc de code \
+images) ; encadrés (citation ouverte par > [!DEFINITION], [!RETENIR], \
+[!METHODE], [!EXEMPLE], [!REMARQUE] ou [!ATTENTION] ; un texte après le \
+marqueur remplace le titre du type ; contenu markdown sur les lignes > \
+suivantes, ligne vide après l'encadré) ; formules KaTeX entre dollars ; \
+diagrammes Mermaid (bloc de code \
 ```mermaid) ; figures TikZ (bloc ```tikz, compilé dans le navigateur ; \
 bibliothèques TikZ par \\usetikzlibrary{…} en tête du bloc, dont \
 circuits.ee.IEC pour les circuits électriques — \
@@ -99,7 +103,10 @@ au piano, directives %%MIDI ignorées) ; requête SQL exécutable par l'élève 
 exécution) ; code Python exécutable par l'élève (bloc ```python, Pyodide : \
 bibliothèque standard, numpy et matplotlib — les figures ouvertes s'affichent \
 sous le code — ; input() lit les entrées saisies par l'élève ; ni réseau ni \
-fichiers) ; ressource \
+fichiers) ; extrait à commenter aux lignes numérotées (bloc ```passage, une \
+ligne de source par ligne du texte — vers, ou prose coupée comme l'édition —, \
+numéro affiché toutes les 5 lignes, lignes vides non comptées ; start=N et \
+step=N optionnels en tête du bloc ; texte brut, sans markdown) ; ressource \
 de la bibliothèque : [nom](oc-resource:<cible>), ou ![nom](oc-resource:<cible>) \
 pour une image en ligne ; module interactif : [titre](oc-module:<cible>).\
 """

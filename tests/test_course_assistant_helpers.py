@@ -358,8 +358,12 @@ def test_build_turn_context_block_text_focus() -> None:
         "```abc",
         "```sql",
         "```python",
+        "```passage",
     ):
         assert fence in prompt
+    # Encadrés : syntaxe d'alerte GitHub, mots-clés du front (course-callouts.ts).
+    for kind in ("DEFINITION", "RETENIR", "METHODE", "EXEMPLE", "REMARQUE", "ATTENTION"):
+        assert f"[!{kind}]" in prompt
     # Circuits : la bibliothèque TikZ embarquée, jamais circuitikz.
     assert "\\begin{tikzpicture}[circuit ee IEC]" in prompt
     assert "circuitikz et tout \\usepackage indisponibles" in prompt

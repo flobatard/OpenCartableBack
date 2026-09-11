@@ -1,13 +1,13 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
 Le contenu du manifeste est du markdown destiné aux moteurs de rendu du
-front (KaTeX, Mermaid et les langages d'extension : JSXGraph, TikZ, frise,
-SMILES, Vega-Lite, ABC, SQL, Python…), dont les contraintes ne sont vérifiées
-nulle part côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent
-ce qui est mécaniquement vérifiable — ils n'attestent pas du rendu final (cf.
-TODO.md), mais ils rattrapent les fautes qui donneraient au prof un exemple
-faux : un dollar dans un nœud Mermaid, une fraction dans un ``point=``
-JSXGraph, une commande LaTeX indisponible.
+front (KaTeX, Mermaid, encadrés et les langages d'extension : JSXGraph, TikZ,
+frise, passage, SMILES, Vega-Lite, ABC, SQL, Python…), dont les contraintes
+ne sont vérifiées nulle part côté serveur. Les tests de gardes de syntaxe
+ci-dessous en encodent ce qui est mécaniquement vérifiable — ils n'attestent
+pas du rendu final (cf. TODO.md), mais ils rattrapent les fautes qui
+donneraient au prof un exemple faux : un dollar dans un nœud Mermaid, une
+fraction dans un ``point=`` JSXGraph, une commande LaTeX indisponible.
 """
 
 import ast
@@ -15,6 +15,7 @@ import json
 import re
 import sqlite3
 import sys
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -253,6 +254,35 @@ def test_manifest_timeline_fences_are_well_formed():
                 _timeline_date(value)
 
 
+_PASSAGE_HEADER_RE = re.compile(r"(start|step)\s*=\s*(\d+)")
+
+
+def test_manifest_passage_fences_show_line_numbers():
+    # Miroir de ``parsePassageConfig`` (front) : en-tête start=/step= en tête du
+    # bloc, puis le texte, lignes vides non comptées. Une valeur hors bornes est
+    # ignorée en silence, un en-tête égaré s'affiche comme une ligne du texte,
+    # et un extrait qui n'atteint aucun multiple du pas n'affiche aucun numéro.
+    fences = _fences("passage")
+    assert fences, "le cours doit démontrer un texte à lignes numérotées"
+    for body in fences:
+        lines = body.splitlines()
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        start, step = 1, 5
+        while lines and (header := _PASSAGE_HEADER_RE.fullmatch(lines[0].strip())):
+            lines.pop(0)
+            key, value = header[1], int(header[2])
+            if key == "start":
+                assert 1 <= value <= 99_999, body
+                start = value
+            else:
+                assert 1 <= value <= 100, body
+                step = value
+        numbered = [line for line in lines if line.strip()]
+        assert not any(_PASSAGE_HEADER_RE.fullmatch(line.strip()) for line in numbered), body
+        assert any((start + i) % step == 0 for i in range(len(numbered))), body
+
+
 _SMILES_RE = re.compile(r"[A-Za-z0-9@+\-\[\]()=#$:/\\%.*]+")
 
 
@@ -340,6 +370,51 @@ def test_manifest_python_fences_compile_and_import_only_hosted_packages():
                 continue
             allowed = sys.stdlib_module_names | _PYTHON_PACKAGES
             assert roots <= allowed, f"import non hébergé : {roots - allowed}"
+
+
+# Mots-clés des encadrés, normalisés — miroir de ``KEYWORDS`` et de
+# ``calloutKind`` (``core/markdown/course-callouts.ts`` côté front).
+_CALLOUT_KEYWORDS = {
+    "DEFINITION",
+    "RETENIR",
+    "A RETENIR",
+    "METHODE",
+    "EXEMPLE",
+    "REMARQUE",
+    "ATTENTION",
+    "NOTE",
+    "TIP",
+    "IMPORTANT",
+    "WARNING",
+    "CAUTION",
+    "EXAMPLE",
+    "METHOD",
+}
+_QUOTE_RE = re.compile(r"^(?:[ \t]*>)*")
+_CALLOUT_RE = re.compile(r"^((?:[ \t]*>)+)[ \t]?\[!([^\]\n]{1,32})\]")
+
+
+def _callout_keyword(raw: str) -> str:
+    """Majuscules, sans accent, espaces simples : la lecture de ``calloutKind``."""
+    decomposed = unicodedata.normalize("NFD", raw)
+    bare = "".join(c for c in decomposed if not unicodedata.category(c).startswith("M"))
+    return " ".join(bare.upper().split())
+
+
+def test_manifest_callouts_open_their_quote_with_a_known_keyword():
+    # Type inconnu ou marqueur ailleurs qu'en tête de citation : le front rend
+    # une simple citation, marqueur visible.
+    keywords = []
+    for markdown in _markdowns():
+        lines = _CODE_RE.sub("", markdown).splitlines()
+        for index, line in enumerate(lines):
+            if not (marker := _CALLOUT_RE.match(line)):
+                continue
+            keywords.append(marker[2])
+            assert _callout_keyword(marker[2]) in _CALLOUT_KEYWORDS, line
+            above = _QUOTE_RE.match(lines[index - 1])[0].count(">") if index else 0
+            assert above < marker[1].count(">"), line
+    assert keywords, "le cours doit démontrer un encadré"
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():
