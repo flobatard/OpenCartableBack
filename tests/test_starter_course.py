@@ -140,12 +140,33 @@ def test_manifest_jsxgraph_fences_are_well_formed():
         assert bboxes <= 1, body
 
 
+_TIKZ_LIBRARY_RE = re.compile(r"\\usetikzlibrary\s*\{([^}]*)\}")
+# Sous-ensemble des ``tikzlibrary*`` embarqués par le TikZJax du front : une
+# bibliothèque absente fait échouer la compilation (« Code TikZ invalide »).
+_EMBEDDED_TIKZ_LIBRARIES = {
+    "angles",
+    "arrows.meta",
+    "calc",
+    "circuits.ee.IEC",
+    "circuits.logic.IEC",
+    "circuits.logic.US",
+    "positioning",
+    "quotes",
+}
+
+
 def test_manifest_tikz_fences_use_only_the_embedded_distribution():
     fences = _fences("tikz")
     assert fences, "le cours doit démontrer un schéma TikZ"
+    libraries = set()
     for body in fences:
         assert "\\usepackage" not in body
         assert "\\documentclass" not in body
+        assert "circuitikz" not in body
+        for names in _TIKZ_LIBRARY_RE.findall(body):
+            libraries |= {name.strip() for name in names.split(",")}
+    assert libraries <= _EMBEDDED_TIKZ_LIBRARIES
+    assert "circuits.ee.IEC" in libraries, "le cours doit démontrer un circuit électrique"
 
 
 _TIMELINE_DATE_RE = re.compile(r"-?\d{1,4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?")

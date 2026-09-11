@@ -360,6 +360,9 @@ def test_build_turn_context_block_text_focus() -> None:
         "```python",
     ):
         assert fence in prompt
+    # Circuits : la bibliothèque TikZ embarquée, jamais circuitikz.
+    assert "\\begin{tikzpicture}[circuit ee IEC]" in prompt
+    assert "circuitikz et tout \\usepackage indisponibles" in prompt
     assert "oc-module:<cible>" in prompt
     assert "propose_question_edit" not in prompt
 

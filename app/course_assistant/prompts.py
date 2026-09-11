@@ -76,7 +76,12 @@ MARKDOWN_SYNTAXES = """\
 Syntaxes rendues dans le markdown d'un bloc, à utiliser librement dans les \
 propositions : markdown standard (titres, listes, tableaux, code, liens, \
 images) ; formules KaTeX entre dollars ; diagrammes Mermaid (bloc de code \
-```mermaid) ; figures TikZ (bloc ```tikz, compilé dans le navigateur) ; \
+```mermaid) ; figures TikZ (bloc ```tikz, compilé dans le navigateur ; \
+bibliothèques TikZ par \\usetikzlibrary{…} en tête du bloc, dont \
+circuits.ee.IEC pour les circuits électriques — \
+\\begin{tikzpicture}[circuit ee IEC], puis to [resistor], to [battery], \
+to [bulb]… — et circuits.logic.US pour les portes logiques ; circuitikz et \
+tout \\usepackage indisponibles) ; \
 applet GeoGebra (bloc ```geogebra, clé=valeur par ligne : id=<matériel \
 geogebra.org>, width=, height=) ; graphe JSXGraph (bloc ```jsxgraph, \
 clé=valeur par ligne : equation=<expression de x>, point=x,y, \

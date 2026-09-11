@@ -4,7 +4,7 @@
   "exported_at": "2026-09-06T00:00:00Z",
   "course": {
     "title": "Cours d'exemple",
-    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, frises, molécules, graphiques, partitions, requêtes SQL, programmes Python, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
+    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, circuits électriques, frises, molécules, graphiques, partitions, requêtes SQL, programmes Python, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
     "preview_settings": {
       "fontSizePx": 17,
       "headingScale": 1.1,
@@ -27,7 +27,7 @@
       "title": "Bienvenue",
       "description": "Ce que fait ce cours, et pourquoi il est en brouillon.",
       "content": {
-        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les frises chronologiques ;\n7. les molécules ;\n8. les graphiques de données ;\n9. les partitions ;\n10. les requêtes SQL exécutables ;\n11. les programmes Python ;\n12. les exercices à réponse libre ;\n13. les modules interactifs.\n"
+        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les circuits électriques ;\n7. les frises chronologiques ;\n8. les molécules ;\n9. les graphiques de données ;\n10. les partitions ;\n11. les requêtes SQL exécutables ;\n12. les programmes Python ;\n13. les exercices à réponse libre ;\n14. les modules interactifs.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -82,13 +82,24 @@
       "title": "Composer un schéma",
       "description": "Un schéma géométrique en LaTeX, et les trois limites du moteur embarqué.",
       "content": {
-        "markdown": "Un schéma géométrique s'écrit dans un bloc de code `tikz`. Tout le contenu est du LaTeX : il n'y a aucune option à régler, et l'environnement `tikzpicture` est ajouté automatiquement s'il manque.\n\n```tikz\n\\draw[->] (-0.5,0) -- (4.5,0) node[right] {x};\n\\draw[->] (0,-0.5) -- (0,3.5) node[above] {y};\n\\draw[thick] (0,0) -- (3,0) -- (3,2) -- (0,2) -- cycle;\n\\draw[dashed] (0,0) -- (3,2);\n\\fill (3,2) circle (2pt);\n\\node[below] at (1.5,0) {b};\n\\node[left] at (0,1) {h};\n```\n\nTrois limites à garder en tête :\n\n- aucun paquet LaTeX supplémentaire ne peut être chargé — la distribution embarquée est figée ;\n- le fond du dessin reste blanc, même en thème sombre : ce n'est pas un défaut d'affichage ;\n- une erreur LaTeX affiche « Code TikZ invalide », sans plus de détail. Avance par petits morceaux.\n\nDernier conseil : évite les accents dans les étiquettes `\\node`, leur rendu n'est pas garanti.\n"
+        "markdown": "Un schéma géométrique s'écrit dans un bloc de code `tikz`. Tout le contenu est du LaTeX : il n'y a aucune option à régler, et l'environnement `tikzpicture` est ajouté automatiquement s'il manque.\n\n```tikz\n\\draw[->] (-0.5,0) -- (4.5,0) node[right] {x};\n\\draw[->] (0,-0.5) -- (0,3.5) node[above] {y};\n\\draw[thick] (0,0) -- (3,0) -- (3,2) -- (0,2) -- cycle;\n\\draw[dashed] (0,0) -- (3,2);\n\\fill (3,2) circle (2pt);\n\\node[below] at (1.5,0) {b};\n\\node[left] at (0,1) {h};\n```\n\nTrois limites à garder en tête :\n\n- aucun paquet LaTeX supplémentaire ne peut être chargé — la distribution embarquée est figée ; ses bibliothèques TikZ, elles, se chargent (voir le bloc suivant) ;\n- le fond du dessin reste blanc, même en thème sombre : ce n'est pas un défaut d'affichage ;\n- une erreur LaTeX affiche « Code TikZ invalide », sans plus de détail. Avance par petits morceaux.\n\nDernier conseil : évite les accents dans les étiquettes `\\node`, leur rendu n'est pas garanti.\n"
       },
       "resource_ref": null,
       "module_ref": null
     },
     {
       "position": 6,
+      "type": "text",
+      "title": "Dessiner un circuit électrique",
+      "description": "Un schéma normalisé en TikZ : pile, lampe, résistance et appareils de mesure.",
+      "content": {
+        "markdown": "Un circuit électrique s'écrit lui aussi dans un bloc de code `tikz`, grâce à la bibliothèque `circuits.ee.IEC` : ses symboles suivent la norme IEC, celle des manuels de physique-chimie. La première ligne du bloc charge la bibliothèque, l'option `circuit ee IEC` de l'environnement active ses symboles.\n\n```tikz\n\\usetikzlibrary{circuits.ee.IEC}\n\\begin{tikzpicture}[circuit ee IEC]\n  % Boucle principale : pile, interrupteur, ampèremètre, lampe, résistance\n  \\draw (0,0) to [battery={info=$E$}] (0,3)\n              to [make contact={info=$K$}] (3,3)\n              to [amperemeter] (6,3)\n              to [bulb={info'=$L$}] (6,0)\n              to [resistor={ohm=100}] (0,0);\n  % Voltmètre en dérivation aux bornes de la lampe\n  \\draw (6,3) -- (8,3) to [voltmeter] (8,0) -- (6,0);\n  \\node [contact] at (6,3) {};\n  \\node [contact] at (6,0) {};\n\\end{tikzpicture}\n```\n\nChaque dipôle se pose sur un segment : `to [resistor]` entre deux points trace le fil avec le symbole en son milieu, `--` trace un simple fil. Entre accolades après le nom viennent l'étiquette — `info=`, ou `info'=` pour l'autre côté du fil — et la valeur avec son unité : `ohm=100`, `volt=12`, `ampere=0.5`. L'ampèremètre se place en série dans la boucle ; le voltmètre, en dérivation, rejoint le circuit par deux points de connexion `\\node [contact]`.\n\nLes noms des symboles sont en anglais : `battery` (pile), `bulb` (lampe), `resistor`, `make contact` (interrupteur), `amperemeter`, `voltmeter`, `capacitor`, `diode`… La page « Circuits électriques (TikZ) » de la documentation les montre tous, avec les DEL, les rhéostats et les portes logiques.\n\nDeux pièges :\n\n- le paquet `circuitikz`, que tu connais peut-être, n'est pas disponible : sa syntaxe (`to[R]`, `to[battery1]`…) donne « Code TikZ invalide » ;\n- seules les bibliothèques TikZ se chargent, par `\\usetikzlibrary` — jamais un paquet LaTeX par `\\usepackage`.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 7,
       "type": "text",
       "title": "Construire une frise chronologique",
       "description": "Périodes et événements sur un axe du temps, avant ou après J.-C.",
@@ -99,7 +110,7 @@
       "module_ref": null
     },
     {
-      "position": 7,
+      "position": 8,
       "type": "text",
       "title": "Dessiner une molécule",
       "description": "Formules topologiques à partir de la notation SMILES, avec leur légende.",
@@ -110,7 +121,7 @@
       "module_ref": null
     },
     {
-      "position": 8,
+      "position": 9,
       "type": "text",
       "title": "Tracer un graphique de données",
       "description": "Barres, courbes ou secteurs à partir d'un tableau de valeurs, en Vega-Lite.",
@@ -121,7 +132,7 @@
       "module_ref": null
     },
     {
-      "position": 9,
+      "position": 10,
       "type": "text",
       "title": "Écrire une partition",
       "description": "Une mélodie en notation ABC, gravée et jouée au piano.",
@@ -132,7 +143,7 @@
       "module_ref": null
     },
     {
-      "position": 10,
+      "position": 11,
       "type": "text",
       "title": "Interroger une base de données",
       "description": "Des requêtes SQL que l'élève exécute et modifie dans son navigateur.",
@@ -143,7 +154,7 @@
       "module_ref": null
     },
     {
-      "position": 11,
+      "position": 12,
       "type": "text",
       "title": "Programmer en Python",
       "description": "Du code Python, avec numpy et matplotlib, que l'élève exécute et modifie dans son navigateur.",
@@ -154,7 +165,7 @@
       "module_ref": null
     },
     {
-      "position": 12,
+      "position": 13,
       "type": "exercise",
       "title": "Un exercice à réponse libre",
       "description": "Un sujet, deux questions, deux corrigés que le lien public n'emporte pas.",
@@ -177,7 +188,7 @@
       "module_ref": null
     },
     {
-      "position": 13,
+      "position": 14,
       "type": "module",
       "title": "Un module interactif",
       "description": "Un widget HTML, CSS et JavaScript exécuté dans un bac à sable, sans réseau ni stockage.",
@@ -186,7 +197,7 @@
       "module_ref": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34"
     },
     {
-      "position": 14,
+      "position": 15,
       "type": "text",
       "title": "Appeler un module depuis le texte",
       "description": "Glisser un module dans un paragraphe avec une référence oc-module.",
@@ -197,7 +208,7 @@
       "module_ref": null
     },
     {
-      "position": 15,
+      "position": 16,
       "type": "text",
       "title": "Pour aller plus loin",
       "description": "Publier, partager, régler la lecture, exporter, se faire aider.",
