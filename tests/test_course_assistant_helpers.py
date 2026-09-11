@@ -357,6 +357,7 @@ def test_build_turn_context_block_text_focus() -> None:
         "```vegalite",
         "```abc",
         "```sql",
+        "```python",
     ):
         assert fence in prompt
     assert "oc-module:<cible>" in prompt

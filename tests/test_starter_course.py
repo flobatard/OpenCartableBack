@@ -2,17 +2,19 @@
 
 Le contenu du manifeste est du markdown destiné aux moteurs de rendu du
 front (KaTeX, Mermaid et les langages d'extension : JSXGraph, TikZ, frise,
-SMILES, Vega-Lite, ABC, SQL…), dont les contraintes ne sont vérifiées nulle part
-côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent ce qui est
-mécaniquement vérifiable — ils n'attestent pas du rendu final (cf. TODO.md),
-mais ils rattrapent les fautes qui donneraient au prof un exemple faux : un
-dollar dans un nœud Mermaid, une fraction dans un ``point=`` JSXGraph, une
-commande LaTeX indisponible.
+SMILES, Vega-Lite, ABC, SQL, Python…), dont les contraintes ne sont vérifiées
+nulle part côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent
+ce qui est mécaniquement vérifiable — ils n'attestent pas du rendu final (cf.
+TODO.md), mais ils rattrapent les fautes qui donneraient au prof un exemple
+faux : un dollar dans un nœud Mermaid, une fraction dans un ``point=``
+JSXGraph, une commande LaTeX indisponible.
 """
 
+import ast
 import json
 import re
 import sqlite3
+import sys
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -251,6 +253,26 @@ def test_manifest_sql_fences_run_on_sqlite():
             cursor = connection.execute(query.strip())
             assert cursor.description is not None, query
             assert cursor.fetchall(), query
+
+
+# Paquets hébergés à côté de Pyodide (scripts/prepare-pyodide.mjs du front).
+_PYTHON_PACKAGES = {"numpy", "matplotlib", "mpl_toolkits", "pylab"}
+
+
+def test_manifest_python_fences_compile_and_import_only_hosted_packages():
+    fences = _fences("python")
+    assert fences, "le cours doit démontrer un programme Python exécutable"
+    for body in fences:
+        tree = ast.parse(body, filename="main.py")  # lève sur une erreur de syntaxe
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                roots = {node.module.split(".")[0]}
+            else:
+                continue
+            allowed = sys.stdlib_module_names | _PYTHON_PACKAGES
+            assert roots <= allowed, f"import non hébergé : {roots - allowed}"
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():

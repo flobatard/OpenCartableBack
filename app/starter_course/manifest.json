@@ -4,7 +4,7 @@
   "exported_at": "2026-09-06T00:00:00Z",
   "course": {
     "title": "Cours d'exemple",
-    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, frises, molécules, graphiques, partitions, requêtes SQL, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
+    "description": "Visite guidée des possibilités d'écriture d'OpenCartable : formules, chimie, diagrammes, figures, schémas, frises, molécules, graphiques, partitions, requêtes SQL, programmes Python, exercices et modules interactifs. C'est un brouillon — modifie-le, casse-le, recommence.",
     "preview_settings": {
       "fontSizePx": 17,
       "headingScale": 1.1,
@@ -27,7 +27,7 @@
       "title": "Bienvenue",
       "description": "Ce que fait ce cours, et pourquoi il est en brouillon.",
       "content": {
-        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les frises chronologiques ;\n7. les molécules ;\n8. les graphiques de données ;\n9. les partitions ;\n10. les requêtes SQL exécutables ;\n11. les exercices à réponse libre ;\n12. les modules interactifs.\n"
+        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les formules mathématiques ;\n2. la notation chimique ;\n3. les diagrammes ;\n4. les figures de fonctions ;\n5. les schémas géométriques ;\n6. les frises chronologiques ;\n7. les molécules ;\n8. les graphiques de données ;\n9. les partitions ;\n10. les requêtes SQL exécutables ;\n11. les programmes Python ;\n12. les exercices à réponse libre ;\n13. les modules interactifs.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -144,6 +144,17 @@
     },
     {
       "position": 11,
+      "type": "text",
+      "title": "Programmer en Python",
+      "description": "Du code Python, avec numpy et matplotlib, que l'élève exécute et modifie dans son navigateur.",
+      "content": {
+        "markdown": "Du code Python devient **exécutable** dans un bloc de code `python` : l'élève le lance, le modifie et le relance ; ce qu'il affiche apparaît sous le code. Python tourne dans son navigateur — ni compte, ni serveur.\n\n```python\ndef factorielle(n):\n    resultat = 1\n    for k in range(2, n + 1):\n        resultat *= k\n    return resultat\n\nfor n in range(1, 8):\n    print(f\"{n}! = {factorielle(n)}\")\n```\n\nLes bibliothèques **numpy** et **matplotlib** sont disponibles : une figure tracée s'affiche sous le code.\n\n```python\nimport numpy as np\nimport matplotlib.pyplot as plt\n\nx = np.linspace(-2, 4, 200)\nplt.plot(x, x**2 - 2*x - 3)\nplt.axhline(0, color=\"gray\", linewidth=0.8)\nplt.title(\"Parabole y = x² − 2x − 3\")\nplt.show()\n```\n\nTrois choses à savoir :\n\n- `input()` lit le champ **Entrées**, sous le code, une ligne par appel ;\n- un programme qui tourne plus de 15 secondes est interrompu, et **Arrêter** le coupe à tout moment ;\n- Python (environ 6 Mo) n'est téléchargé qu'au premier clic sur **Exécuter**, numpy et matplotlib (environ 13 Mo) au premier import — le navigateur les garde ensuite en cache.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 12,
       "type": "exercise",
       "title": "Un exercice à réponse libre",
       "description": "Un sujet, deux questions, deux corrigés que le lien public n'emporte pas.",
@@ -166,7 +177,7 @@
       "module_ref": null
     },
     {
-      "position": 12,
+      "position": 13,
       "type": "module",
       "title": "Un module interactif",
       "description": "Un widget HTML, CSS et JavaScript exécuté dans un bac à sable, sans réseau ni stockage.",
@@ -175,7 +186,7 @@
       "module_ref": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34"
     },
     {
-      "position": 13,
+      "position": 14,
       "type": "text",
       "title": "Appeler un module depuis le texte",
       "description": "Glisser un module dans un paragraphe avec une référence oc-module.",
@@ -186,7 +197,7 @@
       "module_ref": null
     },
     {
-      "position": 14,
+      "position": 15,
       "type": "text",
       "title": "Pour aller plus loin",
       "description": "Publier, partager, régler la lecture, exporter, se faire aider.",

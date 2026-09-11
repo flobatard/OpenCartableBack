@@ -91,7 +91,10 @@ notation ABC : en-têtes X:, T:, M:, L:, K: en dernier, puis les notes ; jouée 
 au piano, directives %%MIDI ignorées) ; requête SQL exécutable par l'élève \
 (bloc ```sql, SQLite : création et remplissage des tables, puis une ligne \
 -- @query suivie de la requête qu'il voit et modifie ; base neuve à chaque \
-exécution) ; ressource \
+exécution) ; code Python exécutable par l'élève (bloc ```python, Pyodide : \
+bibliothèque standard, numpy et matplotlib — les figures ouvertes s'affichent \
+sous le code — ; input() lit les entrées saisies par l'élève ; ni réseau ni \
+fichiers) ; ressource \
 de la bibliothèque : [nom](oc-resource:<cible>), ou ![nom](oc-resource:<cible>) \
 pour une image en ligne ; module interactif : [titre](oc-module:<cible>).\
 """
