@@ -75,8 +75,8 @@ COMMON_RULES = "\n\n".join(
 MARKDOWN_SYNTAXES = """\
 Syntaxes rendues dans le markdown d'un bloc, à utiliser librement dans les \
 propositions : markdown standard (titres, listes, tableaux, code, liens, \
-images) ; encadrés (citation ouverte par > [!DEFINITION], [!RETENIR], \
-[!METHODE], [!EXEMPLE], [!REMARQUE] ou [!ATTENTION] ; un texte après le \
+images) ; encadrés (citation ouverte par > [!DEFINITION], [!KEYPOINT], \
+[!METHOD], [!EXAMPLE], [!NOTE] ou [!WARNING] ; un texte après le \
 marqueur remplace le titre du type ; contenu markdown sur les lignes > \
 suivantes, ligne vide après l'encadré) ; formules KaTeX entre dollars ; \
 diagrammes Mermaid (bloc de code \

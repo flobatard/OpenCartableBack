@@ -361,8 +361,9 @@ def test_build_turn_context_block_text_focus() -> None:
         "```passage",
     ):
         assert fence in prompt
-    # Encadrés : syntaxe d'alerte GitHub, mots-clés du front (course-callouts.ts).
-    for kind in ("DEFINITION", "RETENIR", "METHODE", "EXEMPLE", "REMARQUE", "ATTENTION"):
+    # Encadrés : syntaxe d'alerte GitHub, mots-clés canoniques du front —
+    # les six types eux-mêmes (course-callouts.ts), jamais un alias.
+    for kind in ("DEFINITION", "KEYPOINT", "METHOD", "EXAMPLE", "NOTE", "WARNING"):
         assert f"[!{kind}]" in prompt
     # Circuits : la bibliothèque TikZ embarquée, jamais circuitikz.
     assert "\\begin{tikzpicture}[circuit ee IEC]" in prompt

@@ -372,24 +372,21 @@ def test_manifest_python_fences_compile_and_import_only_hosted_packages():
             assert roots <= allowed, f"import non hébergé : {roots - allowed}"
 
 
-# Mots-clés des encadrés, normalisés — miroir de ``KEYWORDS`` et de
-# ``calloutKind`` (``core/markdown/course-callouts.ts`` côté front).
-_CALLOUT_KEYWORDS = {
+# Mots-clés canoniques des encadrés, normalisés par la lecture de
+# ``calloutKind`` (``core/markdown/course-callouts.ts`` côté front) : les six
+# types eux-mêmes. Le front reconnaît en plus des alias (mots-clés français
+# d'origine, alertes GitHub) — le cours d'exemple, lui, enseigne la graphie
+# canonique, celle du catalogue de l'assistant.
+_CALLOUT_CANONICAL = {
     "DEFINITION",
-    "RETENIR",
-    "A RETENIR",
-    "METHODE",
-    "EXEMPLE",
-    "REMARQUE",
-    "ATTENTION",
-    "NOTE",
-    "TIP",
-    "IMPORTANT",
-    "WARNING",
-    "CAUTION",
-    "EXAMPLE",
+    "KEYPOINT",
     "METHOD",
+    "EXAMPLE",
+    "NOTE",
+    "WARNING",
 }
+
+
 _QUOTE_RE = re.compile(r"^(?:[ \t]*>)*")
 _CALLOUT_RE = re.compile(r"^((?:[ \t]*>)+)[ \t]?\[!([^\]\n]{1,32})\]")
 
@@ -401,9 +398,10 @@ def _callout_keyword(raw: str) -> str:
     return " ".join(bare.upper().split())
 
 
-def test_manifest_callouts_open_their_quote_with_a_known_keyword():
+def test_manifest_callouts_open_their_quote_with_a_canonical_keyword():
     # Type inconnu ou marqueur ailleurs qu'en tête de citation : le front rend
-    # une simple citation, marqueur visible.
+    # une simple citation, marqueur visible. Le cours d'exemple enseigne la
+    # graphie canonique — les alias ne s'y citent qu'en prose.
     keywords = []
     for markdown in _markdowns():
         lines = _CODE_RE.sub("", markdown).splitlines()
@@ -411,7 +409,7 @@ def test_manifest_callouts_open_their_quote_with_a_known_keyword():
             if not (marker := _CALLOUT_RE.match(line)):
                 continue
             keywords.append(marker[2])
-            assert _callout_keyword(marker[2]) in _CALLOUT_KEYWORDS, line
+            assert _callout_keyword(marker[2]) in _CALLOUT_CANONICAL, line
             above = _QUOTE_RE.match(lines[index - 1])[0].count(">") if index else 0
             assert above < marker[1].count(">"), line
     assert keywords, "le cours doit démontrer un encadré"
