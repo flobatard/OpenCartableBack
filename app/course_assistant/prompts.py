@@ -88,7 +88,10 @@ une formule SMILES par ligne, « | légende » optionnelle) ; graphique de \
 données (bloc ```vegalite, spécification Vega-Lite en JSON, données en ligne \
 dans data.values — toute clé url est refusée) ; partition (bloc ```abc, \
 notation ABC : en-têtes X:, T:, M:, L:, K: en dernier, puis les notes ; jouée \
-au piano, directives %%MIDI ignorées) ; ressource \
+au piano, directives %%MIDI ignorées) ; requête SQL exécutable par l'élève \
+(bloc ```sql, SQLite : création et remplissage des tables, puis une ligne \
+-- @query suivie de la requête qu'il voit et modifie ; base neuve à chaque \
+exécution) ; ressource \
 de la bibliothèque : [nom](oc-resource:<cible>), ou ![nom](oc-resource:<cible>) \
 pour une image en ligne ; module interactif : [titre](oc-module:<cible>).\
 """

@@ -2,7 +2,7 @@
 
 Le contenu du manifeste est du markdown destiné aux moteurs de rendu du
 front (KaTeX, Mermaid et les langages d'extension : JSXGraph, TikZ, frise,
-SMILES, Vega-Lite, ABC…), dont les contraintes ne sont vérifiées nulle part
+SMILES, Vega-Lite, ABC, SQL…), dont les contraintes ne sont vérifiées nulle part
 côté serveur. Les tests de gardes de syntaxe ci-dessous en encodent ce qui est
 mécaniquement vérifiable — ils n'attestent pas du rendu final (cf. TODO.md),
 mais ils rattrapent les fautes qui donneraient au prof un exemple faux : un
@@ -12,6 +12,7 @@ commande LaTeX indisponible.
 
 import json
 import re
+import sqlite3
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -232,6 +233,24 @@ def test_manifest_abc_fences_are_playable_on_the_piano():
         assert headers[0] == "X", body
         assert headers[-1] == "K", body  # K: clôt l'en-tête, les notes suivent
         assert not re.search(r"%%MIDI|I:\s*MIDI", body, re.IGNORECASE), body
+
+
+_SQL_QUERY_MARKER = re.compile(r"^[ \t]*--[ \t]*@query[ \t]*$", re.MULTILINE | re.IGNORECASE)
+
+
+def test_manifest_sql_fences_run_on_sqlite():
+    # Vraie exécution (SQLite du back, même dialecte que sql.js) : la
+    # préparation passe et la requête montrée à l'élève renvoie des lignes.
+    fences = _fences("sql")
+    assert fences, "le cours doit démontrer une requête SQL exécutable"
+    for body in fences:
+        parts = _SQL_QUERY_MARKER.split(body, maxsplit=1)
+        setup, query = (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
+        with sqlite3.connect(":memory:") as connection:
+            connection.executescript(setup)
+            cursor = connection.execute(query.strip())
+            assert cursor.description is not None, query
+            assert cursor.fetchall(), query
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():
