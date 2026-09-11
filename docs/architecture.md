@@ -49,7 +49,7 @@ Dev : MinIO dans le compose (job `minio-createbucket`). Une URL présignée mint
 
 ## Modules interactifs
 
-`app/modules/` : CRUD pur base d'une bibliothèque par cours, indépendante des blocs. Le code HTML/CSS/JS vit en colonnes `Text` (plafond `MAX_CODE_LENGTH` par champ), servi uniquement en JSON authentifié ou, côté élève, module par module sous `/public/courses/{id}/modules/{id}` — l'exécution est côté front en iframe sandbox à origine opaque sans réseau (cf. `docs/decisions.md`). La liste est légère (jamais le code) ; l'édition est partielle (`null` rejeté : vider un code = `""`). Au PATCH, `updated_at` du module est posé côté Python (le `onupdate` SQL ne tirerait qu'au flush, après la construction de la réponse).
+`app/modules/` : CRUD pur base d'une bibliothèque par cours, indépendante des blocs. Le code HTML/CSS/JS vit en colonnes `Text` (plafond `MAX_CODE_LENGTH` par champ), servi uniquement en JSON authentifié ou, côté élève, module par module sous `/public/courses/{id}/modules/{id}` — l'exécution est côté front en iframe sandbox à origine opaque sans réseau (cf. `docs/decisions.md`) ; les librairies préinstallées (pragma `// @oc-libs: …` dans le JS) sont inlinées par le front, le back n'en connaît que le catalogue `MODULE_LIBRARY_NAMES` décrit au modèle par `MODULE_RUNTIME` et vérifié sur le cours d'exemple. La liste est légère (jamais le code) ; l'édition est partielle (`null` rejeté : vider un code = `""`). Au PATCH, `updated_at` du module est posé côté Python (le `onupdate` SQL ne tirerait qu'au flush, après la construction de la réponse).
 
 ## Export/import de cours
 

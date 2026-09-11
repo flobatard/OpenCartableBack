@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from app.course_assistant.prompts import MODULE_LIBRARY_NAMES
 from app.course_transfer.archive import REF_RE
 from app.courses.schemas import PreviewSettings
 from app.starter_course import service
@@ -95,6 +96,51 @@ def test_manifest_module_refs_resolve():
     }
     assert cited, "le cours doit démontrer une référence oc-module:"
     assert cited <= declared
+
+
+# Pragma des bibliothèques de module — même lecture que ``parseModuleLibraries``
+# (``shared/module-runner/module-libraries.ts`` côté front).
+_PRAGMA_RE = re.compile(r"^[ \t]*//[ \t]*@oc-libs[ \t]*:(.*)$", re.MULTILINE)
+# Trace d'usage attendue dans le JS d'un module qui déclare la bibliothèque
+# (p5 en « mode global » : ses fonctions sont nues, sans préfixe).
+_LIBRARY_USAGE = {
+    "matter": "Matter.",
+    "chart": "new Chart(",
+    "p5": "createCanvas(",
+    "jsxgraph": "JXG.",
+    "d3": "d3.",
+    "three": "THREE.",
+}
+
+
+def _declared_libraries(js: str) -> set[str]:
+    return {
+        name.lower()
+        for line in _PRAGMA_RE.findall(js)
+        for name in re.split(r"[\s,]+", line)
+        if name
+    }
+
+
+def test_manifest_modules_are_all_shown():
+    # Un module du manifeste sans bloc serait invisible dans le cours.
+    shown = {b.module_ref for b in MANIFEST.blocks if b.module_ref}
+    assert shown == {m.id for m in MANIFEST.modules}
+
+
+def test_manifest_modules_use_the_libraries_they_declare():
+    assert set(_LIBRARY_USAGE) == set(MODULE_LIBRARY_NAMES)
+    for module in MANIFEST.modules:
+        declared = _declared_libraries(module.js)
+        # Un nom hors catalogue serait ignoré en silence par le runtime.
+        assert declared <= set(MODULE_LIBRARY_NAMES), module.title
+        for name in declared:
+            assert _LIBRARY_USAGE[name] in module.js, (module.title, name)
+
+
+def test_manifest_showcases_every_module_library():
+    declared = set().union(*(_declared_libraries(m.js) for m in MANIFEST.modules))
+    assert declared == set(MODULE_LIBRARY_NAMES)
 
 
 def test_manifest_exercise_questions_have_no_id():
@@ -368,27 +414,39 @@ def test_starter_ignores_unknown_taxonomy_codes(user_row):
     assert inserts(session, "course_subjects") == []
 
 
-def test_starter_rewrites_the_module_reference(user_row):
+def test_starter_rewrites_the_module_references(user_row):
     session = _seed_session(user_row)
     response = make_client(session).post("/api/v1/courses/starter")
     assert response.status_code == 201
 
     [(_, module_params)] = inserts(session, "modules")
-    [new_module_id] = [p["id"] for p in module_params]
-    manifest_id = str(MANIFEST.modules[0].id)
+    # Titres uniques : correspondance id du manifeste → uuid FRAIS.
+    fresh = {p["title"]: p["id"] for p in module_params}
+    renamed = {str(m.id): fresh[m.title] for m in MANIFEST.modules}
+    assert len(set(renamed.values())) == len(MANIFEST.modules)
 
     [(_, block_params)] = inserts(session, "blocks")
-    # La colonne du bloc « module » et la référence oc-module: du markdown
-    # pointent le même uuid FRAIS ; celui du manifeste a disparu partout.
-    assert [p["module_id"] for p in block_params if p["module_id"]] == [new_module_id]
+    # Colonnes des blocs « module » et références oc-module: du markdown
+    # pointent les uuid frais ; ceux du manifeste ont disparu partout.
+    shown = [str(b.module_ref) for b in MANIFEST.blocks if b.module_ref]
+    assert [p["module_id"] for p in block_params if p["module_id"]] == [
+        renamed[ref] for ref in shown
+    ]
+    cited_in_manifest = {
+        ref.lower()
+        for markdown in _markdowns()
+        for kind, ref in REF_RE.findall(markdown)
+        if kind == "module"
+    }
     cited = {
         ref.lower()
         for p in block_params
         if p["type"] == "text"
         for _kind, ref in REF_RE.findall(p["content"]["markdown"])
     }
-    assert cited == {str(new_module_id).lower()}
-    assert manifest_id not in repr(block_params)
+    assert cited == {str(renamed[ref]).lower() for ref in cited_in_manifest}
+    for manifest_id in renamed:
+        assert manifest_id not in repr(block_params)
 
 
 def test_starter_generates_fresh_question_ids(user_row):

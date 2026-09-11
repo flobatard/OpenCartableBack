@@ -45,7 +45,7 @@ from app.course_assistant.editing.module import (
     PROPOSE_HTML_EDIT,
     PROPOSE_JS_EDIT,
 )
-from app.course_assistant.prompts import COURSE_SYSTEM_PROMPT
+from app.course_assistant.prompts import COURSE_SYSTEM_PROMPT, MODULE_LIBRARY_NAMES
 from app.course_assistant.render import (
     format_block,
     format_module,
@@ -486,6 +486,10 @@ def test_build_turn_context_module_focus() -> None:
     # Contraintes d'exécution déclarées, catalogue markdown écarté.
     assert "default-src 'none'" in prompt
     assert "window.ocModule.emit" in prompt
+    # Librairies préinstallées (miroir du catalogue front) : pragma et noms.
+    assert "`// @oc-libs: matter, chart`" in prompt
+    for name in MODULE_LIBRARY_NAMES:
+        assert f"`{name}` → " in prompt
     assert "```mermaid" not in prompt
     assert "propose_block_edit" not in prompt
 

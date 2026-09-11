@@ -104,9 +104,15 @@ de la bibliothèque : [nom](oc-resource:<cible>), ou ![nom](oc-resource:<cible>)
 pour une image en ligne ; module interactif : [titre](oc-module:<cible>).\
 """
 
+# Librairies préinstallées du bac à sable des modules, déclarées par le pragma
+# ``// @oc-libs: …`` — miroir de ``MODULE_LIBRARIES``
+# (``shared/module-runner/module-libraries.ts`` côté front) : noms, globaux et
+# versions majeures de la puce « Bibliothèques » ci-dessous évoluent avec lui.
+MODULE_LIBRARY_NAMES = ("matter", "chart", "p5", "jsxgraph", "d3", "three")
+
 # Environnement d'exécution d'un module interactif — miroir du contrat de
 # ``shared/module-runner/module-document.ts`` côté front (CSP ``MODULE_CSP``,
-# bridge, composition du srcdoc) : à mettre à jour avec lui.
+# bridge, composition du srcdoc, librairies inlinées) : à mettre à jour avec lui.
 MODULE_RUNTIME = """\
 Environnement d'exécution d'un module — contraintes STRICTES, un module qui \
 les ignore ne fonctionne pas :
@@ -115,19 +121,34 @@ les ignore ne fonctionne pas :
 JavaScript dans `<script>`, exécuté dans une iframe sandbox à origine opaque. \
 Le script s'exécute une fois le HTML en place : ne pas attendre \
 `DOMContentLoaded`.
-- Aucun réseau sortant (CSP `default-src 'none'`) : ni CDN ou bibliothèque \
-externe, ni `fetch`/`XMLHttpRequest`/WebSocket, ni police ou image distante. \
-JavaScript natif écrit à la main ; images et sons en URI `data:` (ou générés \
-en canvas/`blob:`).
+- Aucun réseau sortant (CSP `default-src 'none'`) : ni CDN, ni \
+`fetch`/`XMLHttpRequest`/WebSocket, ni police, image ou fichier distant — donc \
+ni `loadImage(url)`, ni `d3.csv(url)`, ni texture chargée par URL. Données \
+écrites dans le code ; images et sons en URI `data:` (ou générés en \
+canvas/`blob:`).
+- Bibliothèques préinstallées, les SEULES disponibles : les déclarer par une \
+ligne de commentaire en tête du JavaScript, `// @oc-libs: matter, chart` \
+(noms séparés par des virgules) ; elles sont chargées avant le script, sous \
+leur global habituel. `matter` → `Matter` (Matter.js 0.20, mécanique 2D) ; \
+`chart` → `Chart` (Chart.js 4) ; `p5` → `p5` (p5.js **2.x** : pas de \
+`preload`, écrire `async function setup()` et `await loadImage('data:…')`) ; \
+`jsxgraph` → `JXG` (JSXGraph 1.x, feuille de style incluse, conteneur à \
+largeur et hauteur CSS explicites) ; `d3` → `d3` (D3 7) ; `three` → `THREE` \
+(Three.js r186, `THREE.OrbitControls` inclus, pas de `import`). N'en déclarer \
+que le nécessaire (chacune alourdit le module) ; sans pragma, JavaScript \
+natif.
 - Aucun stockage : `localStorage`, `sessionStorage` et cookies lèvent une \
 exception à la simple lecture ; l'état vit en mémoire et repart de zéro à \
 chaque chargement.
 - `eval`/`new Function` disponibles (expression saisie par l'élève) ; \
 soumission de formulaire bloquée (`form-action 'none'`) : gérer les \
 formulaires en JavaScript avec `preventDefault()`.
-- Hauteur de l'iframe ajustée automatiquement (ni resize, ni `postMessage` \
-de hauteur). Événement pédagogique (ex. un score) : \
-`window.ocModule.emit(nom, données)`.
+- Hauteur de l'iframe ajustée automatiquement au contenu (ni resize, ni \
+`postMessage` de hauteur) : dimensionner canvas, graphiques et scènes sur la \
+LARGEUR disponible avec une hauteur fixe, jamais sur `innerHeight`/\
+`windowHeight` (boucle avec l'ajustement) ; Chart.js : garder \
+`maintainAspectRatio` ou fixer la hauteur du conteneur. Événement pédagogique \
+(ex. un score) : `window.ocModule.emit(nom, données)`.
 - Module autonome et accessible : contrastes suffisants, utilisable au \
 clavier, lisible sur mobile, fond posé explicitement (page claire ou sombre).\
 """
