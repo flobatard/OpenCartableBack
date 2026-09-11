@@ -32,10 +32,11 @@ async def load_starter_course(
 ) -> CourseRead:
     """Dépose le cours d'exemple en brouillon (toujours un nouveau cours).
 
-    Rattrapage du seed automatique de l'onboarding, exposé par le bouton de
-    l'état vide de « Mes cours ». Pas de déduplication, miroir de
-    ``POST /courses/import`` : un prof qui veut relire l'exemple après avoir
-    modifié le premier ne doit pas se heurter à un 409.
+    Rattrapage du seed automatique de l'onboarding, exposé par « Mes cours »
+    (bouton de l'état vide, entrée discrète sous la liste). Pas de
+    déduplication, miroir de ``POST /courses/import`` : un prof qui veut
+    relire l'exemple après avoir modifié le premier ne doit pas se heurter à
+    un 409.
     """
     user = await users_service.get_or_create_by_sub(db, auth)
     return await service.create_starter_course(db, user)
