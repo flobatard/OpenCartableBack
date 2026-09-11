@@ -156,8 +156,13 @@ LARGEUR disponible avec une hauteur fixe, jamais sur `innerHeight`/\
 `windowHeight` (boucle avec l'ajustement) ; Chart.js : garder \
 `maintainAspectRatio` ou fixer la hauteur du conteneur. Événement pédagogique \
 (ex. un score) : `window.ocModule.emit(nom, données)`.
+- Mise en page fluide, utilisable dès 320 px de large (les élèves ouvrent le \
+cours sur téléphone) : aucune largeur fixe au-delà de 300 px — `max-width`, \
+pourcentages, flex et grilles qui passent à la ligne (`flex-wrap`, \
+`minmax(min(…, 100%), 1fr)`) ; canvas et scènes à la largeur disponible ; \
+contrôles assez grands pour le doigt, sans dépendre du survol.
 - Module autonome et accessible : contrastes suffisants, utilisable au \
-clavier, lisible sur mobile, fond posé explicitement (page claire ou sombre).\
+clavier, fond posé explicitement (page claire ou sombre).\
 """
 
 HITL_PROTOCOL = """\
