@@ -1,8 +1,8 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
 Le contenu du manifeste est du markdown destiné aux moteurs de rendu du
-front (KaTeX, Mermaid, encadrés et les langages d'extension : JSXGraph, TikZ,
-frise, passage, SMILES, Vega-Lite, ABC, SQL, Python…), dont les contraintes
+front (markdown de base, KaTeX, Mermaid, encadrés et les langages d'extension :
+JSXGraph, TikZ, frise, passage, SMILES, Vega-Lite, ABC, SQL, Python…), dont les contraintes
 ne sont vérifiées nulle part côté serveur. Les tests de gardes de syntaxe
 ci-dessous en encodent ce qui est mécaniquement vérifiable — ils n'attestent
 pas du rendu final (cf. TODO.md), mais ils rattrapent les fautes qui
@@ -149,6 +149,56 @@ def test_manifest_exercise_questions_have_no_id():
     for block in MANIFEST.blocks:
         if block.type == "exercise":
             assert all(q.get("id") is None for q in block.content["questions"])
+
+
+# Le markdown de base — celui sur lequel se posent encadrés, formules et
+# langages d'extension. Titres rendus par ``.course-content`` du front, tableaux
+# GFM, séparateurs : rien ici n'est propre à OpenCartable, et c'est bien pour ça
+# que le cours d'exemple doit l'enseigner.
+_HEADING_RE = re.compile(r"^(#{1,6}) ", re.MULTILINE)
+_TABLE_SEPARATOR_RE = re.compile(r"^\|[ :|-]+\|$", re.MULTILINE)
+
+
+def _prose() -> list[str]:
+    """Les markdowns du manifeste, code (fences et `en ligne`) retiré."""
+    return [_CODE_RE.sub("", markdown) for markdown in _markdowns()]
+
+
+def test_manifest_showcases_the_classic_markdown_syntax():
+    prose = "\n\n".join(_prose())
+    assert re.search(r"^### ", prose, re.MULTILINE), "le cours doit démontrer un sous-titre"
+    assert _TABLE_SEPARATOR_RE.search(prose), "le cours doit démontrer un tableau"
+    assert re.search(r"^---$", prose, re.MULTILINE), "le cours doit démontrer un séparateur"
+    assert re.search(r"^  - ", prose, re.MULTILINE), "le cours doit démontrer une liste imbriquée"
+    assert "~~" in prose, "le cours doit démontrer du texte barré"
+    assert re.search(r"\[[^\]]+\]\(https://", prose), "le cours doit démontrer un lien"
+
+
+def test_manifest_text_blocks_open_with_their_title():
+    # `course-blocks-view` ne rend ``block.title`` que pour les blocs
+    # ``document`` et ``module`` : sans titre dans le markdown, un bloc de texte
+    # arrive nu dans l'aperçu global comme sur la page de l'élève. Le titre du
+    # bloc est donc recopié en `##`, et les sous-parties descendent à `###`.
+    for block in MANIFEST.blocks:
+        if block.type == "text":
+            markdown = block.content["markdown"]
+        elif block.type == "exercise":
+            markdown = block.content["statement"]
+        else:
+            continue
+        assert markdown.startswith(f"## {block.title}\n"), block.title
+        for hashes in _HEADING_RE.findall(_CODE_RE.sub("", markdown))[1:]:
+            assert len(hashes) >= 3, block.title
+
+
+def test_manifest_horizontal_rules_follow_a_blank_line():
+    # `---` collé sous un paragraphe est un titre setext, pas un séparateur :
+    # le paragraphe du dessus deviendrait un <h2>, sans le moindre message.
+    for markdown in _prose():
+        lines = markdown.splitlines()
+        for index, line in enumerate(lines):
+            if line.strip() == "---" and index:
+                assert not lines[index - 1].strip(), markdown
 
 
 def test_manifest_mermaid_fences_have_no_math():

@@ -27,7 +27,7 @@
       "title": "Bienvenue",
       "description": "Ce que fait ce cours, et pourquoi il est en brouillon.",
       "content": {
-        "markdown": "Bienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. les encadrés ;\n2. les formules mathématiques ;\n3. la notation chimique ;\n4. les diagrammes ;\n5. les figures de fonctions ;\n6. les schémas géométriques ;\n7. les circuits électriques ;\n8. les frises chronologiques ;\n9. les textes à lignes numérotées ;\n10. les molécules ;\n11. les graphiques de données ;\n12. les partitions ;\n13. les requêtes SQL exécutables ;\n14. les programmes Python ;\n15. les exercices à réponse libre ;\n16. les modules interactifs ;\n17. les bibliothèques des modules : physique, graphiques, animation, géométrie, données et 3D.\n"
+        "markdown": "## Bienvenue\n\nBienvenue ! Ce cours est un **exemple**, déposé automatiquement dans ta bibliothèque.\n\nIl est en **brouillon** : personne d'autre que toi ne le voit, même muni d'un lien de partage. Modifie-le, casse-le, duplique-le ou supprime-le — il n'est là que pour te montrer ce qu'un cours peut contenir.\n\nChaque bloc qui suit présente une possibilité d'écriture **et s'en sert pour se présenter lui-même**. Ouvre l'éditeur d'un bloc pour en lire la source : c'est là que tout se joue.\n\n> Tu as supprimé ce cours et tu le regrettes ? Le bouton « Charger le cours d'exemple » attend dans « Mes cours », quand la liste est vide.\n\nAu programme :\n\n1. la mise en forme du texte ;\n2. les encadrés ;\n3. les formules mathématiques ;\n4. la notation chimique ;\n5. les diagrammes ;\n6. les figures de fonctions ;\n7. les schémas géométriques ;\n8. les circuits électriques ;\n9. les frises chronologiques ;\n10. les textes à lignes numérotées ;\n11. les molécules ;\n12. les graphiques de données ;\n13. les partitions ;\n14. les requêtes SQL exécutables ;\n15. les programmes Python ;\n16. les exercices à réponse libre ;\n17. les modules interactifs ;\n18. les bibliothèques des modules : physique, graphiques, animation, géométrie, données et 3D.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -35,10 +35,10 @@
     {
       "position": 1,
       "type": "text",
-      "title": "Encadrer l'essentiel",
-      "description": "Définitions, méthodes, points à retenir et mises en garde, dans des encadrés colorés.",
+      "title": "Mettre en forme le texte",
+      "description": "Titres, emphase, listes, tableaux, citations et séparateurs : la syntaxe markdown sur laquelle tout le reste se pose.",
       "content": {
-        "markdown": "Un **encadré** met une notion en valeur : c'est une citation dont la première ligne annonce le type.\n\n> [!DEFINITION]\n> Un **encadré** est une citation ouverte par un marqueur,\n> ici `[!DEFINITION]`. Sa couleur et son icône disent d'un\n> coup d'œil de quoi il s'agit.\n\nLa source de cet encadré :\n\n```\n> [!DEFINITION]\n> Un **encadré** est une citation ouverte par un marqueur,\n> ici `[!DEFINITION]`. Sa couleur et son icône disent d'un\n> coup d'œil de quoi il s'agit.\n```\n\nSix types existent : `[!DEFINITION]`, `[!KEYPOINT]`, `[!METHOD]`, `[!EXAMPLE]`, `[!NOTE]` et `[!WARNING]` — les mots-clés français d'origine (`[!RETENIR]`, `[!METHODE]`…) et ceux des alertes GitHub restent reconnus. Le texte écrit après le marqueur, sur la même ligne, remplace le titre du type :\n\n> [!METHOD] Écrire un encadré\n> 1. Commence une ligne par `>` suivi du marqueur, puis, si tu veux, d'un titre.\n> 2. Écris le contenu sur les lignes suivantes, chacune précédée de `>` : listes, formules et figures y ont leur place.\n> 3. Laisse une ligne vide pour sortir de l'encadré.\n\n> [!KEYPOINT] Théorème de Pythagore\n> Si le triangle $ABC$ est rectangle en $C$, alors $AB^2 = AC^2 + BC^2$.\n\n> [!WARNING]\n> Une ligne collée à la dernière ligne `>` fait encore partie de l'encadré : seule la ligne vide le ferme. Et un type inconnu, comme `[!ASTUCE]`, laisse une simple citation.\n"
+        "markdown": "## Mettre en forme le texte\n\nLe texte d'un bloc s'écrit en **markdown** : quelques signes de ponctuation structurent la page, et la source reste lisible telle quelle. Tout le reste de ce cours — encadrés, formules, diagrammes — se pose sur cette base.\n\n### Titres\n\nUn titre s'ouvre par des dièses, un par niveau de profondeur. Le titre que tu saisis au-dessus de l'éditeur sert à te repérer dans la liste des blocs et guide l'assistant : il **ne s'affiche pas dans la page**. Ouvre donc chaque bloc de texte par un titre `##`, puis descends à `###` et `####` pour ses parties.\n\n```\n## Le titre du bloc\n### Une partie\n#### Une sous-partie\n```\n\nTous les blocs de ce cours sont écrits ainsi : « Mettre en forme le texte », en tête de celui-ci, est un `##` ; « Titres », « Emphase » et « Listes » sont des `###`.\n\n### Emphase\n\nUn mot s'écrit en **gras** entre doubles astérisques, en *italique* entre astérisques simples, en ***gras et italique*** entre les trois, et ~~barré~~ entre doubles tildes. Entre accents graves, le `code en ligne` prend une police à chasse fixe : c'est lui qui, partout dans ce cours, désigne un mot-clé ou un nom de fichier.\n\n```\n**gras**, *italique*, ***les deux***, ~~barré~~, `code en ligne`\n```\n\n### Listes\n\nUn tiret ouvre une liste à puces, un nombre suivi d'un point une liste numérotée. Deux espaces d'indentation imbriquent un niveau :\n\n- une première idée ;\n- une deuxième, qui se décompose :\n  - un premier cas,\n  - un second cas ;\n- une troisième.\n\n1. Écrire la source.\n1. Relire l'aperçu.\n1. Recommencer.\n\nLes trois étapes ci-dessus sont écrites `1.`, `1.`, `1.` : les nombres de la source n'ont pas d'importance, la liste est renumérotée dans l'ordre au rendu.\n\n### Citations et séparateurs\n\nUne ligne ouverte par `>` devient une citation. Ouverte par `>` **suivi d'un marqueur**, elle devient un encadré coloré — c'est tout le sujet du bloc suivant.\n\n> Ce qui est simple est toujours faux. Ce qui ne l'est pas est inutilisable.\n>\n> Paul Valéry\n\nTrois tirets seuls sur leur ligne tracent un séparateur horizontal. Laisse **une ligne vide au-dessus** : collés sous un paragraphe, ils le transforment en titre au lieu de tracer un trait.\n\n---\n\n### Paragraphes et sauts de ligne\n\nUn simple retour à la ligne ne se voit pas dans le rendu : deux lignes qui se suivent dans la source forment un seul paragraphe. Une ligne vide ouvre un nouveau paragraphe ; deux espaces en fin de ligne forcent un saut de ligne sans en ouvrir un, ce qu'il faut pour une adresse ou une signature.\n\nCollège Jean-Moulin  \n12, rue des Écoles  \n34000 Montpellier\n\n### Tableaux\n\nUne ligne d'en-tête, une ligne de tirets, puis les données, les colonnes séparées par des barres verticales. Les deux-points placés dans la ligne de tirets alignent la colonne : à gauche par défaut, `:---:` centre, `---:` aligne à droite.\n\n| Planète | Rayon (km) | Satellites |\n| --- | ---: | :---: |\n| Mercure | 2 440 | 0 |\n| Terre | 6 371 | 1 |\n| Jupiter | 69 911 | 95 |\n\nLa source de ce tableau :\n\n```\n| Planète | Rayon (km) | Satellites |\n| --- | ---: | :---: |\n| Mercure | 2 440 | 0 |\n| Terre | 6 371 | 1 |\n| Jupiter | 69 911 | 95 |\n```\n\nLes barres des extrémités sont facultatives, et aligner les colonnes dans la source ne change rien au rendu : seul le nombre de barres compte. Un tableau plus large que la colonne de lecture défile horizontalement, sans déborder de la page.\n\n### Liens et images\n\nUn lien s'écrit `[texte affiché](adresse)`, une image `![description](adresse)` — la même syntaxe, précédée d'un point d'exclamation. Ainsi, [la page « Markdown » de Wikipédia](https://fr.wikipedia.org/wiki/Markdown).\n\nPour un fichier de ta bibliothèque — image, son, vidéo, document —, n'écris pas l'adresse à la main : le bouton **Insérer une ressource**, sous l'éditeur, pose une référence qui restera valide dans le temps.\n\n### Blocs de code\n\nTrois accents graves ouvrent un bloc de code, trois autres le ferment. Son contenu s'affiche tel quel, sans rien interpréter :\n\n```\nIci, **gras** et *italique* ne sont que des astérisques.\n```\n\nLe mot écrit juste après les trois accents graves ouvrants choisit le traitement du bloc. C'est cette étiquette qui, dans la suite du cours, transforme une source en diagramme, en figure, en partition ou en programme exécutable : `mermaid`, `tikz`, `abc`, `python`… Sans étiquette, le bloc reste affiché tel quel — c'est ainsi que ce cours montre ses propres sources.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -46,10 +46,10 @@
     {
       "position": 2,
       "type": "text",
-      "title": "Écrire des formules",
-      "description": "Formules en ligne et centrées, et les trois règles qui évitent les surprises.",
+      "title": "Encadrer l'essentiel",
+      "description": "Définitions, méthodes, points à retenir et mises en garde, dans des encadrés colorés.",
       "content": {
-        "markdown": "Une formule **en ligne** se glisse dans le texte entre deux dollars : la suite $u_n = \\frac{n}{n+1}$ converge vers $1$.\n\nUne formule **centrée** s'écrit entre doubles dollars, seule sur sa ligne :\n\n$$\\sum_{k=0}^{n} k = \\frac{n(n+1)}{2}$$\n\nLa source de ces deux formules :\n\n```\nLa suite $u_n = \\frac{n}{n+1}$ converge vers $1$.\n\n$$\\sum_{k=0}^{n} k = \\frac{n(n+1)}{2}$$\n```\n\nTrois règles à connaître :\n\n- le double dollar de fermeture doit **terminer la ligne** — rien ne doit le suivre ;\n- pas d'espace juste après le dollar ouvrant, ni juste avant le dollar fermant ;\n- un dollar fermant suivi d'un chiffre n'en est pas un : un prix comme 20$ ou 30$ reste du texte, sans traitement particulier.\n\nLes macros personnalisées ne sont pas disponibles : chaque commande s'écrit en entier, à chaque fois.\n\nQuelques exemples pour la route : $\\int_0^1 x^2\\,dx = \\frac{1}{3}$, puis $\\lim_{n \\to +\\infty}\\left(1 + \\frac{1}{n}\\right)^n = e$, et enfin $\\forall \\varepsilon > 0,\\ \\exists N \\in \\mathbb{N}$. Une matrice se centre aussi bien :\n\n$$A = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$$\n"
+        "markdown": "## Encadrer l'essentiel\n\nUn **encadré** met une notion en valeur : c'est une citation dont la première ligne annonce le type.\n\n> [!DEFINITION]\n> Un **encadré** est une citation ouverte par un marqueur,\n> ici `[!DEFINITION]`. Sa couleur et son icône disent d'un\n> coup d'œil de quoi il s'agit.\n\nLa source de cet encadré :\n\n```\n> [!DEFINITION]\n> Un **encadré** est une citation ouverte par un marqueur,\n> ici `[!DEFINITION]`. Sa couleur et son icône disent d'un\n> coup d'œil de quoi il s'agit.\n```\n\nSix types existent : `[!DEFINITION]`, `[!KEYPOINT]`, `[!METHOD]`, `[!EXAMPLE]`, `[!NOTE]` et `[!WARNING]` — les mots-clés français d'origine (`[!RETENIR]`, `[!METHODE]`…) et ceux des alertes GitHub restent reconnus. Le texte écrit après le marqueur, sur la même ligne, remplace le titre du type :\n\n> [!METHOD] Écrire un encadré\n> 1. Commence une ligne par `>` suivi du marqueur, puis, si tu veux, d'un titre.\n> 2. Écris le contenu sur les lignes suivantes, chacune précédée de `>` : listes, formules et figures y ont leur place.\n> 3. Laisse une ligne vide pour sortir de l'encadré.\n\n> [!KEYPOINT] Théorème de Pythagore\n> Si le triangle $ABC$ est rectangle en $C$, alors $AB^2 = AC^2 + BC^2$.\n\n> [!WARNING]\n> Une ligne collée à la dernière ligne `>` fait encore partie de l'encadré : seule la ligne vide le ferme. Et un type inconnu, comme `[!ASTUCE]`, laisse une simple citation.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -57,10 +57,10 @@
     {
       "position": 3,
       "type": "text",
-      "title": "Écrire de la chimie",
-      "description": "Équations, ions et unités avec \\ce et \\pu — toujours à l'intérieur d'une formule.",
+      "title": "Écrire des formules",
+      "description": "Formules en ligne et centrées, et les trois règles qui évitent les surprises.",
       "content": {
-        "markdown": "La chimie s'écrit **dans une formule**, entre dollars, avec la commande `\\ce{…}` : indices, charges et flèches se placent tout seuls.\n\n$$\\ce{CH4 + 2O2 -> CO2 + 2H2O}$$\n\nLa source de cette équation :\n\n```\n$$\\ce{CH4 + 2O2 -> CO2 + 2H2O}$$\n```\n\nLes chiffres qui suivent un symbole deviennent des indices, le coefficient se place devant l'espèce. La charge d'un ion suit un accent circonflexe — $\\ce{Cu^2+}$, $\\ce{SO4^2-}$, $\\ce{H3O+}$ — et l'état physique se note entre parenthèses : $\\ce{H2O(l)}$, $\\ce{CO2(g)}$, $\\ce{Na+(aq)}$.\n\nUn équilibre s'écrit avec `<=>` :\n\n$$\\ce{CH3COOH + H2O <=> CH3COO- + H3O+}$$\n\nPour une grandeur physique, `\\pu{…}` écrit la valeur et son unité avec les bons espacements : $g = \\pu{9.81 m.s^-2}$, $e = \\pu{1.6e-19 C}$.\n\nDeux pièges :\n\n- `\\ce` et `\\pu` sont des commandes de formule : **hors des dollars**, elles restent du texte brut ;\n- une charge de plusieurs caractères exige l'accent circonflexe : `\\ce{Cu2+}` donnerait $\\ce{Cu2+}$ (un indice 2 et une charge +), pas l'ion cuivre $\\ce{Cu^2+}$.\n"
+        "markdown": "## Écrire des formules\n\nUne formule **en ligne** se glisse dans le texte entre deux dollars : la suite $u_n = \\frac{n}{n+1}$ converge vers $1$.\n\nUne formule **centrée** s'écrit entre doubles dollars, seule sur sa ligne :\n\n$$\\sum_{k=0}^{n} k = \\frac{n(n+1)}{2}$$\n\nLa source de ces deux formules :\n\n```\nLa suite $u_n = \\frac{n}{n+1}$ converge vers $1$.\n\n$$\\sum_{k=0}^{n} k = \\frac{n(n+1)}{2}$$\n```\n\n### Trois règles à connaître\n\n- le double dollar de fermeture doit **terminer la ligne** — rien ne doit le suivre ;\n- pas d'espace juste après le dollar ouvrant, ni juste avant le dollar fermant ;\n- un dollar fermant suivi d'un chiffre n'en est pas un : un prix comme 20$ ou 30$ reste du texte, sans traitement particulier.\n\nLes macros personnalisées ne sont pas disponibles : chaque commande s'écrit en entier, à chaque fois.\n\nQuelques exemples pour la route : $\\int_0^1 x^2\\,dx = \\frac{1}{3}$, puis $\\lim_{n \\to +\\infty}\\left(1 + \\frac{1}{n}\\right)^n = e$, et enfin $\\forall \\varepsilon > 0,\\ \\exists N \\in \\mathbb{N}$. Une matrice se centre aussi bien :\n\n$$A = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$$\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -68,10 +68,10 @@
     {
       "position": 4,
       "type": "text",
-      "title": "Dessiner un diagramme",
-      "description": "Arbres de décision, séquences, états — et pourquoi les nœuds n'acceptent pas de formules.",
+      "title": "Écrire de la chimie",
+      "description": "Équations, ions et unités avec \\ce et \\pu — toujours à l'intérieur d'une formule.",
       "content": {
-        "markdown": "Un diagramme s'écrit dans un bloc de code `mermaid`. Il suit automatiquement le thème clair ou sombre de la page : **ne fixe jamais de couleurs** dans la source.\n\n```mermaid\nflowchart TD\n  A[Énoncé de départ] --> B{Le terme général est-il connu ?}\n  B -- Oui --> C[Calcul direct]\n  B -- Non --> D[Raisonnement par récurrence]\n  C --> E[Conclusion]\n  D --> E\n```\n\nLes accents passent sans problème dans les libellés.\n\nEn revanche, **pas de formule mathématique dans les nœuds** : les libellés sont du texte SVG, pas du HTML. Une formule entre dollars y déclencherait seulement un avertissement sous le diagramme. Place la formule dans le texte, autour du diagramme.\n\nD'autres familles de diagrammes répondent à la même syntaxe : `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `pie`, `gantt`.\n"
+        "markdown": "## Écrire de la chimie\n\nLa chimie s'écrit **dans une formule**, entre dollars, avec la commande `\\ce{…}` : indices, charges et flèches se placent tout seuls.\n\n$$\\ce{CH4 + 2O2 -> CO2 + 2H2O}$$\n\nLa source de cette équation :\n\n```\n$$\\ce{CH4 + 2O2 -> CO2 + 2H2O}$$\n```\n\nLes chiffres qui suivent un symbole deviennent des indices, le coefficient se place devant l'espèce. La charge d'un ion suit un accent circonflexe — $\\ce{Cu^2+}$, $\\ce{SO4^2-}$, $\\ce{H3O+}$ — et l'état physique se note entre parenthèses : $\\ce{H2O(l)}$, $\\ce{CO2(g)}$, $\\ce{Na+(aq)}$.\n\n### Ions, états et équilibres\n\nUn équilibre s'écrit avec `<=>` :\n\n$$\\ce{CH3COOH + H2O <=> CH3COO- + H3O+}$$\n\nPour une grandeur physique, `\\pu{…}` écrit la valeur et son unité avec les bons espacements : $g = \\pu{9.81 m.s^-2}$, $e = \\pu{1.6e-19 C}$.\n\nDeux pièges :\n\n- `\\ce` et `\\pu` sont des commandes de formule : **hors des dollars**, elles restent du texte brut ;\n- une charge de plusieurs caractères exige l'accent circonflexe : `\\ce{Cu2+}` donnerait $\\ce{Cu2+}$ (un indice 2 et une charge +), pas l'ion cuivre $\\ce{Cu^2+}$.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -79,10 +79,10 @@
     {
       "position": 5,
       "type": "text",
-      "title": "Tracer une figure",
-      "description": "Courbes de fonctions et points remarquables, avec le piège des fractions.",
+      "title": "Dessiner un diagramme",
+      "description": "Arbres de décision, séquences, états — et pourquoi les nœuds n'acceptent pas de formules.",
       "content": {
-        "markdown": "Une figure de fonctions se décrit avec **trois clés au plus**, une par ligne : `equation=` (répétable), `point=x,y` (répétable) et `bbox=xmin,ymax,xmax,ymin` (une seule fois).\n\n```jsxgraph\nequation=x^2 - 2*x - 3\nequation=2*x - 3\npoint=0,-3\npoint=4,5\nbbox=-4,9,6,-6\n```\n\nCi-dessus, la parabole $y = x^2 - 2x - 3$ et la droite $y = 2x - 3$, marquées de leurs deux points d'intersection.\n\nDeux pièges valent d'être connus.\n\n**La multiplication est explicite.** On écrit `2*x`, jamais `2x`. Et une seule équation illisible fait disparaître **toute** la figure, pas seulement la courbe fautive : ajoute-les une par une.\n\n**Les coordonnées sont des décimaux, jamais des fractions.** Le sommet de $y = 3x^2 - 8x$ se trouve en $x = \\frac{4}{3}$ ; dans le bloc, il s'écrit `point=1.333,-5.333`. Écrit `point=4/3,-16/3`, il serait lu comme le point $(4, -16)$ — silencieusement, sans le moindre message d'erreur.\n\n```jsxgraph\nequation=3*x^2 - 8*x\npoint=1.333,-5.333\nbbox=-2,4,4,-7\n```\n"
+        "markdown": "## Dessiner un diagramme\n\nUn diagramme s'écrit dans un bloc de code `mermaid`. Il suit automatiquement le thème clair ou sombre de la page : **ne fixe jamais de couleurs** dans la source.\n\n```mermaid\nflowchart TD\n  A[Énoncé de départ] --> B{Le terme général est-il connu ?}\n  B -- Oui --> C[Calcul direct]\n  B -- Non --> D[Raisonnement par récurrence]\n  C --> E[Conclusion]\n  D --> E\n```\n\nLes accents passent sans problème dans les libellés.\n\nEn revanche, **pas de formule mathématique dans les nœuds** : les libellés sont du texte SVG, pas du HTML. Une formule entre dollars y déclencherait seulement un avertissement sous le diagramme. Place la formule dans le texte, autour du diagramme.\n\nD'autres familles de diagrammes répondent à la même syntaxe : `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `pie`, `gantt`.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -90,10 +90,10 @@
     {
       "position": 6,
       "type": "text",
-      "title": "Composer un schéma",
-      "description": "Un schéma géométrique en LaTeX, et les trois limites du moteur embarqué.",
+      "title": "Tracer une figure",
+      "description": "Courbes de fonctions et points remarquables, avec le piège des fractions.",
       "content": {
-        "markdown": "Un schéma géométrique s'écrit dans un bloc de code `tikz`. Tout le contenu est du LaTeX : il n'y a aucune option à régler, et l'environnement `tikzpicture` est ajouté automatiquement s'il manque.\n\n```tikz\n\\draw[->] (-0.5,0) -- (4.5,0) node[right] {x};\n\\draw[->] (0,-0.5) -- (0,3.5) node[above] {y};\n\\draw[thick] (0,0) -- (3,0) -- (3,2) -- (0,2) -- cycle;\n\\draw[dashed] (0,0) -- (3,2);\n\\fill (3,2) circle (2pt);\n\\node[below] at (1.5,0) {b};\n\\node[left] at (0,1) {h};\n```\n\nTrois limites à garder en tête :\n\n- aucun paquet LaTeX supplémentaire ne peut être chargé — la distribution embarquée est figée ; ses bibliothèques TikZ, elles, se chargent (voir le bloc suivant) ;\n- le fond du dessin reste blanc, même en thème sombre : ce n'est pas un défaut d'affichage ;\n- une erreur LaTeX affiche « Code TikZ invalide », sans plus de détail. Avance par petits morceaux.\n\nDernier conseil : évite les accents dans les étiquettes `\\node`, leur rendu n'est pas garanti.\n"
+        "markdown": "## Tracer une figure\n\nUne figure de fonctions se décrit avec **trois clés au plus**, une par ligne : `equation=` (répétable), `point=x,y` (répétable) et `bbox=xmin,ymax,xmax,ymin` (une seule fois).\n\n```jsxgraph\nequation=x^2 - 2*x - 3\nequation=2*x - 3\npoint=0,-3\npoint=4,5\nbbox=-4,9,6,-6\n```\n\nCi-dessus, la parabole $y = x^2 - 2x - 3$ et la droite $y = 2x - 3$, marquées de leurs deux points d'intersection.\n\n### Deux pièges\n\n**La multiplication est explicite.** On écrit `2*x`, jamais `2x`. Et une seule équation illisible fait disparaître **toute** la figure, pas seulement la courbe fautive : ajoute-les une par une.\n\n**Les coordonnées sont des décimaux, jamais des fractions.** Le sommet de $y = 3x^2 - 8x$ se trouve en $x = \\frac{4}{3}$ ; dans le bloc, il s'écrit `point=1.333,-5.333`. Écrit `point=4/3,-16/3`, il serait lu comme le point $(4, -16)$ — silencieusement, sans le moindre message d'erreur.\n\n```jsxgraph\nequation=3*x^2 - 8*x\npoint=1.333,-5.333\nbbox=-2,4,4,-7\n```\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -101,10 +101,10 @@
     {
       "position": 7,
       "type": "text",
-      "title": "Dessiner un circuit électrique",
-      "description": "Un schéma normalisé en TikZ : pile, lampe, résistance et appareils de mesure.",
+      "title": "Composer un schéma",
+      "description": "Un schéma géométrique en LaTeX, et les trois limites du moteur embarqué.",
       "content": {
-        "markdown": "Un circuit électrique s'écrit lui aussi dans un bloc de code `tikz`, grâce à la bibliothèque `circuits.ee.IEC` : ses symboles suivent la norme IEC, celle des manuels de physique-chimie. La première ligne du bloc charge la bibliothèque, l'option `circuit ee IEC` de l'environnement active ses symboles.\n\n```tikz\n\\usetikzlibrary{circuits.ee.IEC}\n\\begin{tikzpicture}[circuit ee IEC]\n  % Boucle principale : pile, interrupteur, ampèremètre, lampe, résistance\n  \\draw (0,0) to [battery={info=$E$}] (0,3)\n              to [make contact={info=$K$}] (3,3)\n              to [amperemeter] (6,3)\n              to [bulb={info'=$L$}] (6,0)\n              to [resistor={ohm=100}] (0,0);\n  % Voltmètre en dérivation aux bornes de la lampe\n  \\draw (6,3) -- (8,3) to [voltmeter] (8,0) -- (6,0);\n  \\node [contact] at (6,3) {};\n  \\node [contact] at (6,0) {};\n\\end{tikzpicture}\n```\n\nChaque dipôle se pose sur un segment : `to [resistor]` entre deux points trace le fil avec le symbole en son milieu, `--` trace un simple fil. Entre accolades après le nom viennent l'étiquette — `info=`, ou `info'=` pour l'autre côté du fil — et la valeur avec son unité : `ohm=100`, `volt=12`, `ampere=0.5`. L'ampèremètre se place en série dans la boucle ; le voltmètre, en dérivation, rejoint le circuit par deux points de connexion `\\node [contact]`.\n\nLes noms des symboles sont en anglais : `battery` (pile), `bulb` (lampe), `resistor`, `make contact` (interrupteur), `amperemeter`, `voltmeter`, `capacitor`, `diode`… La page « Circuits électriques (TikZ) » de la documentation les montre tous, avec les DEL, les rhéostats et les portes logiques.\n\nDeux pièges :\n\n- le paquet `circuitikz`, que tu connais peut-être, n'est pas disponible : sa syntaxe (`to[R]`, `to[battery1]`…) donne « Code TikZ invalide » ;\n- seules les bibliothèques TikZ se chargent, par `\\usetikzlibrary` — jamais un paquet LaTeX par `\\usepackage`.\n"
+        "markdown": "## Composer un schéma\n\nUn schéma géométrique s'écrit dans un bloc de code `tikz`. Tout le contenu est du LaTeX : il n'y a aucune option à régler, et l'environnement `tikzpicture` est ajouté automatiquement s'il manque.\n\n```tikz\n\\draw[->] (-0.5,0) -- (4.5,0) node[right] {x};\n\\draw[->] (0,-0.5) -- (0,3.5) node[above] {y};\n\\draw[thick] (0,0) -- (3,0) -- (3,2) -- (0,2) -- cycle;\n\\draw[dashed] (0,0) -- (3,2);\n\\fill (3,2) circle (2pt);\n\\node[below] at (1.5,0) {b};\n\\node[left] at (0,1) {h};\n```\n\nTrois limites à garder en tête :\n\n- aucun paquet LaTeX supplémentaire ne peut être chargé — la distribution embarquée est figée ; ses bibliothèques TikZ, elles, se chargent (voir le bloc suivant) ;\n- le fond du dessin reste blanc, même en thème sombre : ce n'est pas un défaut d'affichage ;\n- une erreur LaTeX affiche « Code TikZ invalide », sans plus de détail. Avance par petits morceaux.\n\nDernier conseil : évite les accents dans les étiquettes `\\node`, leur rendu n'est pas garanti.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -112,10 +112,10 @@
     {
       "position": 8,
       "type": "text",
-      "title": "Construire une frise chronologique",
-      "description": "Périodes et événements sur un axe du temps, avant ou après J.-C.",
+      "title": "Dessiner un circuit électrique",
+      "description": "Un schéma normalisé en TikZ : pile, lampe, résistance et appareils de mesure.",
       "content": {
-        "markdown": "Une frise chronologique s'écrit dans un bloc de code `timeline`, **une ligne par élément** : `period=début,fin,libellé` pour une période, `event=date,libellé` pour un événement.\n\n```timeline\nperiod=-753,-509,Royauté\nperiod=-509,-27,République\nperiod=-27,476,Empire\nevent=-753,Fondation légendaire de Rome\nevent=-44,Assassinat de César\nevent=313,Édit de Milan\nevent=476,Chute de Rome\n```\n\nLes périodes s'étalent en bandes sous l'axe, les événements se dressent au-dessus ; ce qui est trop serré s'étage sur plusieurs lignes. Une année **négative** est antérieure à J.-C. : `-44` s'affiche « 44 av. J.-C. ».\n\nUne date peut être précise au mois ou au jour (`1929-10-24`), et trois clés facultatives cadrent la frise : `start=` et `end=` fixent les bornes de l'axe — ce qui dépasse est coupé —, `step=` le pas des graduations, en années.\n\n```timeline\nstart=1910\nend=1950\nstep=5\nperiod=1914,1918,Première Guerre mondiale\nperiod=1939,1945,Seconde Guerre mondiale\nevent=1929-10-24,Krach de Wall Street\nevent=1936-06,Front populaire\n```\n\nTrois choses à savoir :\n\n- le libellé est tout ce qui suit la virgule de la date : il peut contenir d'autres virgules ;\n- la date, elle, reste un nombre — une date approximative s'écrit comme une date exacte, l'approximation va dans le libellé (`event=1500,Vers 1500, la Renaissance`) ;\n- une ligne invalide est ignorée, et la frise indique combien elle en a écarté.\n"
+        "markdown": "## Dessiner un circuit électrique\n\nUn circuit électrique s'écrit lui aussi dans un bloc de code `tikz`, grâce à la bibliothèque `circuits.ee.IEC` : ses symboles suivent la norme IEC, celle des manuels de physique-chimie. La première ligne du bloc charge la bibliothèque, l'option `circuit ee IEC` de l'environnement active ses symboles.\n\n```tikz\n\\usetikzlibrary{circuits.ee.IEC}\n\\begin{tikzpicture}[circuit ee IEC]\n  % Boucle principale : pile, interrupteur, ampèremètre, lampe, résistance\n  \\draw (0,0) to [battery={info=$E$}] (0,3)\n              to [make contact={info=$K$}] (3,3)\n              to [amperemeter] (6,3)\n              to [bulb={info'=$L$}] (6,0)\n              to [resistor={ohm=100}] (0,0);\n  % Voltmètre en dérivation aux bornes de la lampe\n  \\draw (6,3) -- (8,3) to [voltmeter] (8,0) -- (6,0);\n  \\node [contact] at (6,3) {};\n  \\node [contact] at (6,0) {};\n\\end{tikzpicture}\n```\n\n### Poser les dipôles\n\nChaque dipôle se pose sur un segment : `to [resistor]` entre deux points trace le fil avec le symbole en son milieu, `--` trace un simple fil. Entre accolades après le nom viennent l'étiquette — `info=`, ou `info'=` pour l'autre côté du fil — et la valeur avec son unité : `ohm=100`, `volt=12`, `ampere=0.5`. L'ampèremètre se place en série dans la boucle ; le voltmètre, en dérivation, rejoint le circuit par deux points de connexion `\\node [contact]`.\n\nLes noms des symboles sont en anglais : `battery` (pile), `bulb` (lampe), `resistor`, `make contact` (interrupteur), `amperemeter`, `voltmeter`, `capacitor`, `diode`… La page « Circuits électriques (TikZ) » de la documentation les montre tous, avec les DEL, les rhéostats et les portes logiques.\n\nDeux pièges :\n\n- le paquet `circuitikz`, que tu connais peut-être, n'est pas disponible : sa syntaxe (`to[R]`, `to[battery1]`…) donne « Code TikZ invalide » ;\n- seules les bibliothèques TikZ se chargent, par `\\usetikzlibrary` — jamais un paquet LaTeX par `\\usepackage`.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -123,10 +123,10 @@
     {
       "position": 9,
       "type": "text",
-      "title": "Numéroter les lignes d'un texte",
-      "description": "Un extrait à commenter, numéroté dans la marge toutes les cinq lignes.",
+      "title": "Construire une frise chronologique",
+      "description": "Périodes et événements sur un axe du temps, avant ou après J.-C.",
       "content": {
-        "markdown": "Pour un commentaire ou une explication de texte, un bloc de code `passage` numérote les lignes d'un extrait : **une ligne de la source est une ligne du texte**, et un numéro s'affiche dans la marge toutes les cinq lignes. Tes élèves citent « v. 7 » ou « l. 12 » sans avoir à compter.\n\n```passage\nDemain, dès l’aube, à l’heure où blanchit la campagne,\nJe partirai. Vois-tu, je sais que tu m’attends.\nJ’irai par la forêt, j’irai par la montagne.\nJe ne puis demeurer loin de toi plus longtemps.\n\nJe marcherai les yeux fixés sur mes pensées,\nSans rien voir au dehors, sans entendre aucun bruit,\nSeul, inconnu, le dos courbé, les mains croisées,\nTriste, et le jour pour moi sera comme la nuit.\n\nJe ne regarderai ni l’or du soir qui tombe,\nNi les voiles au loin descendant vers Harfleur,\nEt quand j’arriverai, je mettrai sur ta tombe\nUn bouquet de houx vert et de bruyère en fleur.\n```\n\nVictor Hugo, *Les Contemplations*, 1856.\n\nPour un extrait pris au milieu d'une œuvre, une ligne `start=` en tête du bloc donne le numéro de la première ligne ; `step=` changerait le pas de la numérotation.\n\n```passage\nstart=10\nÀ ces mots le Corbeau ne se sent pas de joie ;\n    Et pour montrer sa belle voix,\nIl ouvre un large bec, laisse tomber sa proie.\nLe Renard s’en saisit, et dit : « Mon bon Monsieur,\n    Apprenez que tout flatteur\nVit aux dépens de celui qui l’écoute :\nCette leçon vaut bien un fromage, sans doute. »\n    Le Corbeau, honteux et confus,\nJura, mais un peu tard, qu’on ne l’y prendrait plus.\n```\n\nJean de La Fontaine, « Le Corbeau et le Renard », *Fables*, I, 2, 1668.\n\nTrois choses à savoir :\n\n- les lignes vides séparent strophes et paragraphes sans être comptées, et les espaces en début de ligne sont conservés, pour les vers en retrait ;\n- en prose, reproduis les retours à la ligne de l'édition : la numérotation suit ceux de la source, jamais la largeur de l'écran ;\n- le bloc affiche le texte tel quel, sans gras ni formule : la référence de l'œuvre s'écrit dessous, en markdown.\n"
+        "markdown": "## Construire une frise chronologique\n\nUne frise chronologique s'écrit dans un bloc de code `timeline`, **une ligne par élément** : `period=début,fin,libellé` pour une période, `event=date,libellé` pour un événement.\n\n```timeline\nperiod=-753,-509,Royauté\nperiod=-509,-27,République\nperiod=-27,476,Empire\nevent=-753,Fondation légendaire de Rome\nevent=-44,Assassinat de César\nevent=313,Édit de Milan\nevent=476,Chute de Rome\n```\n\nLes périodes s'étalent en bandes sous l'axe, les événements se dressent au-dessus ; ce qui est trop serré s'étage sur plusieurs lignes. Une année **négative** est antérieure à J.-C. : `-44` s'affiche « 44 av. J.-C. ».\n\n### Cadrer l'axe et préciser les dates\n\nUne date peut être précise au mois ou au jour (`1929-10-24`), et trois clés facultatives cadrent la frise : `start=` et `end=` fixent les bornes de l'axe — ce qui dépasse est coupé —, `step=` le pas des graduations, en années.\n\n```timeline\nstart=1910\nend=1950\nstep=5\nperiod=1914,1918,Première Guerre mondiale\nperiod=1939,1945,Seconde Guerre mondiale\nevent=1929-10-24,Krach de Wall Street\nevent=1936-06,Front populaire\n```\n\nTrois choses à savoir :\n\n- le libellé est tout ce qui suit la virgule de la date : il peut contenir d'autres virgules ;\n- la date, elle, reste un nombre — une date approximative s'écrit comme une date exacte, l'approximation va dans le libellé (`event=1500,Vers 1500, la Renaissance`) ;\n- une ligne invalide est ignorée, et la frise indique combien elle en a écarté.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -134,10 +134,10 @@
     {
       "position": 10,
       "type": "text",
-      "title": "Dessiner une molécule",
-      "description": "Formules topologiques à partir de la notation SMILES, avec leur légende.",
+      "title": "Numéroter les lignes d'un texte",
+      "description": "Un extrait à commenter, numéroté dans la marge toutes les cinq lignes.",
       "content": {
-        "markdown": "Une molécule se dessine dans un bloc de code `smiles`, **une molécule par ligne** en notation SMILES ; une légende facultative suit une barre verticale.\n\n```smiles\nCCO | Éthanol\nCC(=O)O | Acide éthanoïque\nc1ccccc1 | Benzène\n```\n\nLa notation décrit la molécule atome par atome : chaque atome par son symbole (`C`, `O`, `N`…), les hydrogènes restant implicites ; `=` marque une double liaison, `#` une triple, et les parenthèses ouvrent une ramification. Un chiffre referme un cycle, les minuscules désignent des atomes aromatiques.\n\nUn ion s'écrit entre crochets, et un point sépare deux espèces non liées :\n\n```smiles\n[NH4+] | Ion ammonium\n[Na+].[Cl-] | Chlorure de sodium\n```\n\nPour une molécule complexe, inutile de l'écrire à la main : la fiche de chaque molécule sur PubChem donne son SMILES, à copier-coller.\n\nDeux limites :\n\n- les couleurs des atomes sont fixes : la molécule est dessinée sur une planche claire, même en thème sombre ;\n- un SMILES illisible affiche une notice à la place de sa molécule, sans empêcher les autres lignes d'être dessinées.\n"
+        "markdown": "## Numéroter les lignes d'un texte\n\nPour un commentaire ou une explication de texte, un bloc de code `passage` numérote les lignes d'un extrait : **une ligne de la source est une ligne du texte**, et un numéro s'affiche dans la marge toutes les cinq lignes. Tes élèves citent « v. 7 » ou « l. 12 » sans avoir à compter.\n\n```passage\nDemain, dès l’aube, à l’heure où blanchit la campagne,\nJe partirai. Vois-tu, je sais que tu m’attends.\nJ’irai par la forêt, j’irai par la montagne.\nJe ne puis demeurer loin de toi plus longtemps.\n\nJe marcherai les yeux fixés sur mes pensées,\nSans rien voir au dehors, sans entendre aucun bruit,\nSeul, inconnu, le dos courbé, les mains croisées,\nTriste, et le jour pour moi sera comme la nuit.\n\nJe ne regarderai ni l’or du soir qui tombe,\nNi les voiles au loin descendant vers Harfleur,\nEt quand j’arriverai, je mettrai sur ta tombe\nUn bouquet de houx vert et de bruyère en fleur.\n```\n\nVictor Hugo, *Les Contemplations*, 1856.\n\n### Repartir d'un autre numéro\n\nPour un extrait pris au milieu d'une œuvre, une ligne `start=` en tête du bloc donne le numéro de la première ligne ; `step=` changerait le pas de la numérotation.\n\n```passage\nstart=10\nÀ ces mots le Corbeau ne se sent pas de joie ;\n    Et pour montrer sa belle voix,\nIl ouvre un large bec, laisse tomber sa proie.\nLe Renard s’en saisit, et dit : « Mon bon Monsieur,\n    Apprenez que tout flatteur\nVit aux dépens de celui qui l’écoute :\nCette leçon vaut bien un fromage, sans doute. »\n    Le Corbeau, honteux et confus,\nJura, mais un peu tard, qu’on ne l’y prendrait plus.\n```\n\nJean de La Fontaine, « Le Corbeau et le Renard », *Fables*, I, 2, 1668.\n\nTrois choses à savoir :\n\n- les lignes vides séparent strophes et paragraphes sans être comptées, et les espaces en début de ligne sont conservés, pour les vers en retrait ;\n- en prose, reproduis les retours à la ligne de l'édition : la numérotation suit ceux de la source, jamais la largeur de l'écran ;\n- le bloc affiche le texte tel quel, sans gras ni formule : la référence de l'œuvre s'écrit dessous, en markdown.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -145,10 +145,10 @@
     {
       "position": 11,
       "type": "text",
-      "title": "Tracer un graphique de données",
-      "description": "Barres, courbes ou secteurs à partir d'un tableau de valeurs, en Vega-Lite.",
+      "title": "Dessiner une molécule",
+      "description": "Formules topologiques à partir de la notation SMILES, avec leur légende.",
       "content": {
-        "markdown": "Un graphique de données s'écrit dans un bloc de code `vegalite`, en JSON, selon la grammaire **Vega-Lite** : les valeurs, le type de tracé, et ce que chaque axe représente.\n\n```vegalite\n{\n  \"title\": \"Population mondiale (milliards d'habitants)\",\n  \"data\": {\"values\": [\n    {\"annee\": 1950, \"population\": 2.5},\n    {\"annee\": 1970, \"population\": 3.7},\n    {\"annee\": 1990, \"population\": 5.3},\n    {\"annee\": 2010, \"population\": 6.9},\n    {\"annee\": 2020, \"population\": 7.8}\n  ]},\n  \"mark\": {\"type\": \"line\", \"point\": true},\n  \"encoding\": {\n    \"x\": {\"field\": \"annee\", \"type\": \"ordinal\", \"title\": \"Année\"},\n    \"y\": {\"field\": \"population\", \"type\": \"quantitative\", \"title\": null}\n  }\n}\n```\n\nTrois clés suffisent : `data.values` porte le tableau de données, un objet par ligne ; `mark` choisit le tracé (`bar`, `line`, `point`, `area`, `arc` pour un diagramme circulaire) ; `encoding` dit quelle colonne va sur quel axe, et son type — `quantitative` pour une mesure, `nominal` pour une catégorie, `ordinal` pour un ordre, `temporal` pour une date.\n\nRemplace `\"line\"` par `\"bar\"` dans la source : le même tableau devient un diagramme en barres.\n\nTrois choses à savoir :\n\n- les données s'écrivent **dans** le bloc : un chargement par adresse (`data.url`) est refusé, pour qu'aucun graphique ne fasse partir de requête vers un site tiers ;\n- le graphique est une image fixe, sans info-bulle ni sélection interactive ;\n- l'assistant connaît bien Vega-Lite : décris-lui tes données et le graphique voulu, il écrira la spécification.\n"
+        "markdown": "## Dessiner une molécule\n\nUne molécule se dessine dans un bloc de code `smiles`, **une molécule par ligne** en notation SMILES ; une légende facultative suit une barre verticale.\n\n```smiles\nCCO | Éthanol\nCC(=O)O | Acide éthanoïque\nc1ccccc1 | Benzène\n```\n\nLa notation décrit la molécule atome par atome : chaque atome par son symbole (`C`, `O`, `N`…), les hydrogènes restant implicites ; `=` marque une double liaison, `#` une triple, et les parenthèses ouvrent une ramification. Un chiffre referme un cycle, les minuscules désignent des atomes aromatiques.\n\nUn ion s'écrit entre crochets, et un point sépare deux espèces non liées :\n\n```smiles\n[NH4+] | Ion ammonium\n[Na+].[Cl-] | Chlorure de sodium\n```\n\nPour une molécule complexe, inutile de l'écrire à la main : la fiche de chaque molécule sur PubChem donne son SMILES, à copier-coller.\n\nDeux limites :\n\n- les couleurs des atomes sont fixes : la molécule est dessinée sur une planche claire, même en thème sombre ;\n- un SMILES illisible affiche une notice à la place de sa molécule, sans empêcher les autres lignes d'être dessinées.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -156,10 +156,10 @@
     {
       "position": 12,
       "type": "text",
-      "title": "Écrire une partition",
-      "description": "Une mélodie en notation ABC, gravée et jouée au piano.",
+      "title": "Tracer un graphique de données",
+      "description": "Barres, courbes ou secteurs à partir d'un tableau de valeurs, en Vega-Lite.",
       "content": {
-        "markdown": "Une partition s'écrit dans un bloc de code `abc`, en **notation ABC** : quelques en-têtes, puis les notes, une lettre par note.\n\n```abc\nX:1\nT:Frère Jacques\nM:4/4\nL:1/4\nQ:1/4=100\nK:F\nFGAF|FGAF|ABc2|ABc2|\nc/d/c/B/ AF|c/d/c/B/ AF|FCF2|FCF2|]\n```\n\nLe bouton **Écouter**, sous la partition, la joue au piano.\n\nLes en-têtes s'écrivent un par ligne : `X:` le numéro de la mélodie, `T:` son titre, `M:` la mesure, `L:` la durée d'une note sans indication (`1/4` pour une noire), `Q:` le tempo, et **toujours en dernier** `K:` la tonalité. Viennent ensuite les notes : `C D E F G A B` pour l'octave du milieu, en minuscules pour l'octave au-dessus ; un chiffre allonge la note (`c2`), une barre oblique l'abrège (`c/`) ; `|` sépare les mesures et `|]` termine le morceau.\n\nDeux limites :\n\n- seul le piano est disponible : une directive `%%MIDI` qui choisit un autre instrument est ignorée ;\n- une ligne que l'analyseur ne comprend pas est signalée dans des avertissements repliés sous la partition.\n"
+        "markdown": "## Tracer un graphique de données\n\nUn graphique de données s'écrit dans un bloc de code `vegalite`, en JSON, selon la grammaire **Vega-Lite** : les valeurs, le type de tracé, et ce que chaque axe représente.\n\n```vegalite\n{\n  \"title\": \"Population mondiale (milliards d'habitants)\",\n  \"data\": {\"values\": [\n    {\"annee\": 1950, \"population\": 2.5},\n    {\"annee\": 1970, \"population\": 3.7},\n    {\"annee\": 1990, \"population\": 5.3},\n    {\"annee\": 2010, \"population\": 6.9},\n    {\"annee\": 2020, \"population\": 7.8}\n  ]},\n  \"mark\": {\"type\": \"line\", \"point\": true},\n  \"encoding\": {\n    \"x\": {\"field\": \"annee\", \"type\": \"ordinal\", \"title\": \"Année\"},\n    \"y\": {\"field\": \"population\", \"type\": \"quantitative\", \"title\": null}\n  }\n}\n```\n\nTrois clés suffisent : `data.values` porte le tableau de données, un objet par ligne ; `mark` choisit le tracé (`bar`, `line`, `point`, `area`, `arc` pour un diagramme circulaire) ; `encoding` dit quelle colonne va sur quel axe, et son type — `quantitative` pour une mesure, `nominal` pour une catégorie, `ordinal` pour un ordre, `temporal` pour une date.\n\nRemplace `\"line\"` par `\"bar\"` dans la source : le même tableau devient un diagramme en barres.\n\nTrois choses à savoir :\n\n- les données s'écrivent **dans** le bloc : un chargement par adresse (`data.url`) est refusé, pour qu'aucun graphique ne fasse partir de requête vers un site tiers ;\n- le graphique est une image fixe, sans info-bulle ni sélection interactive ;\n- l'assistant connaît bien Vega-Lite : décris-lui tes données et le graphique voulu, il écrira la spécification.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -167,10 +167,10 @@
     {
       "position": 13,
       "type": "text",
-      "title": "Interroger une base de données",
-      "description": "Des requêtes SQL que l'élève exécute et modifie dans son navigateur.",
+      "title": "Écrire une partition",
+      "description": "Une mélodie en notation ABC, gravée et jouée au piano.",
       "content": {
-        "markdown": "Une requête SQL devient **exécutable** dans un bloc de code `sql` : l'élève la lance, la modifie et la relance, le résultat s'affiche en tableau. Le moteur SQLite tourne dans son navigateur — ni compte, ni serveur.\n\n```sql\nCREATE TABLE eleve (nom TEXT, classe TEXT, moyenne REAL);\nINSERT INTO eleve VALUES\n  ('Ada', '1G2', 15.5), ('Alan', '1G1', 12.0),\n  ('Grace', '1G2', 17.25), ('Linus', '1G1', 9.5);\n-- @query\nSELECT classe, round(avg(moyenne), 2) AS moyenne_classe\nFROM eleve\nGROUP BY classe;\n```\n\nTout ce qui précède la ligne `-- @query` **prépare la base** (création et remplissage des tables) : cette partie est repliée chez l'élève. Ce qui suit est la requête qu'il voit et peut modifier ; **Réinitialiser** revient à la tienne.\n\nTrois choses à savoir :\n\n- chaque exécution repart d'une base neuve : les blocs sont indépendants, et un `INSERT` ne survit pas à l'exécution suivante ;\n- une requête qui tourne plus de 5 secondes est interrompue ;\n- le moteur (environ 0,7 Mo) n'est téléchargé qu'au premier clic sur **Exécuter**, puis gardé en cache.\n"
+        "markdown": "## Écrire une partition\n\nUne partition s'écrit dans un bloc de code `abc`, en **notation ABC** : quelques en-têtes, puis les notes, une lettre par note.\n\n```abc\nX:1\nT:Frère Jacques\nM:4/4\nL:1/4\nQ:1/4=100\nK:F\nFGAF|FGAF|ABc2|ABc2|\nc/d/c/B/ AF|c/d/c/B/ AF|FCF2|FCF2|]\n```\n\nLe bouton **Écouter**, sous la partition, la joue au piano.\n\nLes en-têtes s'écrivent un par ligne : `X:` le numéro de la mélodie, `T:` son titre, `M:` la mesure, `L:` la durée d'une note sans indication (`1/4` pour une noire), `Q:` le tempo, et **toujours en dernier** `K:` la tonalité. Viennent ensuite les notes : `C D E F G A B` pour l'octave du milieu, en minuscules pour l'octave au-dessus ; un chiffre allonge la note (`c2`), une barre oblique l'abrège (`c/`) ; `|` sépare les mesures et `|]` termine le morceau.\n\nDeux limites :\n\n- seul le piano est disponible : une directive `%%MIDI` qui choisit un autre instrument est ignorée ;\n- une ligne que l'analyseur ne comprend pas est signalée dans des avertissements repliés sous la partition.\n"
       },
       "resource_ref": null,
       "module_ref": null
@@ -178,21 +178,32 @@
     {
       "position": 14,
       "type": "text",
-      "title": "Programmer en Python",
-      "description": "Du code Python, avec numpy et matplotlib, que l'élève exécute et modifie dans son navigateur.",
+      "title": "Interroger une base de données",
+      "description": "Des requêtes SQL que l'élève exécute et modifie dans son navigateur.",
       "content": {
-        "markdown": "Du code Python devient **exécutable** dans un bloc de code `python` : l'élève le lance, le modifie et le relance ; ce qu'il affiche apparaît sous le code. Python tourne dans son navigateur — ni compte, ni serveur.\n\n```python\ndef factorielle(n):\n    resultat = 1\n    for k in range(2, n + 1):\n        resultat *= k\n    return resultat\n\nfor n in range(1, 8):\n    print(f\"{n}! = {factorielle(n)}\")\n```\n\nLes bibliothèques **numpy** et **matplotlib** sont disponibles : une figure tracée s'affiche sous le code.\n\n```python\nimport numpy as np\nimport matplotlib.pyplot as plt\n\nx = np.linspace(-2, 4, 200)\nplt.plot(x, x**2 - 2*x - 3)\nplt.axhline(0, color=\"gray\", linewidth=0.8)\nplt.title(\"Parabole y = x² − 2x − 3\")\nplt.show()\n```\n\nTrois choses à savoir :\n\n- `input()` lit le champ **Entrées**, sous le code, une ligne par appel ;\n- un programme qui tourne plus de 15 secondes est interrompu, et **Arrêter** le coupe à tout moment ;\n- Python (environ 6 Mo) n'est téléchargé qu'au premier clic sur **Exécuter**, numpy et matplotlib (environ 13 Mo) au premier import — le navigateur les garde ensuite en cache.\n"
+        "markdown": "## Interroger une base de données\n\nUne requête SQL devient **exécutable** dans un bloc de code `sql` : l'élève la lance, la modifie et la relance, le résultat s'affiche en tableau. Le moteur SQLite tourne dans son navigateur — ni compte, ni serveur.\n\n```sql\nCREATE TABLE eleve (nom TEXT, classe TEXT, moyenne REAL);\nINSERT INTO eleve VALUES\n  ('Ada', '1G2', 15.5), ('Alan', '1G1', 12.0),\n  ('Grace', '1G2', 17.25), ('Linus', '1G1', 9.5);\n-- @query\nSELECT classe, round(avg(moyenne), 2) AS moyenne_classe\nFROM eleve\nGROUP BY classe;\n```\n\n### Préparer la base, montrer la requête\n\nTout ce qui précède la ligne `-- @query` **prépare la base** (création et remplissage des tables) : cette partie est repliée chez l'élève. Ce qui suit est la requête qu'il voit et peut modifier ; **Réinitialiser** revient à la tienne.\n\nTrois choses à savoir :\n\n- chaque exécution repart d'une base neuve : les blocs sont indépendants, et un `INSERT` ne survit pas à l'exécution suivante ;\n- une requête qui tourne plus de 5 secondes est interrompue ;\n- le moteur (environ 0,7 Mo) n'est téléchargé qu'au premier clic sur **Exécuter**, puis gardé en cache.\n"
       },
       "resource_ref": null,
       "module_ref": null
     },
     {
       "position": 15,
+      "type": "text",
+      "title": "Programmer en Python",
+      "description": "Du code Python, avec numpy et matplotlib, que l'élève exécute et modifie dans son navigateur.",
+      "content": {
+        "markdown": "## Programmer en Python\n\nDu code Python devient **exécutable** dans un bloc de code `python` : l'élève le lance, le modifie et le relance ; ce qu'il affiche apparaît sous le code. Python tourne dans son navigateur — ni compte, ni serveur.\n\n```python\ndef factorielle(n):\n    resultat = 1\n    for k in range(2, n + 1):\n        resultat *= k\n    return resultat\n\nfor n in range(1, 8):\n    print(f\"{n}! = {factorielle(n)}\")\n```\n\n### Tracer une courbe\n\nLes bibliothèques **numpy** et **matplotlib** sont disponibles : une figure tracée s'affiche sous le code.\n\n```python\nimport numpy as np\nimport matplotlib.pyplot as plt\n\nx = np.linspace(-2, 4, 200)\nplt.plot(x, x**2 - 2*x - 3)\nplt.axhline(0, color=\"gray\", linewidth=0.8)\nplt.title(\"Parabole y = x² − 2x − 3\")\nplt.show()\n```\n\nTrois choses à savoir :\n\n- `input()` lit le champ **Entrées**, sous le code, une ligne par appel ;\n- un programme qui tourne plus de 15 secondes est interrompu, et **Arrêter** le coupe à tout moment ;\n- Python (environ 6 Mo) n'est téléchargé qu'au premier clic sur **Exécuter**, numpy et matplotlib (environ 13 Mo) au premier import — le navigateur les garde ensuite en cache.\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 16,
       "type": "exercise",
       "title": "Un exercice à réponse libre",
       "description": "Un sujet, deux questions, deux corrigés que le lien public n'emporte pas.",
       "content": {
-        "statement": "Ce bloc est un **exercice**. Son sujet accepte le même markdown que les blocs de cours, formules comprises.\n\nOn considère la suite définie par $u_0 = 2$ et, pour tout entier $n$, $u_{n+1} = \\frac{u_n + 3}{2}$.\n\nChaque question porte un énoncé et un corrigé. Le corrigé ne part **jamais** avec le cours partagé et n'est **jamais** indexé par la recherche : un élève qui suit ton lien ne le voit pas. Seule exception, le tuteur IA d'un élève **connecté** peut le lui dévoiler une fois sa réponse juste ou son effort suffisant — écris-le en pensant qu'il sera lu à ce moment-là.\n",
+        "statement": "## Un exercice à réponse libre\n\nCe bloc est un **exercice**. Son sujet accepte le même markdown que les blocs de cours, formules comprises.\n\nOn considère la suite définie par $u_0 = 2$ et, pour tout entier $n$, $u_{n+1} = \\frac{u_n + 3}{2}$.\n\nChaque question porte un énoncé et un corrigé. Le corrigé ne part **jamais** avec le cours partagé et n'est **jamais** indexé par la recherche : un élève qui suit ton lien ne le voit pas. Seule exception, le tuteur IA d'un élève **connecté** peut le lui dévoiler une fois sa réponse juste ou son effort suffisant — écris-le en pensant qu'il sera lu à ce moment-là.\n",
         "questions": [
           {
             "statement": "Calcule $u_1$ puis $u_2$.",
@@ -210,7 +221,7 @@
       "module_ref": null
     },
     {
-      "position": 16,
+      "position": 17,
       "type": "module",
       "title": "Un module interactif",
       "description": "Un widget HTML, CSS et JavaScript exécuté dans un bac à sable, sans réseau ni stockage.",
@@ -219,29 +230,29 @@
       "module_ref": "7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34"
     },
     {
-      "position": 17,
+      "position": 18,
       "type": "text",
       "title": "Appeler un module depuis le texte",
       "description": "Glisser un module dans un paragraphe avec une référence oc-module.",
       "content": {
-        "markdown": "Un module peut aussi s'ouvrir depuis un lien au fil du texte, sans lui consacrer un bloc entier : [Ouvrir le compteur de termes](oc-module:7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34).\n\nLa référence `oc-module:` porte l'identifiant **stable** du module, jamais une adresse web. À l'export puis au réimport du cours, elle est réécrite automatiquement vers le nouvel identifiant : un cours reste donc autoportant quand il change d'instance.\n\nMême principe pour les fichiers de la bibliothèque du cours, avec `oc-resource:` — en lien pour un téléchargement, ou précédé d'un point d'exclamation pour afficher directement une image, un son ou une vidéo.\n"
-      },
-      "resource_ref": null,
-      "module_ref": null
-    },
-    {
-      "position": 18,
-      "type": "text",
-      "title": "Des bibliothèques dans les modules",
-      "description": "Six bibliothèques embarquées pour la physique, les graphiques, l'animation, la géométrie, les données et la 3D.",
-      "content": {
-        "markdown": "Un module peut s'appuyer sur des **bibliothèques préinstallées**, embarquées par OpenCartable : le bac à sable reste coupé du réseau, aucune ne se télécharge depuis un site tiers. Pour en utiliser une, déclare-la sur une ligne de commentaire en tête du JavaScript du module :\n\n```\n// @oc-libs: matter, chart\n```\n\nSix bibliothèques sont disponibles, chacune illustrée par l'un des modules qui suivent :\n\n| Nom à déclarer | Bibliothèque | Pour quoi faire |\n|---|---|---|\n| `matter` | Matter.js | simuler la mécanique de solides en 2D |\n| `chart` | Chart.js | tracer des graphiques de données |\n| `p5` | p5.js | animer une simulation image par image |\n| `jsxgraph` | JSXGraph | construire des figures mathématiques dynamiques |\n| `d3` | D3 | dessiner des visualisations de données sur mesure |\n| `three` | Three.js | afficher une scène en 3D |\n\nN'en déclare que celles dont le module a besoin : chacune alourdit son chargement. Ouvre l'un de ces modules dans l'onglet **Modules** du cours pour lire sa ligne `@oc-libs` et le code qui s'en sert.\n\nL'assistant connaît cette liste : demande-lui par exemple, depuis l'éditeur d'un module, « une simulation de pendule avec Matter.js ».\n"
+        "markdown": "## Appeler un module depuis le texte\n\nUn module peut aussi s'ouvrir depuis un lien au fil du texte, sans lui consacrer un bloc entier : [Ouvrir le compteur de termes](oc-module:7c9e6a2b-4d3f-4a58-9b1e-2f5c8d0a6b34).\n\nLa référence `oc-module:` porte l'identifiant **stable** du module, jamais une adresse web. À l'export puis au réimport du cours, elle est réécrite automatiquement vers le nouvel identifiant : un cours reste donc autoportant quand il change d'instance.\n\nMême principe pour les fichiers de la bibliothèque du cours, avec `oc-resource:` — en lien pour un téléchargement, ou précédé d'un point d'exclamation pour afficher directement une image, un son ou une vidéo.\n"
       },
       "resource_ref": null,
       "module_ref": null
     },
     {
       "position": 19,
+      "type": "text",
+      "title": "Des bibliothèques dans les modules",
+      "description": "Six bibliothèques embarquées pour la physique, les graphiques, l'animation, la géométrie, les données et la 3D.",
+      "content": {
+        "markdown": "## Des bibliothèques dans les modules\n\nUn module peut s'appuyer sur des **bibliothèques préinstallées**, embarquées par OpenCartable : le bac à sable reste coupé du réseau, aucune ne se télécharge depuis un site tiers. Pour en utiliser une, déclare-la sur une ligne de commentaire en tête du JavaScript du module :\n\n```\n// @oc-libs: matter, chart\n```\n\nSix bibliothèques sont disponibles, chacune illustrée par l'un des modules qui suivent :\n\n| Nom à déclarer | Bibliothèque | Pour quoi faire |\n|---|---|---|\n| `matter` | Matter.js | simuler la mécanique de solides en 2D |\n| `chart` | Chart.js | tracer des graphiques de données |\n| `p5` | p5.js | animer une simulation image par image |\n| `jsxgraph` | JSXGraph | construire des figures mathématiques dynamiques |\n| `d3` | D3 | dessiner des visualisations de données sur mesure |\n| `three` | Three.js | afficher une scène en 3D |\n\nN'en déclare que celles dont le module a besoin : chacune alourdit son chargement. Ouvre l'un de ces modules dans l'onglet **Modules** du cours pour lire sa ligne `@oc-libs` et le code qui s'en sert.\n\nL'assistant connaît cette liste : demande-lui par exemple, depuis l'éditeur d'un module, « une simulation de pendule avec Matter.js ».\n"
+      },
+      "resource_ref": null,
+      "module_ref": null
+    },
+    {
+      "position": 20,
       "type": "module",
       "title": "Simuler la mécanique avec Matter.js",
       "description": "Un moteur physique 2D : rebonds, gravité des astres et suite géométrique des hauteurs.",
@@ -250,7 +261,7 @@
       "module_ref": "3b8f1c52-9a4e-4d0b-8c61-5e2a7f90d413"
     },
     {
-      "position": 20,
+      "position": 21,
       "type": "module",
       "title": "Tracer un modèle avec Chart.js",
       "description": "Le modèle de Lotka-Volterra intégré pas à pas, en courbes ou en portrait de phase.",
@@ -259,7 +270,7 @@
       "module_ref": "a41d7e06-2c95-4b3f-9e18-6f0b3d5c8a27"
     },
     {
-      "position": 21,
+      "position": 22,
       "type": "module",
       "title": "Animer une simulation avec p5.js",
       "description": "Des molécules qui franchissent une membrane jusqu'à l'équilibre des concentrations.",
@@ -268,7 +279,7 @@
       "module_ref": "c7e24b91-5f38-4a6d-b0c2-8d19e4f67a05"
     },
     {
-      "position": 22,
+      "position": 23,
       "type": "module",
       "title": "Construire une figure dynamique avec JSXGraph",
       "description": "Un point mobile sur une courbe saisie par l'élève, et la tangente qui l'accompagne.",
@@ -277,7 +288,7 @@
       "module_ref": "5d09a3f8-7b62-4e1c-a954-2c8e6b1f0d93"
     },
     {
-      "position": 23,
+      "position": 24,
       "type": "module",
       "title": "Visualiser des données avec D3",
       "description": "Un cladogramme repliable : chaque embranchement porte son caractère partagé.",
@@ -286,7 +297,7 @@
       "module_ref": "e8b6f2d4-1a73-4c95-8f0e-9b4d2a6c7e81"
     },
     {
-      "position": 24,
+      "position": 25,
       "type": "module",
       "title": "Explorer une scène 3D avec Three.js",
       "description": "Méthane, ammoniac, eau et dioxyde de carbone en 3D, doublets non liants compris.",
@@ -295,12 +306,12 @@
       "module_ref": "f2a95c17-6d84-4b2e-9c3a-7e0f5b8d1c64"
     },
     {
-      "position": 25,
+      "position": 26,
       "type": "text",
       "title": "Pour aller plus loin",
       "description": "Publier, partager, régler la lecture, exporter, se faire aider.",
       "content": {
-        "markdown": "Quelques leviers qui ne se voient pas dans le texte d'un cours.\n\n**Publier.** Ce cours est en brouillon. L'onglet de partage propose trois régimes : *brouillon* (personne d'autre que toi), *privé* (uniquement via un lien de partage que tu crées) et *public* (accessible par son adresse et listé dans ton catalogue).\n\n**Partager.** Un lien de partage est une adresse secrète : l'élève n'a ni compte ni mot de passe à créer. Tu peux en émettre plusieurs, les nommer, et en révoquer un sans toucher aux autres. Repasser le cours en brouillon les suspend tous d'un coup, sans les détruire.\n\n**Régler la lecture.** La typographie de ce cours n'est pas celle par défaut : police à empattement, texte un peu plus grand, colonne un peu plus large. C'est un réglage **du cours**, pas du lecteur — il le suit à l'impression comme à l'export PDF.\n\n**Exporter.** Un cours s'exporte en une archive qui emporte ses blocs, ses fichiers et ses modules. Réimportée ici ou sur une autre instance, elle recrée un cours neuf, en brouillon.\n\n**Se faire aider.** L'assistant peut rédiger un bloc, proposer des questions d'exercice ou écrire un module : il te soumet ses propositions, tu gardes la main sur ce qui entre dans le cours.\n"
+        "markdown": "## Pour aller plus loin\n\nQuelques leviers qui ne se voient pas dans le texte d'un cours.\n\n### Publier\n\nCe cours est en brouillon. L'onglet de partage propose trois régimes : *brouillon* (personne d'autre que toi), *privé* (uniquement via un lien de partage que tu crées) et *public* (accessible par son adresse et listé dans ton catalogue).\n\n### Partager\n\nUn lien de partage est une adresse secrète : l'élève n'a ni compte ni mot de passe à créer. Tu peux en émettre plusieurs, les nommer, et en révoquer un sans toucher aux autres. Repasser le cours en brouillon les suspend tous d'un coup, sans les détruire.\n\n### Régler la lecture\n\nLa typographie de ce cours n'est pas celle par défaut : police à empattement, texte un peu plus grand, colonne un peu plus large. C'est un réglage **du cours**, pas du lecteur — il le suit à l'impression comme à l'export PDF.\n\n### Exporter\n\nUn cours s'exporte en une archive qui emporte ses blocs, ses fichiers et ses modules. Réimportée ici ou sur une autre instance, elle recrée un cours neuf, en brouillon.\n\n### Se faire aider\n\nL'assistant peut rédiger un bloc, proposer des questions d'exercice ou écrire un module : il te soumet ses propositions, tu gardes la main sur ce qui entre dans le cours.\n"
       },
       "resource_ref": null,
       "module_ref": null
