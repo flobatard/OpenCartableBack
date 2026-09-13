@@ -7,8 +7,8 @@ génériques de :mod:`tests.fakes`.
 Ordre FIFO du flux de stream (docstring de ``sse_stream``) : [user] (router),
 [course], [conversation], [messages], [user] puis [config active] (cascade
 ``effective_config``), [blocks], [resources], [modules] — puis le generator
-insère le tour. Celui de la reprise (``sse_resume_stream``) : idem SANS la
-cascade IA.
+insère le tour. Celui d'une reprise HITL (``_sse_resume`` : décision sur une
+proposition, réponse à des questions) : idem SANS la cascade IA.
 """
 
 import uuid
@@ -236,7 +236,7 @@ def stream_session(
 
 
 def resume_session(messages=(), conversation=None, blocks=None, modules=()):
-    """FIFO de ``sse_resume_stream`` : [user] (router), [course],
+    """FIFO d'une reprise HITL (``_sse_resume``) : [user] (router), [course],
     [conversation], [messages], [blocks], [resources], [modules] — pas de
     cascade IA."""
     return FakeSession(
@@ -250,3 +250,12 @@ def resume_session(messages=(), conversation=None, blocks=None, modules=()):
             list(modules),
         ]
     )
+
+
+def questions_interrupt_value(tool_call_id="call_q", shape=None):
+    """Payload d'interrupt d'``ask_questions`` (cf. ``hitl.suspend``)."""
+    return {
+        "tool_call_id": tool_call_id,
+        "kind": "questions",
+        "answer_shape": shape if shape is not None else [{"multi_select": False, "options": 2}],
+    }

@@ -9,21 +9,30 @@ Contrat SSE — extension du contrat de référence de :mod:`app.core.sse` :
     event: tool_call     data: {"id": "…", "name": "read_block", "args": {…}}
     event: tool_result   data: {"id": "…", "name": "…", "is_error": false,
                                 "excerpt": "…", "length": 12345}
-    event: interrupt     data: {"tool_call_id": "…", "message_ids": ["…"],
-                                "usage": {…}|null}
+    event: interrupt     data: {"tool_call_id": "…", "kind": "proposal"|"questions",
+                                "message_ids": ["…"], "usage": {…}|null}
     event: done          data: {"usage": {…}|null, "user_message_id": "…",
                                 "message_ids": ["…"], "sources": {…},
                                 "title": "…"|null}
     event: error         data: {"status": 503, "detail": "…"}
 
-``interrupt`` n'existe que dans un **contexte d'édition** (flux HITL,
-descripteurs de :mod:`app.course_assistant.editing`) : l'agent a appelé un
-tool de proposition, le run est figé (checkpointer du client IA, cf.
-``hitl.py``), le tour partiel est persisté et le flux se ferme SANS ``done``.
-La reprise est le flux SSE de la route de décision (:func:`sse_resume_stream`,
-même contrat : ``tool_result``…``done``, ou un nouvel ``interrupt``). La
-proposition voyage dans les ``args`` du ``tool_call`` (relayés en entier,
-références courtes réécrites en UUID par le descripteur).
+``interrupt`` (flux HITL, cf. ``hitl.py``) : l'agent a appelé un tool
+bloquant, le run est figé (checkpointer du client IA — tout tour d'assistant
+est checkpointé), le tour partiel est persisté et le flux se ferme SANS
+``done``. ``kind`` (champ additif) dit ce qui attend le professeur :
+``proposal`` — une proposition d'édition, dans un **contexte d'édition**
+(descripteurs de :mod:`app.course_assistant.editing`), reprise par la route de
+décision (:func:`sse_decision_stream`) — ou ``questions`` — des questions de
+l'assistant (:mod:`app.course_assistant.questions`, **tous contextes**),
+reprises par la route de réponse (:func:`sse_answer_stream`). Une reprise est
+le flux SSE de la suite du tour (même contrat : ``tool_result``…``done``, ou
+un nouvel ``interrupt``). La proposition ou les questions voyagent dans les
+``args`` du ``tool_call`` (relayés en entier, références courtes d'une
+proposition réécrites en UUID par le descripteur).
+
+Un flux refermé sans ``done``, erreur ni ``interrupt`` (Stop, déconnexion)
+purge son thread checkpointé (:func:`_release_on_close`) ; supprimer une
+conversation abandonne sa reprise (:func:`drop_pending_resume`).
 
 Le contenu complet des résultats d'outils ne part jamais sur le flux : seul un
 extrait borné l'accompagne (:data:`TOOL_RESULT_EXCERPT_CHARS`), le détail de
@@ -47,7 +56,8 @@ chaque fonction est un contrat des tests (fausse session FIFO).
 """
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,7 +69,7 @@ from app.ai_credentials.service import (
     refund_default_quota,
     refund_on_error,
 )
-from app.core.ai import AIClient, AIStreamEvent, AIToolCall, ChatMessage
+from app.core.ai import AIClient, AIStreamEvent, AIToolCall, AIToolResult, AIToolSpec, ChatMessage
 from app.core.auth import AuthenticatedUser
 from app.core.config import settings
 from app.core.database import touch
@@ -75,9 +85,14 @@ from app.course_assistant.context import (
     turn_message,
 )
 from app.course_assistant.editing import TARGET_MODULE, EditContext, edit_context_for
+from app.course_assistant.questions import answers_error, resume_value
 from app.course_assistant.refs import CourseRefs
 from app.course_assistant.replay import TRUNCATED_HISTORY_NOTICE, replay_messages
-from app.course_assistant.schemas import MessageCreate, ProposalDecisionCreate
+from app.course_assistant.schemas import (
+    MessageCreate,
+    ProposalDecisionCreate,
+    QuestionAnswerCreate,
+)
 from app.course_assistant.service import load_conversation, load_messages, load_snapshot
 from app.course_assistant.tools import build_tool_executor, build_tool_specs
 from app.course_assistant.turn_encoder import TOOL_RESULT_EXCERPT_CHARS as TOOL_RESULT_EXCERPT_CHARS
@@ -109,6 +124,45 @@ def _resolve_focus(
     if edit.target == TARGET_MODULE:
         return None, next((m for m in modules if m.id == conversation.module_id), None)
     return next((b for b in blocks if b.id == conversation.block_id), None), None
+
+
+def _turn_tools(
+    storage: Storage, refs: CourseRefs, edit: EditContext | None
+) -> tuple[list[AIToolSpec], Callable[[AIToolCall], Awaitable[AIToolResult]]]:
+    """Specs et exécuteur d'un tour d'assistant — identiques à l'aller et à
+    la reprise (contrat de ``stream_agent``) : lectures du cours, tools de
+    proposition du contexte d'édition, questions au professeur."""
+    return (
+        build_tool_specs(refs, edit=edit, questions=True),
+        build_tool_executor(storage, refs, edit=edit, questions=True),
+    )
+
+
+def drop_pending_resume(client: AIClient, conversation_id: uuid.UUID) -> None:
+    """Abandonne la reprise qui attendait dans une conversation (nouveau
+    message, suppression) et balaie les reprises expirées : entrées retirées
+    du registre, threads checkpointés purgés."""
+    abandoned = [hitl.drop(conversation_id), *hitl.sweep_expired()]
+    for pending in abandoned:
+        if pending is not None:
+            client.drop_agent_thread(pending.thread_id)
+
+
+async def _release_on_close(
+    stream: AsyncGenerator[str, None], sink: "_AssistantTurn"
+) -> AsyncIterator[str]:
+    """Relaie le flux d'un tour et, quoi qu'il arrive à sa fermeture — flux
+    consommé, abandon par le client (Stop, déconnexion : annulation ou
+    fermeture du generator), exception imprévue —, libère le thread d'un tour
+    resté sans suite (:meth:`_AssistantTurn.release`). ``finally``
+    synchrone : dans une portée annulée, un ``await`` relèverait
+    l'annulation."""
+    try:
+        async with aclosing(stream) as events:
+            async for chunk in events:
+                yield chunk
+    finally:
+        sink.release()
 
 
 async def sse_stream(
@@ -143,12 +197,14 @@ async def sse_stream(
     du professeur (:func:`turn_message`) : le préfixe cacheable ne change pas
     quand la cible change. Seule la demande brute est persistée.
 
-    Contexte d'édition (même ordre d'execute) : la cible éditée — bloc ou
-    module selon le descripteur — est retrouvée dans l'instantané (404
-    défensif si elle a disparu), rendue en entier dans le contexte du tour,
-    le run est **checkpointé** (``thread_id``) et les tools de proposition du
-    descripteur sont exposés. Un nouveau message alors qu'une proposition
-    attendait abandonne la reprise (registre + thread purgés).
+    Tout tour est **checkpointé** (``thread_id``) : ``ask_questions`` est
+    exposé dans tous les contextes. Contexte d'édition (même ordre
+    d'execute) : la cible éditée — bloc ou module selon le descripteur — est
+    retrouvée dans l'instantané (404 défensif si elle a disparu), rendue en
+    entier dans le contexte du tour, et les tools de proposition du
+    descripteur sont exposés. Un nouveau message alors qu'une proposition ou
+    des questions attendaient abandonne la reprise (registre + thread purgés,
+    reprises expirées balayées au passage — :func:`drop_pending_resume`).
     """
     course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
@@ -176,12 +232,8 @@ async def sse_stream(
     # Instantané en références courtes (B1/R1/M1 — et Q1… pour les questions
     # du bloc exercice édité) : le modèle ne manipule jamais d'UUID.
     refs = build_refs(blocks, resources, modules, focus_block=focus_block)
-    thread_id: str | None = None
-    if edit is not None:
-        thread_id = str(uuid.uuid4())
-        stale = hitl.drop(conversation.id)
-        if stale is not None:
-            client.drop_agent_thread(stale.thread_id)
+    thread_id = str(uuid.uuid4())
+    drop_pending_resume(client, conversation.id)
     context = build_turn_context(
         course, refs, focus_block=focus_block, focus_module=focus_module, edit=edit
     )
@@ -199,7 +251,7 @@ async def sse_stream(
         ),
     ]
 
-    executor = build_tool_executor(storage, refs, edit=edit)
+    tools, executor = _turn_tools(storage, refs, edit)
 
     # Message user durable AVANT l'appel provider (un échec provider ne perd
     # pas la question).
@@ -224,7 +276,7 @@ async def sse_stream(
         events = client.stream_agent(
             model_messages,
             config,
-            tools=build_tool_specs(refs, edit=edit),
+            tools=tools,
             tool_executor=executor,
             max_tool_rounds=MAX_TOOL_ROUNDS,
             thread_id=thread_id,
@@ -245,10 +297,10 @@ async def sse_stream(
         user_message_id=user_message_id,
         title_set=title_set,
     )
-    return encode_turn(events, db=db, refs=refs, ticket=ticket, sink=sink)
+    return _release_on_close(encode_turn(events, db=db, refs=refs, ticket=ticket, sink=sink), sink)
 
 
-async def sse_resume_stream(
+async def _sse_resume(
     client: AIClient,
     db: AsyncSession,
     storage: Storage,
@@ -257,41 +309,56 @@ async def sse_resume_stream(
     course_id: uuid.UUID,
     conversation_id: uuid.UUID,
     tool_call_id: str,
-    payload: ProposalDecisionCreate,
+    *,
+    kind: str,
+    missing_detail: str,
+    build_resume: Callable[[hitl.PendingInterrupt], Any],
 ) -> AsyncIterator[str]:
-    """Reprend un run figé par une proposition d'édition (flux HITL) : la
-    décision du professeur devient la valeur de reprise de l'interrupt — le
-    tool de proposition est ré-exécuté, son résultat EST la décision, et la
-    réponse est le **SSE de la suite du tour** (même contrat que
-    ``stream_message`` : ``tool_result``…``done`` — ou un nouvel ``interrupt``
-    si le modèle re-propose après un rejet commenté).
+    """Reprend un run figé par un tool bloquant (flux HITL) : la réponse du
+    professeur devient la valeur de reprise de l'interrupt — le tool est
+    ré-exécuté, son résultat EST cette réponse, et le flux retourné est le
+    **SSE de la suite du tour** (même contrat que ``stream_message`` :
+    ``tool_result``…``done`` — ou un nouvel ``interrupt``).
 
-    404 si rien n'attend (proposition inconnue, déjà tranchée, expirée, ou
-    perdue — redémarrage). La **config de la reprise est celle du tour
-    d'origine** (registre in-process — même provider garanti, pas de nouvelle
-    cascade ni de quota : un tour HITL = un appel compté) ; pas de nouveau
-    message user, les positions continuent le tour persisté. Le graphe est
-    rebâti avec les tools et le system prompt du **même contexte d'édition**
-    (contrat de ``stream_agent``).
+    404 ``missing_detail`` si rien n'attend pour cet appel et ce genre
+    (inconnu, déjà repris, expiré, perdu au redémarrage — ou proposition hors
+    contexte d'édition). ``build_resume`` construit la valeur de reprise
+    depuis l'entrée en attente, AVANT qu'elle ne soit consommée : son refus
+    (HTTPException, 422) laisse la reprise disponible. La **config de la
+    reprise est celle du tour d'origine** (registre in-process — même
+    provider garanti, pas de nouvelle cascade ni de quota : un tour HITL = un
+    appel compté) ; pas de nouveau message user, les positions continuent le
+    tour persisté. Le graphe est rebâti avec les tools et le system prompt du
+    **même contexte** (contrat de ``stream_agent``).
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) conversation
-    (scopée), 3) messages existants (position suivante), 4) blocs, 5)
-    ressources, 6) modules (l'instantané des tools est rechargé — le modèle
-    peut encore lire le cours après la décision). Aucune écriture ici : le
-    generator persiste la suite du tour à la clôture.
+    (scopée) — puis, sans execute : balayage des reprises expirées, entrée en
+    attente (404), valeur de reprise (422), consommation — 3) messages
+    existants (position suivante), 4) blocs, 5) ressources, 6) modules
+    (l'instantané des tools est rechargé — le modèle peut encore lire le cours
+    après la réponse). Aucune écriture ici : le generator persiste la suite du
+    tour à la clôture.
     """
     course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
     edit = edit_context_for(conversation.context)
-    # Une reprise n'existe que pour un contexte d'édition (le registre n'est
-    # consulté — et consommé — qu'à ce titre).
-    pending = hitl.take(conversation.id, tool_call_id) if edit is not None else None
+    for expired in hitl.sweep_expired():
+        client.drop_agent_thread(expired.thread_id)
+    # Une proposition n'existe que dans un contexte d'édition ; des questions,
+    # dans tous.
+    pending = (
+        None
+        if kind == hitl.KIND_PROPOSAL and edit is None
+        else hitl.peek(conversation.id, tool_call_id, kind=kind)
+    )
     if pending is None:
-        raise not_found("Aucune proposition en attente pour cet appel")
+        raise not_found(missing_detail)
+    resume = build_resume(pending)
+    hitl.take(conversation.id, tool_call_id, kind=kind)
     existing = await load_messages(db, conversation)
 
     blocks, resources, modules = await load_snapshot(db, course)
-    # La cible éditée (absente = supprimée pendant la revue, cas théorique :
+    # La cible éditée (absente = supprimée pendant l'attente, cas théorique :
     # le tool répondra par une erreur actionnable) et la numérotation Q… du
     # tour d'origine, rejouée pour la suite du tour.
     focus_block, _ = _resolve_focus(edit, conversation, blocks, modules)
@@ -302,17 +369,18 @@ async def sse_resume_stream(
         focus_block=focus_block,
         question_refs=pending.question_refs,
     )
+    tools, executor = _turn_tools(storage, refs, edit)
 
     try:
         # Seul le system prompt (statique, hors état checkpointé) est repassé.
         events = client.stream_agent(
             [ChatMessage(role="system", content=system_prompt_for(edit))],
             pending.config,
-            tools=build_tool_specs(refs, edit=edit),
-            tool_executor=build_tool_executor(storage, refs, edit=edit),
+            tools=tools,
+            tool_executor=executor,
             max_tool_rounds=MAX_TOOL_ROUNDS,
             thread_id=pending.thread_id,
-            resume={"accepted": payload.accepted, "comment": payload.comment},
+            resume=resume,
             trace_name=_TRACE_NAME,
             user_id=auth.sub,
         )
@@ -335,7 +403,79 @@ async def sse_resume_stream(
         user_message_id=None,
         title_set=None,
     )
-    return encode_turn(events, db=db, refs=refs, ticket=None, sink=sink)
+    return _release_on_close(encode_turn(events, db=db, refs=refs, ticket=None, sink=sink), sink)
+
+
+async def sse_decision_stream(
+    client: AIClient,
+    db: AsyncSession,
+    storage: Storage,
+    auth: AuthenticatedUser,
+    user: User,
+    course_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    tool_call_id: str,
+    payload: ProposalDecisionCreate,
+) -> AsyncIterator[str]:
+    """Décision du professeur sur une proposition d'édition en attente :
+    reprise (:func:`_sse_resume`, même ordre d'execute) dont la valeur est
+    ``{"accepted", "comment"}`` — le texte du tool dit la décision."""
+    return await _sse_resume(
+        client,
+        db,
+        storage,
+        auth,
+        user,
+        course_id,
+        conversation_id,
+        tool_call_id,
+        kind=hitl.KIND_PROPOSAL,
+        missing_detail="Aucune proposition en attente pour cet appel",
+        build_resume=lambda _pending: {"accepted": payload.accepted, "comment": payload.comment},
+    )
+
+
+async def sse_answer_stream(
+    client: AIClient,
+    db: AsyncSession,
+    storage: Storage,
+    auth: AuthenticatedUser,
+    user: User,
+    course_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    tool_call_id: str,
+    payload: QuestionAnswerCreate,
+) -> AsyncIterator[str]:
+    """Réponse du professeur aux questions de l'assistant en attente : reprise
+    (:func:`_sse_resume`, même ordre d'execute) dont la valeur est
+    ``{"declined", "answers"}`` (:func:`~app.course_assistant.questions.resume_value`).
+    Une réponse qui ne correspond pas aux questions posées — nombre, choix
+    inconnus ou en double, question sans réponse, plusieurs choix pour une
+    question à choix unique — est un 422 qui laisse la reprise disponible."""
+
+    def _resume(pending: hitl.PendingInterrupt) -> dict[str, Any]:
+        value = resume_value(
+            payload.declined, [answer.model_dump() for answer in payload.answers or []]
+        )
+        if not payload.declined:
+            error = answers_error(pending.answer_shape or [], value["answers"])
+            if error is not None:
+                raise invalid(error)
+        return value
+
+    return await _sse_resume(
+        client,
+        db,
+        storage,
+        auth,
+        user,
+        course_id,
+        conversation_id,
+        tool_call_id,
+        kind=hitl.KIND_QUESTIONS,
+        missing_detail="Aucune question en attente pour cet appel",
+        build_resume=_resume,
+    )
 
 
 @dataclass
@@ -347,8 +487,10 @@ class _AssistantTurn:
     ``tool``. Sur ``interrupt``, le tour PARTIEL est persisté (segment porteur
     du ``tool_call`` et de l'usage du run figé, sans ligne ``tool`` — un
     abandon le laissera en round incomplet, replié au replay) et la reprise
-    est enregistrée au registre ``hitl``. Sur ``done``/erreur, le thread
-    checkpointé est purgé.
+    est enregistrée au registre ``hitl`` (genre et forme de réponse lus dans
+    le payload de l'interrupt). Sur ``done``/erreur — ou à la fermeture d'un
+    flux resté sans suite (:meth:`release`) —, le thread checkpointé est
+    purgé, une seule fois.
     """
 
     client: AIClient
@@ -366,6 +508,9 @@ class _AssistantTurn:
     _turn_rows: list[dict[str, Any]] = field(default_factory=list)
     _segment_text: list[str] = field(default_factory=list)
     _segment_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Reprise enregistrée : le thread doit survivre à la fermeture du flux.
+    _suspended: bool = False
+    _thread_dropped: bool = False
 
     def text(self, delta: str) -> None:
         self._segment_text.append(delta)
@@ -400,24 +545,30 @@ class _AssistantTurn:
         # serait perdu.
         usage = event.usage.model_dump() if event.usage else None
         ids = await self._persist(None, usage)
-        tool_call_id = (event.interrupt_value or {}).get("tool_call_id") or "?"
+        value = event.interrupt_value or {}
+        tool_call_id = value.get("tool_call_id") or "?"
+        kind = value.get("kind") or hitl.KIND_PROPOSAL
         # Numérotation Q… des questions du bloc édité, rejouée à la reprise
         # (références stables le temps du tour).
         question_refs = {e.ref: str(e.id) for e in self.refs.entries["question"]}
         replaced = hitl.register(
             self.conversation.id,
-            hitl.PendingProposal(
+            hitl.PendingInterrupt(
                 thread_id=self.thread_id or "",
                 tool_call_id=tool_call_id,
                 provider=self.provider,
                 config=self.config,
                 question_refs=question_refs or None,
+                kind=kind,
+                answer_shape=value.get("answer_shape"),
             ),
         )
-        if replaced is not None:
+        self._suspended = True
+        if replaced is not None and replaced.thread_id != self.thread_id:
             self.client.drop_agent_thread(replaced.thread_id)
         return {
             "tool_call_id": tool_call_id,
+            "kind": kind,
             "message_ids": [str(i) for i in ids],
             "usage": usage,
         }
@@ -460,8 +611,16 @@ class _AssistantTurn:
             self._segment_tool_calls.clear()
 
     def _drop_thread(self) -> None:
-        if self.thread_id is not None:
+        if self.thread_id is not None and not self._thread_dropped:
+            self._thread_dropped = True
             self.client.drop_agent_thread(self.thread_id)
+
+    def release(self) -> None:
+        """Flux refermé : purge le thread d'un tour resté sans suite — ni
+        suspendu (reprise en attente), ni clos (``done``/``failed`` l'ont déjà
+        purgé) : abandon par le client ou exception imprévue."""
+        if not self._suspended:
+            self._drop_thread()
 
     async def _persist(
         self, sources: dict[str, Any] | None, usage: dict[str, Any] | None

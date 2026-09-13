@@ -11,10 +11,15 @@ cible est validée deux fois : ici (422 Pydantic) et par le CHECK
 
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.course_assistant.questions import (
+    ASK_MAX_OPTIONS,
+    ASK_MAX_QUESTIONS,
+    MAX_QUESTION_OTHER_CHARS,
+)
 from app.models.ai_conversation import (
     CONTEXT_BLOCK_EXERCISE,
     CONTEXT_BLOCK_TEXT,
@@ -70,6 +75,47 @@ class ProposalDecisionCreate(BaseModel):
 
     accepted: bool
     comment: str | None = Field(default=None, max_length=MAX_PROPOSAL_COMMENT_CHARS)
+
+
+class QuestionAnswerItem(BaseModel):
+    """Réponse à UNE question de l'assistant : index des suggestions choisies
+    (ordre des args de l'appel) et/ou réponse libre « Autre » — espaces
+    réduits, vide ramené à ``None``. La cohérence avec les questions posées
+    (nombre, bornes, choix unique) est contrôlée par la route, contre la forme
+    retenue au registre (``questions.answers_error``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    selected: list[Annotated[int, Field(ge=0, strict=True)]] = Field(
+        default_factory=list, max_length=ASK_MAX_OPTIONS
+    )
+    other: str | None = Field(default=None, max_length=MAX_QUESTION_OTHER_CHARS)
+
+    @field_validator("other", mode="before")
+    @classmethod
+    def _normalize_other(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = " ".join(value.split()) or None
+        return value
+
+
+class QuestionAnswerCreate(BaseModel):
+    """Réponse du professeur aux questions de l'assistant en attente (flux
+    HITL bloquant — cf. ``hitl.py``) : une réponse par question, ou le refus
+    de répondre (``declined``, sans réponses)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    declined: bool = False
+    answers: list[QuestionAnswerItem] | None = Field(default=None, max_length=ASK_MAX_QUESTIONS)
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> "QuestionAnswerCreate":
+        if self.declined and self.answers:
+            raise ValueError("Un refus de répondre ne porte aucune réponse")
+        if not self.declined and not self.answers:
+            raise ValueError("Réponses manquantes")
+        return self
 
 
 class ConversationUpdate(BaseModel):

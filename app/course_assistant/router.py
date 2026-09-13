@@ -26,6 +26,7 @@ from app.course_assistant.schemas import (
     ConversationUpdate,
     MessageCreate,
     ProposalDecisionCreate,
+    QuestionAnswerCreate,
 )
 from app.models.ai_conversation import CONTEXT_COURSE
 from app.users import service as users_service
@@ -87,9 +88,12 @@ async def delete_conversation(
     conversation_id: uuid.UUID,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    client: AIClient = Depends(get_ai_client),
 ) -> Response:
     user = await users_service.get_or_create_by_sub(db, auth)
     await service.delete_conversation(db, user, course_id, conversation_id)
+    # Une reprise en attente meurt avec sa conversation (registre + thread).
+    streaming.drop_pending_resume(client, conversation_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -110,7 +114,30 @@ async def submit_proposal_decision(
     nouvel ``interrupt``). 404 si rien n'attend (déjà tranchée, expirée, ou
     perdue — redémarrage)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    events = await streaming.sse_resume_stream(
+    events = await streaming.sse_decision_stream(
+        client, db, storage, auth, user, course_id, conversation_id, tool_call_id, payload
+    )
+    return sse_response(events)
+
+
+@router.post("/conversations/{conversation_id}/questions/{tool_call_id}/answer")
+async def submit_questions_answer(
+    course_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    tool_call_id: str,
+    payload: QuestionAnswerCreate,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+    client: AIClient = Depends(get_ai_client),
+) -> StreamingResponse:
+    """Réponse du professeur aux questions de l'assistant en attente (flux
+    HITL, tous contextes) : REPREND le run figé — la réponse est le **SSE de
+    la suite du tour** (contrat de ``stream_message``). 404 si rien n'attend
+    (déjà répondu, expirées, ou perdues — redémarrage) ; 422 si la réponse ne
+    correspond pas aux questions posées (la reprise reste disponible)."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    events = await streaming.sse_answer_stream(
         client, db, storage, auth, user, course_id, conversation_id, tool_call_id, payload
     )
     return sse_response(events)

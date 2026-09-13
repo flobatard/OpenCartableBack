@@ -316,6 +316,10 @@ def test_stream_nominal_without_reveal() -> None:
     assert "## Corrigé confidentiel de la question 1" in turn
     assert turn.endswith("\n\n---\n\nRéponse de l'élève :\n\nJe pense 5")
     assert any(spec.name == "record_verdict" for spec in call["tools"])
+    # Aucun tool HITL pour le tuteur : ni questions, ni run checkpointé.
+    assert not any(spec.name == "ask_questions" for spec in call["tools"])
+    assert not any(spec.blocking for spec in call["tools"])
+    assert call["thread_id"] is None
     assert call["user_id"] == "prof-123"
 
     # Citation réécrite en UUID au fil du flux.

@@ -28,7 +28,7 @@ du bloc édité** (``Q1, Q2…``, ordre du bloc, titre = extrait de l'énoncé).
 Leur numérotation doit rester **stable le temps d'un tour**, reprises HITL
 comprises — le modèle enchaîne plusieurs propositions (supprimer Q2, puis
 modifier Q3) sans que « Q3 » change de cible : ``question_refs`` (mapping
-ref → id capturé à l'interrupt, cf. ``hitl.PendingProposal``) rejoue la
+ref → id capturé à l'interrupt, cf. ``hitl.PendingInterrupt``) rejoue la
 numérotation d'origine, une question disparue **libère sa référence sans
 qu'elle soit réattribuée**, une question nouvelle reçoit la suivante.
 

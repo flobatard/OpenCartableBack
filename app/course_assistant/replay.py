@@ -15,16 +15,21 @@ prompt du provider) :
   le contenu intégral d'une proposition d'édition passée (markdown, code)
   n'est pas rejoué — l'état courant de la cible est dans le contexte du tour.
 
+Seule exception aux abréviations : les réponses du professeur aux questions
+de l'assistant (résultats d'``ask_questions``, bornés par les plafonds du
+tool) restent entières — elles cadrent toute la suite de la conversation.
+
 Les rounds d'outils issus d'un AUTRE provider — les formats d'id de tool
-call ne sont pas interchangeables — ou incomplets (résultats jamais
-persistés : des ``tool_calls`` non appariés feraient un 400) sont repliés en
-texte.
+call ne sont pas interchangeables — ou incomplets (un appel au moins sans
+résultat persisté — erreur mid-round, attente HITL abandonnée : un
+``tool_call`` non apparié ferait un 400) sont repliés en texte.
 """
 
 import json
 from collections.abc import Sequence
 
 from app.core.ai import AIToolCall, ChatMessage
+from app.course_assistant.questions import ASK_QUESTIONS
 from app.models.ai_message import ROLE_ASSISTANT, ROLE_TOOL, ROLE_USER
 
 # Fenêtre de replay (messages persistés) : seuil de troncature et taille
@@ -60,7 +65,8 @@ def _abridged_arguments(arguments: dict) -> dict:
 
 
 def _fold_tool_round(assistant_row, tool_rows) -> ChatMessage:
-    """Replie en texte un round d'outils issu d'un autre provider."""
+    """Replie en texte un round d'outils issu d'un autre provider, ou
+    incomplet (appel sans résultat : rejoué sans issue)."""
     parts = [assistant_row.content] if assistant_row.content else []
     results_by_id = {t.tool_call_id: t for t in tool_rows}
     for call in assistant_row.tool_calls or []:
@@ -69,9 +75,9 @@ def _fold_tool_round(assistant_row, tool_rows) -> ChatMessage:
         result = results_by_id.get(call.get("id"))
         outcome = ""
         if result is not None:
-            snippet = result.content[:FOLDED_TOOL_RESULT_CHARS]
-            if len(result.content) > FOLDED_TOOL_RESULT_CHARS:
-                snippet += "…"
+            snippet = result.content
+            if name != ASK_QUESTIONS and len(result.content) > FOLDED_TOOL_RESULT_CHARS:
+                snippet = result.content[:FOLDED_TOOL_RESULT_CHARS] + "…"
             state = "échec" if result.is_error else "résultat"
             outcome = f" → {state} : {snippet}"
         parts.append(f"[Outil {name}({args}){outcome}]")
@@ -115,11 +121,15 @@ def replay_messages(
                 tool_rows.append(window[j])
                 j += 1
             # Repli en texte : round d'un autre provider (ids de tool call non
-            # interchangeables), ou round incomplet (résultats jamais persistés
-            # — erreur mid-round : des tool_calls non appariés feraient un 400).
-            if (row.provider and row.provider != current_provider) or not tool_rows:
+            # interchangeables), ou round incomplet — un appel au moins sans
+            # résultat persisté (erreur mid-round, attente HITL abandonnée) :
+            # un tool_call non apparié ferait un 400.
+            answered = {t.tool_call_id for t in tool_rows}
+            incomplete = any(call.get("id") not in answered for call in row.tool_calls)
+            if (row.provider and row.provider != current_provider) or incomplete:
                 messages.append(_fold_tool_round(row, tool_rows))
             else:
+                names_by_id = {call.get("id"): call.get("name") for call in row.tool_calls}
                 messages.append(
                     ChatMessage(
                         role="assistant",
@@ -137,7 +147,11 @@ def replay_messages(
                 messages.extend(
                     ChatMessage(
                         role="tool",
-                        content=abridge(t.content, REPLAY_TOOL_RESULT_CHARS, what="résultat"),
+                        content=(
+                            t.content
+                            if names_by_id.get(t.tool_call_id) == ASK_QUESTIONS
+                            else abridge(t.content, REPLAY_TOOL_RESULT_CHARS, what="résultat")
+                        ),
                         tool_call_id=t.tool_call_id or "",
                         is_error=t.is_error,
                     )

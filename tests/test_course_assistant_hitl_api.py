@@ -1,7 +1,9 @@
 """Tests des routes de l'assistant de cours pour les **contextes d'édition**
-(conversations rattachées à un bloc ou à un module) et le **flux HITL** —
-interrupt à la proposition, reprise par la route de décision, abandon. Fakes
-partagés dans ``course_assistant_fakes.py`` (contrats FIFO documentés là).
+(conversations rattachées à un bloc ou à un module) et le **flux HITL des
+propositions** — interrupt à la proposition, reprise par la route de décision,
+abandon. Les questions au professeur sont couvertes par
+``test_course_assistant_questions_api.py``. Fakes partagés dans
+``course_assistant_fakes.py`` (contrats FIFO documentés là).
 """
 
 import uuid
@@ -243,6 +245,7 @@ def test_stream_block_text_interrupt_registers_resume() -> None:
         assert [k for k, _ in events_out] == ["token", "tool_call", "interrupt"]
         interrupt = events_out[-1][1]
         assert interrupt["tool_call_id"] == "call_p"
+        assert interrupt["kind"] == "proposal"  # défaut d'un payload sans genre
         assert len(interrupt["message_ids"]) == 1
         assert interrupt["usage"] == {
             "input_tokens": 120,
@@ -261,8 +264,9 @@ def test_stream_block_text_interrupt_registers_resume() -> None:
 
         # Reprise enregistrée : thread du run, config et provider du tour.
         [call] = fake.calls
-        pending = hitl.take(CONVERSATION_ID, "call_p")
+        pending = hitl.take(CONVERSATION_ID, "call_p", kind=hitl.KIND_PROPOSAL)
         assert pending is not None
+        assert pending.kind == hitl.KIND_PROPOSAL
         assert pending.thread_id == call["thread_id"]
         assert pending.provider == "ollama"
         # Le thread n'est PAS purgé (le run attend sa reprise).
@@ -288,7 +292,7 @@ def test_new_message_abandons_a_pending_resume() -> None:
     reprise est abandonnée (registre vidé, thread purgé)."""
     hitl.register(
         CONVERSATION_ID,
-        hitl.PendingProposal(
+        hitl.PendingInterrupt(
             thread_id="t-stale", tool_call_id="call_old", provider="ollama", config=None
         ),
     )
@@ -300,7 +304,7 @@ def test_new_message_abandons_a_pending_resume() -> None:
     response = client.post(STREAM_PATH, json={"content": "Autre chose"})
     assert response.status_code == 200
     assert "t-stale" in fake.dropped_threads
-    assert hitl.take(CONVERSATION_ID, "call_old") is None
+    assert hitl.take(CONVERSATION_ID, "call_old", kind=hitl.KIND_PROPOSAL) is None
 
 
 # --------------------------------------------------- route de décision
@@ -312,7 +316,7 @@ def test_proposal_decision_resumes_the_run() -> None:
     partiel persisté, thread purgé au done."""
     hitl.register(
         CONVERSATION_ID,
-        hitl.PendingProposal(
+        hitl.PendingInterrupt(
             thread_id="t-run", tool_call_id="call_p", provider="ollama", config=None
         ),
     )
@@ -358,7 +362,7 @@ def test_proposal_decision_resumes_the_run() -> None:
     assert "ACCEPTÉ" in rows[0]["content"]
 
     # Registre consommé : une seconde décision → 404.
-    assert hitl.take(CONVERSATION_ID, "call_p") is None
+    assert hitl.take(CONVERSATION_ID, "call_p", kind=hitl.KIND_PROPOSAL) is None
 
 
 def test_proposal_decision_without_pending_404() -> None:
@@ -375,7 +379,7 @@ def test_proposal_decision_on_course_context_404_keeps_registry() -> None:
     — 404 sans même consulter (ni consommer) le registre."""
     hitl.register(
         CONVERSATION_ID,
-        hitl.PendingProposal(
+        hitl.PendingInterrupt(
             thread_id="t-x", tool_call_id="call_p", provider="ollama", config=None
         ),
     )
@@ -384,7 +388,7 @@ def test_proposal_decision_on_course_context_404_keeps_registry() -> None:
         client, _ = make_client(session)
         response = client.post(DECISION_PATH, json={"accepted": True})
         assert response.status_code == 404
-        assert hitl.take(CONVERSATION_ID, "call_p") is not None
+        assert hitl.take(CONVERSATION_ID, "call_p", kind=hitl.KIND_PROPOSAL) is not None
     finally:
         hitl.drop(CONVERSATION_ID)
 
@@ -458,7 +462,7 @@ def test_stream_block_exercise_context() -> None:
         assert call["thread_id"] is not None
         assert fake.dropped_threads == []
 
-        pending = hitl.take(CONVERSATION_ID, "call_p")
+        pending = hitl.take(CONVERSATION_ID, "call_p", kind=hitl.KIND_PROPOSAL)
         assert pending is not None
         assert pending.question_refs == {"Q1": str(Q1), "Q2": str(Q2)}
     finally:
@@ -472,7 +476,7 @@ def test_proposal_decision_resumes_exercise_run_with_stable_question_refs() -> N
     ajoutée reçoit Q4."""
     hitl.register(
         CONVERSATION_ID,
-        hitl.PendingProposal(
+        hitl.PendingInterrupt(
             thread_id="t-ex",
             tool_call_id="call_p",
             provider="ollama",
@@ -669,7 +673,7 @@ def test_stream_module_interrupt_registers_resume() -> None:
         assert rows[0]["output_tokens"] is None
 
         [call] = fake.calls
-        pending = hitl.take(CONVERSATION_ID, "call_p")
+        pending = hitl.take(CONVERSATION_ID, "call_p", kind=hitl.KIND_PROPOSAL)
         assert pending is not None
         assert pending.thread_id == call["thread_id"]
         assert pending.question_refs is None
@@ -695,7 +699,7 @@ def test_proposal_decision_resumes_module_run() -> None:
     config du tour d'origine réutilisée, suite du tour streamée."""
     hitl.register(
         CONVERSATION_ID,
-        hitl.PendingProposal(
+        hitl.PendingInterrupt(
             thread_id="t-mod", tool_call_id="call_p", provider="ollama", config=None
         ),
     )

@@ -117,6 +117,12 @@ class AIToolSpec(BaseModel):
     arguments) : c'est la forme que le ``bind_tools`` de tous les providers
     LangChain sait convertir, sans qu'aucun type langchain ne franchisse la
     frontière du package.
+
+    ``blocking`` déclare un tool qui peut **figer le run** en attendant une
+    réponse humaine (``agent_interrupt``) : une réponse du modèle n'en exécute
+    qu'UN — le premier par ordre d'appel ; les autres reçoivent un résultat
+    d'échec (garde de :mod:`app.core.ai.agent`). Deux interrupts dans le même
+    round rendraient la reprise impossible.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -124,6 +130,7 @@ class AIToolSpec(BaseModel):
     name: str = Field(min_length=1)
     description: str
     parameters: dict[str, Any]
+    blocking: bool = False
 
 
 class AIToolCall(BaseModel):

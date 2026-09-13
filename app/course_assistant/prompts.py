@@ -14,7 +14,9 @@ contexte du tour (cible + sommaire) voyage dans le message utilisateur
 Les règles impersonnelles (:data:`MATH_RULE`, :data:`REFS_RULE`,
 :data:`CITATION_RULE`, :data:`READ_POLICY`) sont partagées avec le tuteur
 d'exercice (:mod:`app.student_exercises.prompts`), qui tutoie là où
-l'assistant vouvoie.
+l'assistant vouvoie ; les autres règles communes — dont
+:data:`QUESTIONS_RULE`, le tuteur n'ayant pas l'outil ``ask_questions`` — sont
+propres à l'assistant.
 
 Feuille du graphe d'imports : ``editing/*``, ``context.py`` et le tuteur
 l'importent, jamais l'inverse.
@@ -68,8 +70,29 @@ d'édition s'il y en a une, puis sommaire) précède une ligne `---` ; la \
 demande réelle suit, sous le titre « Demande du professeur ».\
 """
 
+QUESTIONS_RULE = """\
+Questions au professeur : quand sa demande est ambiguë ou qu'un choix \
+structurant lui revient (niveau visé, notions, format, longueur, ton…), les \
+lui poser avec `ask_questions` plutôt que deviner — jamais pour ce que le \
+cours ou l'échange permet de déduire, ni pour faire valider une modification. \
+Toutes les questions du moment dans UN SEUL appel ; questions et suggestions \
+courtes, distinctes, en texte brut sans formule (exception à la règle des \
+dollars) ; jamais de suggestion « Autre » : un choix libre est toujours \
+ajouté. L'appel est BLOQUANT : son résultat est la réponse du professeur — \
+ou son refus de répondre, et il faut alors poursuivre avec des hypothèses \
+raisonnables, signalées dans la réponse, sans reposer ces questions.\
+"""
+
 COMMON_RULES = "\n\n".join(
-    (STYLE_RULE, MATH_RULE, REFS_RULE, CITATION_RULE, READ_POLICY, TURN_LAYOUT_RULE)
+    (
+        STYLE_RULE,
+        MATH_RULE,
+        REFS_RULE,
+        CITATION_RULE,
+        READ_POLICY,
+        TURN_LAYOUT_RULE,
+        QUESTIONS_RULE,
+    )
 )
 
 MARKDOWN_SYNTAXES = """\
@@ -174,10 +197,11 @@ extrait remanié) dans le texte de la réponse, le professeur ne pourrait pas \
 l'appliquer : les messages expliquent, les outils modifient. Chaque appel est \
 BLOQUANT : le professeur examine la proposition dans un comparatif, et le \
 résultat de l'outil est sa décision — acceptée (et appliquée à son éditeur) \
-ou rejetée — avec son éventuel commentaire. Une seule proposition à la fois ; \
-après un rejet commenté, une nouvelle version qui en tient compte est \
-possible. Les champs de contenu sont le remplacement INTÉGRAL du champ visé : \
-tout ce qui ne change pas est recopié à l'identique.\
+ou rejetée — avec son éventuel commentaire. Une seule proposition à la fois, \
+jamais dans la même réponse qu'un appel de questions ; après un rejet \
+commenté, une nouvelle version qui en tient compte est possible. Les champs \
+de contenu sont le remplacement INTÉGRAL du champ visé : tout ce qui ne \
+change pas est recopié à l'identique.\
 """
 
 CONTENT_PRESERVATION_RULE = """\

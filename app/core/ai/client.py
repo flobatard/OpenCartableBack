@@ -267,7 +267,9 @@ class AIClient:
                 **run_config.get("configurable", {}),
                 "thread_id": thread_id,
             }
-        return self._stream_agent(agent, cfg, history, run_config, resume=resume)
+        return self._stream_agent(
+            agent, cfg, history, run_config, resume=resume, checkpointed=thread_id is not None
+        )
 
     async def _stream_agent(
         self,
@@ -277,6 +279,7 @@ class AIClient:
         run_config: dict[str, Any],
         *,
         resume: Any = None,
+        checkpointed: bool = False,
     ) -> AsyncIterator[AIStreamEvent]:
         agent_input: Any = {"messages": to_langchain_messages(messages)}
         if resume is not None:
@@ -305,6 +308,10 @@ class AIClient:
                 agent_input,
                 config=run_config,
                 stream_mode=["messages", "updates"],
+                # Run checkpointé : l'état n'est écrit qu'à la sortie du graphe
+                # (fin, erreur ou interrupt — seul cas où il sert, la reprise),
+                # jamais à chaque étape : mémoire bornée sur le Pi.
+                durability="exit" if checkpointed else None,
             ):
                 if mode == "messages":
                     chunk, metadata = payload

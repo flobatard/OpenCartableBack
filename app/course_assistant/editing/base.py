@@ -16,16 +16,18 @@ Un tool de proposition **ne mute rien** : la proposition voyage dans les
 ``tool_calls`` — :attr:`ProposalTool.rewrite_args` y réécrit les références
 courtes en UUID **à l'émission**, le front reçoit un payload directement
 applicable), et son exécuteur, après validation, **fige le run** via
-:func:`hitl_gate` — seul point d'appel d'``agent_interrupt`` du package —
-jusqu'à la décision du professeur, dont le texte EST le résultat du tool
-(cf. ``hitl.py``). L'application, elle, reste côté front (routes d'édition
-existantes) : la route de décision ne mute jamais le bloc.
+:func:`hitl_gate` (genre ``proposal`` de :func:`app.course_assistant.hitl.suspend`,
+seul point d'appel d'``agent_interrupt`` du package) jusqu'à la décision du
+professeur, dont le texte EST le résultat du tool. L'application, elle, reste
+côté front (routes d'édition existantes) : la route de décision ne mute jamais
+le bloc.
 """
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from app.core.ai import AIToolCall, AIToolResult, AIToolSpec, agent_interrupt
+from app.core.ai import AIToolCall, AIToolResult, AIToolSpec
+from app.course_assistant import hitl
 from app.course_assistant.refs import CourseRefs
 
 Handler = Callable[[AIToolCall], Awaitable[AIToolResult]]
@@ -122,7 +124,7 @@ def hitl_gate(call: AIToolCall, *, accepted_text: str, rejected_text: str) -> AI
     immédiatement (aucun run figé) — et, le tool étant ré-exécuté depuis le
     début à la reprise, cette validation doit être idempotente.
     """
-    decision = agent_interrupt({"tool_call_id": call.id or "?"})
+    decision = hitl.suspend(call, kind=hitl.KIND_PROPOSAL)
     accepted = isinstance(decision, dict) and bool(decision.get("accepted"))
     comment = decision.get("comment") if isinstance(decision, dict) else None
     content = accepted_text if accepted else rejected_text

@@ -38,7 +38,7 @@ from app.core.ai import (
     agent_interrupt,
 )
 from app.core.ai import client as client_module
-from app.core.ai.agent import build_agent
+from app.core.ai.agent import _BLOCKING_TOOL_CONFLICT, _blocking_conflict, build_agent
 from app.core.ai.messages import to_langchain_messages, to_usage
 
 MESSAGES = [ChatMessage(role="user", content="Bonjour")]
@@ -304,6 +304,139 @@ async def test_agent_executor_receives_tool_call_id(fake_build) -> None:
 
     _ = [e async for e in _agent_events(fake_build, executor=recording_executor)]
     assert seen == ["call_1"]
+
+
+# ---------------------------------------------------------------- tools bloquants
+
+ASK = AIToolSpec(
+    name="ask",
+    description="Pose une question et attend la réponse",
+    parameters={
+        "type": "object",
+        "properties": {"question": {"type": "string"}},
+        "required": ["question"],
+    },
+    blocking=True,
+)
+
+
+def _calls_message(calls: list[tuple[str, str]]) -> AIMessage:
+    """Une réponse du modèle portant plusieurs appels ``(nom, id)``."""
+    args = {"ask": {"question": "Niveau ?"}, "read_block": {"block_id": "b1"}}
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": args[name], "id": call_id} for name, call_id in calls],
+    )
+
+
+def test_blocking_conflict_rules() -> None:
+    """Seul le premier appel bloquant d'une réponse passe ; les appels non
+    bloquants, un état sans réponse ou un appel absent ne sont jamais écartés ;
+    des ids vides ou dupliqués écartent tous les appels bloquants."""
+    blocking = frozenset({"ask"})
+    response = _calls_message([("read_block", "r"), ("ask", "a1"), ("ask", "a2")])
+    history = [HumanMessage(content="Bonjour"), response]
+
+    def conflict(name: str, call_id: str, messages=history) -> bool:
+        return _blocking_conflict({"name": name, "id": call_id}, messages, blocking)
+
+    assert conflict("read_block", "r") is False
+    assert conflict("ask", "a1") is False
+    assert conflict("ask", "a2") is True
+    assert conflict("ask", "a1", messages=[]) is False
+    assert conflict("ask", "ailleurs") is False
+    single = [_calls_message([("read_block", "r"), ("ask", "a1")])]
+    assert conflict("ask", "a1", messages=single) is False
+    duplicated = [_calls_message([("ask", "a1"), ("ask", "a1")])]
+    assert conflict("ask", "a1", messages=duplicated) is True
+
+
+@pytest.mark.anyio
+async def test_agent_blocking_tools_one_interrupt_per_response(fake_build) -> None:
+    """Deux appels bloquants dans la même réponse : la garde écarte le second
+    (résultat d'échec, tool jamais exécuté), un SEUL interrupt fige le run, et
+    la reprise aboutit — sans l'erreur LangGraph des interrupts multiples ; le
+    round suivant voit les deux résultats."""
+    model = SeqToolModel(
+        responses=[_calls_message([("ask", "call_a"), ("ask", "call_b")]), _final_message()]
+    )
+    fake_build["model"] = model
+    client = AIClient()
+    executed: list[str] = []
+
+    async def asking_executor(call: AIToolCall) -> AIToolResult:
+        executed.append(call.id)
+        answer = agent_interrupt({"tool_call_id": call.id})
+        return AIToolResult(content=f"réponse : {answer['value']}")
+
+    def _events(resume=None, messages=(SYSTEM, *MESSAGES)):
+        return client.stream_agent(
+            list(messages),
+            CONFIG,
+            tools=[ASK],
+            tool_executor=asking_executor,
+            thread_id="t-blocking",
+            resume=resume,
+        )
+
+    first = [e async for e in _events()]
+    interrupts = [e for e in first if e.type == "interrupt"]
+    assert [e.interrupt_value for e in interrupts] == [{"tool_call_id": "call_a"}]
+    rejected = [e for e in first if e.type == "tool_result"]
+    assert [(e.tool_call.id, e.tool_result_error) for e in rejected] == [("call_b", True)]
+    assert rejected[0].delta == _BLOCKING_TOOL_CONFLICT
+    assert "done" not in [e.type for e in first]
+
+    second = [e async for e in _events(resume={"value": "Seconde"}, messages=[SYSTEM])]
+    answered = [e for e in second if e.type == "tool_result" and e.tool_call.id == "call_a"]
+    assert [(e.delta, e.tool_result_error) for e in answered] == [("réponse : Seconde", False)]
+    assert second[-1].type == "done"
+    assert set(executed) == {"call_a"}
+    tool_messages = [m for m in model.received[1] if isinstance(m, ToolMessage)]
+    assert {(m.tool_call_id, m.status) for m in tool_messages} == {
+        ("call_a", "success"),
+        ("call_b", "error"),
+    }
+
+
+@pytest.mark.anyio
+async def test_agent_blocking_guard_keeps_non_blocking_siblings(fake_build) -> None:
+    """Une lecture appelée à côté d'un tool bloquant s'exécute normalement,
+    avant l'interrupt, et n'est pas rejouée à la reprise."""
+    model = SeqToolModel(
+        responses=[_calls_message([("read_block", "call_r"), ("ask", "call_a")]), _final_message()]
+    )
+    fake_build["model"] = model
+    client = AIClient()
+    reads: list[str] = []
+
+    async def executor(call: AIToolCall) -> AIToolResult:
+        if call.name == "read_block":
+            reads.append(call.id)
+            return await _ok_executor(call)
+        answer = agent_interrupt({"tool_call_id": call.id})
+        return AIToolResult(content=f"réponse : {answer['value']}")
+
+    def _events(resume=None, messages=(SYSTEM, *MESSAGES)):
+        return client.stream_agent(
+            list(messages),
+            CONFIG,
+            tools=[READ_BLOCK, ASK],
+            tool_executor=executor,
+            thread_id="t-siblings",
+            resume=resume,
+        )
+
+    first = [e async for e in _events()]
+    results = [(e.tool_call.id, e.tool_result_error) for e in first if e.type == "tool_result"]
+    assert results == [("call_r", False)]
+    assert first[-1].type == "interrupt"
+
+    second = [e async for e in _events(resume={"value": "Seconde"}, messages=[SYSTEM])]
+    assert second[-1].type == "done"
+    assert reads == ["call_r"]
+    tool_messages = [m for m in model.received[1] if isinstance(m, ToolMessage)]
+    assert {m.tool_call_id for m in tool_messages} == {"call_r", "call_a"}
 
 
 @pytest.mark.anyio

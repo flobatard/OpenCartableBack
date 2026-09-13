@@ -8,7 +8,9 @@
   wrapper neutre de ``langgraph.types.interrupt``, seul point d'appel autorisé
   hors du package ;
 - le middleware image (:func:`_tool_image_middleware`) montre au modèle les
-  images retournées par les tools.
+  images retournées par les tools ;
+- la garde des tools bloquants (:func:`_blocking_guard_middleware`) n'exécute
+  qu'un tool bloquant par réponse du modèle.
 
 Imports langchain/langgraph paresseux (dans les fonctions), comme partout
 dans le package : rien n'est chargé au boot de l'API.
@@ -49,6 +51,13 @@ _TOOL_FAILURE_FALLBACK = "Échec interne de l'outil"
 # après le run de résultats d'outils du round avant chaque appel modèle.
 _TOOL_IMAGE_MARKER = "oc_tool_image"
 _TOOL_IMAGE_DEFAULT_CAPTION = "Image jointe au résultat de l'outil {name}."
+
+# Résultat d'un appel bloquant écarté par la garde (lu par le modèle).
+_BLOCKING_TOOL_CONFLICT = (
+    "Appel ignoré : un seul outil bloquant (en attente d'une réponse humaine) "
+    "s'exécute par réponse, et un autre le précède dans celle-ci. Regroupez vos "
+    "demandes dans un seul appel, ou renouvelez celle-ci après le résultat du premier."
+)
 
 
 def agent_interrupt(payload: dict[str, Any]) -> Any:
@@ -95,6 +104,9 @@ def build_agent(
     du ``ToolMessage`` (``response_format="content_and_artifact"`` — le
     contenu reste le texte) ; le middleware de :func:`_tool_image_middleware`
     la joint au modèle dans un message utilisateur.
+
+    Si une spec est ``blocking``, la garde de :func:`_blocking_guard_middleware`
+    n'exécute que le premier appel bloquant de chaque réponse du modèle.
     """
     from langchain.agents import create_agent
     from langchain.agents.middleware import ModelCallLimitMiddleware
@@ -144,6 +156,9 @@ def build_agent(
         ModelCallLimitMiddleware(run_limit=max_tool_rounds + 1, exit_behavior="end"),
         _tool_image_middleware()(),
     ]
+    blocking = frozenset(spec.name for spec in tools if spec.blocking)
+    if blocking:
+        middleware.append(_blocking_guard_middleware()(blocking))
     if prompt_cache:
         middleware.append(_prompt_cache_middleware())
     return create_agent(
@@ -260,3 +275,88 @@ def _tool_image_middleware() -> type:
             return handler(request.override(messages=_hoist_tool_images(request.messages)))
 
     return ToolImageMiddleware
+
+
+def _blocking_conflict(
+    tool_call: dict[str, Any], messages: Sequence[Any], blocking: frozenset[str]
+) -> bool:
+    """Vrai si ``tool_call`` est un appel bloquant que la garde doit écarter.
+
+    Règle déterministe, rejouée à l'identique quand un run figé reprend (seul
+    le tool interrompu est ré-exécuté, sa décision doit rester la même) : dans
+    la réponse du modèle qui a émis l'appel — le dernier ``AIMessage`` de
+    l'état —, seul le PREMIER appel bloquant par ordre s'exécute. Des ids
+    vides ou dupliqués parmi les appels bloquants les écartent tous (aucun
+    appariement fiable). Un état sans cette réponse (hors graphe) ou un appel
+    qu'elle ne porte pas ne sont jamais écartés.
+    """
+    if tool_call.get("name") not in blocking:
+        return False
+    response = next((m for m in reversed(messages) if getattr(m, "type", None) == "ai"), None)
+    if response is None:
+        return False
+    ids = [
+        call.get("id")
+        for call in getattr(response, "tool_calls", None) or []
+        if call.get("name") in blocking
+    ]
+    if len(ids) <= 1:
+        return False
+    if not all(ids) or len(set(ids)) != len(ids):
+        return True
+    if tool_call.get("id") not in ids:
+        return False
+    return tool_call.get("id") != ids[0]
+
+
+def _state_messages(state: Any) -> Sequence[Any]:
+    """Messages de l'état agent (dict ou modèle), vide hors graphe."""
+    if isinstance(state, dict):
+        return state.get("messages") or []
+    return getattr(state, "messages", None) or []
+
+
+@lru_cache
+def _blocking_guard_middleware() -> type:
+    """Middleware « un seul tool bloquant par réponse du modèle ».
+
+    Les appels d'un round s'exécutent chacun dans leur tâche : deux tools
+    bloquants appelés dans la même réponse figeraient le run deux fois, et la
+    reprise (``Command(resume=…)`` sans id d'interrupt) échouerait. La garde
+    répond à chaque appel bloquant écarté par :func:`_blocking_conflict` un
+    ``ToolMessage`` d'échec, sans exécuter le tool ; le modèle voit pourquoi
+    et peut renouveler l'appel au round suivant. Classe définie paresseusement
+    (imports langchain différés, motif de :func:`_tool_image_middleware`).
+    """
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+
+    def _rejection(request: Any) -> Any:
+        return ToolMessage(
+            content=_BLOCKING_TOOL_CONFLICT,
+            name=request.tool_call.get("name"),
+            tool_call_id=request.tool_call.get("id") or "",
+            status="error",
+        )
+
+    class BlockingToolGuard(AgentMiddleware):
+        def __init__(self, blocking: frozenset[str]) -> None:
+            super().__init__()
+            self._blocking = blocking
+
+        def _conflict(self, request: Any) -> bool:
+            return _blocking_conflict(
+                request.tool_call, _state_messages(request.state), self._blocking
+            )
+
+        async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ANN202
+            if self._conflict(request):
+                return _rejection(request)
+            return await handler(request)
+
+        def wrap_tool_call(self, request, handler):  # noqa: ANN001, ANN202
+            if self._conflict(request):
+                return _rejection(request)
+            return handler(request)
+
+    return BlockingToolGuard

@@ -4,6 +4,7 @@ replay, tools, gate HITL) — aucun réseau, DB ni S3 (fakes en mémoire)."""
 import io
 import time
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -22,7 +23,6 @@ from app.course_assistant.context import (
     teacher_message,
     turn_message,
 )
-from app.course_assistant.editing import base as editing_base
 from app.course_assistant.editing.block_exercise import (
     BLOCK_EXERCISE,
     PROPOSE_QUESTION_ADD,
@@ -633,6 +633,43 @@ def test_replay_folds_incomplete_round() -> None:
     assert "Partiel" in messages[1].content
 
 
+def test_replay_folds_round_with_an_unanswered_call() -> None:
+    """Round dont UN appel n'a pas de résultat (attente HITL abandonnée à côté
+    d'une lecture) : replié en texte — un tool_call non apparié ferait un 400
+    chez le provider —, le résultat obtenu restant lisible."""
+    asked = {"id": "call_q", "name": "ask_questions", "arguments": {"questions": []}}
+    rows = [
+        _row("user", "Question"),
+        _row("assistant", "", tool_calls=[_CALL, asked], provider="ollama"),
+        _row("tool", "CONTENU", tool_call_id="call_1"),
+        _row("user", "Autre demande"),
+    ]
+    messages, _ = replay_messages(rows, "ollama")
+    assert [m.role for m in messages] == ["user", "assistant", "user"]
+    assert messages[1].tool_calls is None
+    assert "read_block" in messages[1].content and "CONTENU" in messages[1].content
+    assert "ask_questions" in messages[1].content
+
+
+def test_replay_keeps_question_answers_unabridged() -> None:
+    """Les réponses du professeur aux questions de l'assistant cadrent la
+    suite : jamais abrégées, ni rejouées nativement ni repliées."""
+    answers = "Le professeur a répondu à vos questions :\n" + "R" * (
+        REPLAY_TOOL_RESULT_CHARS + 200
+    )
+    asked = {"id": "call_q", "name": "ask_questions", "arguments": {"questions": []}}
+    rows = [
+        _row("user", "Question"),
+        _row("assistant", "", tool_calls=[asked], provider="ollama"),
+        _row("tool", answers, tool_call_id="call_q"),
+        _row("assistant", "Réponse", provider="ollama"),
+    ]
+    native, _ = replay_messages(rows, "ollama")
+    assert native[2].content == answers
+    folded, _ = replay_messages(rows, "mistral")
+    assert answers in folded[1].content
+
+
 def test_replay_truncates_at_round_boundary() -> None:
     """La fenêtre écarte les tours tool orphelins de tête."""
     rows = [
@@ -926,21 +963,21 @@ async def test_executor_propose_returns_the_decision(monkeypatch, decision, expe
     d'appel (clé de la reprise)."""
     seen: list[dict] = []
     monkeypatch.setattr(
-        editing_base, "agent_interrupt", lambda payload: seen.append(payload) or decision
+        hitl, "agent_interrupt", lambda payload: seen.append(payload) or decision
     )
     result = await _propose_executor()(
         AIToolCall(id="call_p", name=PROPOSE_BLOCK_EDIT, arguments={"new_markdown": "# Nouveau"})
     )
     assert not result.is_error
     assert expected in result.content
-    assert seen == [{"tool_call_id": "call_p"}]
+    assert seen == [{"tool_call_id": "call_p", "kind": "proposal"}]
 
 
 @pytest.mark.anyio
 async def test_executor_propose_validates_before_interrupting(monkeypatch) -> None:
     """Args invalides : échec immédiat, JAMAIS d'interrupt (aucun run figé)."""
     monkeypatch.setattr(
-        editing_base,
+        hitl,
         "agent_interrupt",
         lambda payload: pytest.fail("interrupt inattendu sur des args invalides"),
     )
@@ -987,7 +1024,7 @@ def _exercise_executor(exercise=None, question_refs=None):
 
 def _no_interrupt(monkeypatch) -> None:
     monkeypatch.setattr(
-        editing_base,
+        hitl,
         "agent_interrupt",
         lambda payload: pytest.fail("interrupt inattendu sur des args invalides"),
     )
@@ -1014,7 +1051,7 @@ async def test_executor_exercise_tools_return_the_decision(
         [{"accepted": True}, {"accepted": False, "comment": "Pas comme ça."}]
     )
     monkeypatch.setattr(
-        editing_base,
+        hitl,
         "agent_interrupt",
         lambda payload: seen.append(payload) or next(decisions),
     )
@@ -1026,14 +1063,14 @@ async def test_executor_exercise_tools_return_the_decision(
     assert not rejected.is_error
     assert "REJETÉ" in rejected.content and "l'exercice est inchangé" in rejected.content
     assert "Son commentaire : Pas comme ça." in rejected.content
-    assert seen == [{"tool_call_id": "call_p"}] * 2
+    assert seen == [{"tool_call_id": "call_p", "kind": "proposal"}] * 2
 
 
 @pytest.mark.anyio
 async def test_executor_exercise_add_gives_the_new_reference_or_asks_to_reread(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(editing_base, "agent_interrupt", lambda payload: {"accepted": True})
+    monkeypatch.setattr(hitl, "agent_interrupt", lambda payload: {"accepted": True})
     arguments = {"statement": "?", "after_ref": "Q1"}
     # Sans numérotation rejouée (aucune reprise) : relecture demandée.
     executor, _ = _exercise_executor()
@@ -1071,7 +1108,7 @@ async def test_executor_exercise_delete_tolerates_the_question_already_removed(
     l'instantané rechargé ne la porte plus — la validation reste idempotente
     (sinon le modèle recevrait « introuvable » alors que la suppression a
     bien eu lieu). Une référence jamais numérotée reste, elle, une erreur."""
-    monkeypatch.setattr(editing_base, "agent_interrupt", lambda payload: {"accepted": True})
+    monkeypatch.setattr(hitl, "agent_interrupt", lambda payload: {"accepted": True})
     shrunk = _exercise(
         content={
             "statement": "",
@@ -1193,10 +1230,10 @@ def test_rewrite_exercise_args_adds_ids_and_rewrites_content_links() -> None:
 # ----------------------------------------------- registre de reprises (hitl)
 
 
-def _pending(**overrides) -> hitl.PendingProposal:
+def _pending(**overrides) -> hitl.PendingInterrupt:
     defaults = dict(thread_id="t-1", tool_call_id="call_p", provider="mistral", config=None)
     defaults.update(overrides)
-    return hitl.PendingProposal(**defaults)
+    return hitl.PendingInterrupt(**defaults)
 
 
 def test_hitl_pending_carries_optional_question_refs() -> None:
@@ -1205,14 +1242,47 @@ def test_hitl_pending_carries_optional_question_refs() -> None:
     assert _pending(question_refs=mapping).question_refs == mapping
 
 
+def test_hitl_pending_defaults_to_a_proposal() -> None:
+    pending = _pending()
+    assert pending.kind == hitl.KIND_PROPOSAL
+    assert pending.answer_shape is None
+
+
 def test_hitl_register_take_and_mismatch() -> None:
     conversation_id = uuid.uuid4()
     pending = _pending()
     assert hitl.register(conversation_id, pending) is None
     # Mauvais id d'appel : l'entrée n'est PAS consommée.
-    assert hitl.take(conversation_id, "autre") is None
-    assert hitl.take(conversation_id, "call_p") is pending
-    assert hitl.take(conversation_id, "call_p") is None  # consommée
+    assert hitl.take(conversation_id, "autre", kind=hitl.KIND_PROPOSAL) is None
+    assert hitl.take(conversation_id, "call_p", kind=hitl.KIND_PROPOSAL) is pending
+    assert hitl.take(conversation_id, "call_p", kind=hitl.KIND_PROPOSAL) is None  # consommée
+
+
+def test_hitl_take_and_peek_require_matching_kind() -> None:
+    """Une réponse à des questions ne reprend jamais une proposition (ni
+    l'inverse) : genre différent = rien n'attend, sans consommer."""
+    conversation_id = uuid.uuid4()
+    shape = [{"multi_select": False, "options": 2}]
+    pending = _pending(kind=hitl.KIND_QUESTIONS, answer_shape=shape)
+    hitl.register(conversation_id, pending)
+    try:
+        assert hitl.peek(conversation_id, "call_p", kind=hitl.KIND_PROPOSAL) is None
+        assert hitl.take(conversation_id, "call_p", kind=hitl.KIND_PROPOSAL) is None
+        assert hitl.take(conversation_id, "call_p", kind=hitl.KIND_QUESTIONS) is pending
+    finally:
+        hitl.drop(conversation_id)
+
+
+def test_hitl_peek_does_not_consume() -> None:
+    conversation_id = uuid.uuid4()
+    pending = _pending()
+    hitl.register(conversation_id, pending)
+    try:
+        assert hitl.peek(conversation_id, "call_p", kind=hitl.KIND_PROPOSAL) is pending
+        assert hitl.peek(conversation_id, "autre", kind=hitl.KIND_PROPOSAL) is None
+        assert hitl.take(conversation_id, "call_p", kind=hitl.KIND_PROPOSAL) is pending
+    finally:
+        hitl.drop(conversation_id)
 
 
 def test_hitl_register_replaces_and_returns_previous() -> None:
@@ -1223,14 +1293,26 @@ def test_hitl_register_replaces_and_returns_previous() -> None:
     second = _pending(thread_id="t-2", tool_call_id="c2")
     hitl.register(conversation_id, first)
     assert hitl.register(conversation_id, second) is first
-    assert hitl.take(conversation_id, "c2") is second
+    assert hitl.take(conversation_id, "c2", kind=hitl.KIND_PROPOSAL) is second
 
 
-def test_hitl_expired_entry_is_dropped() -> None:
-    conversation_id = uuid.uuid4()
+def test_hitl_expired_entry_is_ignored_then_swept() -> None:
+    """Une reprise expirée n'est plus servie ; le balayage la retire et la
+    rend à l'appelant (qui purge son thread) — jamais les entrées vivantes."""
+    expired_id, live_id = uuid.uuid4(), uuid.uuid4()
     expired = _pending(created_at=time.time() - hitl.PENDING_TTL_SECONDS - 1)
-    hitl.register(conversation_id, expired)
-    assert hitl.take(conversation_id, "call_p") is None
+    live = _pending(thread_id="t-live")
+    hitl.register(expired_id, expired)
+    hitl.register(live_id, live)
+    try:
+        assert hitl.peek(expired_id, "call_p", kind=hitl.KIND_PROPOSAL) is None
+        assert hitl.take(expired_id, "call_p", kind=hitl.KIND_PROPOSAL) is None
+        assert hitl.sweep_expired() == [expired]
+        assert hitl.sweep_expired() == []
+        assert hitl.peek(live_id, "call_p", kind=hitl.KIND_PROPOSAL) is live
+    finally:
+        hitl.drop(expired_id)
+        hitl.drop(live_id)
 
 
 def test_hitl_drop() -> None:
@@ -1239,6 +1321,34 @@ def test_hitl_drop() -> None:
     hitl.register(conversation_id, pending)
     assert hitl.drop(conversation_id) is pending
     assert hitl.drop(conversation_id) is None
+
+
+def test_hitl_suspend_relays_call_id_kind_and_shape(monkeypatch) -> None:
+    """Le payload de l'interrupt porte la clé de reprise, le genre et, pour
+    des questions, la forme de réponse attendue ; la valeur de reprise est
+    retournée telle quelle."""
+    seen: list[dict] = []
+    monkeypatch.setattr(hitl, "agent_interrupt", lambda payload: seen.append(payload) or "reprise")
+    shape = [{"multi_select": True, "options": 3}]
+    assert hitl.suspend(AIToolCall(id="c1", name="x"), kind=hitl.KIND_PROPOSAL) == "reprise"
+    hitl.suspend(AIToolCall(id="c2", name="y"), kind=hitl.KIND_QUESTIONS, answer_shape=shape)
+    assert seen == [
+        {"tool_call_id": "c1", "kind": "proposal"},
+        {"tool_call_id": "c2", "kind": "questions", "answer_shape": shape},
+    ]
+
+
+def test_agent_interrupt_has_a_single_call_site() -> None:
+    """``hitl.suspend`` est le SEUL appelant d'``agent_interrupt`` hors du
+    client IA : toute attente HITL passe par le registre (genre, clé)."""
+    root = Path(__file__).resolve().parents[1] / "app"
+    callers = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if "agent_interrupt(" in path.read_text(encoding="utf-8")
+        and path.relative_to(root).parts[:2] != ("core", "ai")
+    )
+    assert callers == ["course_assistant/hitl.py"]
 
 
 # ---------------------------- tools de proposition d'un module (HITL)
@@ -1265,7 +1375,7 @@ async def test_executor_propose_code_returns_the_decision(
     fichier appliqué (le modèle sait sur quoi enchaîner)."""
     seen: list[dict] = []
     monkeypatch.setattr(
-        editing_base,
+        hitl,
         "agent_interrupt",
         lambda payload: seen.append(payload) or {"accepted": True},
     )
@@ -1274,13 +1384,13 @@ async def test_executor_propose_code_returns_the_decision(
     )
     assert not result.is_error
     assert accepted_needle in result.content
-    assert seen == [{"tool_call_id": "call_p"}]
+    assert seen == [{"tool_call_id": "call_p", "kind": "proposal"}]
 
 
 @pytest.mark.anyio
 async def test_executor_propose_code_rejected(monkeypatch) -> None:
     monkeypatch.setattr(
-        editing_base,
+        hitl,
         "agent_interrupt",
         lambda payload: {"accepted": False, "comment": "Trop verbeux."},
     )

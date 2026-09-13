@@ -228,10 +228,12 @@ def test_stream_nominal() -> None:
         "read_resource_pdf",
         "read_resource_image",
         "read_module",
+        "ask_questions",
     }
-    # Contexte course : pas de run checkpointé, rien à purger.
-    assert call["thread_id"] is None
-    assert fake.dropped_threads == []
+    # Tout tour est checkpointé (l'assistant peut poser des questions) ; clos
+    # par ``done``, son thread est purgé une fois.
+    assert call["thread_id"] is not None
+    assert fake.dropped_threads == [call["thread_id"]]
 
 
 def test_stream_passes_reasoning_preferences() -> None:

@@ -19,13 +19,20 @@ Quatre tools (specs neutres :class:`AIToolSpec`, exécuteur async passé à
 - ``read_module`` : lit le code HTML/CSS/JS d'un module interactif (en base,
   aucun accès S3 ; :func:`format_module`, plafonné).
 
-S'y ajoutent, dans un **contexte d'édition** (``edit`` = descripteur
+S'y ajoutent des tools **HITL**, déclarés ``blocking`` (une réponse du modèle
+n'en exécute qu'un, garde de :mod:`app.core.ai.agent`) : dans un **contexte
+d'édition** (``edit`` = descripteur
 :class:`~app.course_assistant.editing.EditContext`), ses tools de proposition
-**HITL** (:mod:`app.course_assistant.editing`) : ils **ne mutent rien** — la
-proposition voyage dans les ``args`` du ``tool_call`` — et **figent le run**
-(``agent_interrupt``) jusqu'à la décision du professeur, dont le texte est le
-résultat du tool. Leurs specs s'ajoutent aux lectures (:func:`build_tool_specs`)
-et leur handler prime au dispatch de l'exécuteur (:func:`build_tool_executor`).
+(:mod:`app.course_assistant.editing`) ; pour l'assistant, dans tous ses
+contextes (``questions=True``), ``ask_questions``
+(:mod:`app.course_assistant.questions`). Ils **ne mutent rien** — la
+proposition ou les questions voyagent dans les ``args`` du ``tool_call`` — et
+**figent le run** (:func:`app.course_assistant.hitl.suspend`) jusqu'à la
+réponse du professeur, dont le texte est le résultat du tool. Leurs specs
+s'ajoutent aux lectures (:func:`build_tool_specs`) et leur handler, qui reçoit
+l'appel complet (``call.id`` = clé de reprise), prime au dispatch de
+l'exécuteur (:func:`build_tool_executor`). Le tuteur d'exercice (run jamais
+checkpointé) n'en reçoit aucun.
 
 Les tools ciblent une entité par sa **référence courte** (``B3``, ``R2``,
 ``M1`` — :mod:`app.course_assistant.refs`, jamais un UUID côté modèle) :
@@ -57,6 +64,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.core.ai import AIToolCall, AIToolImage, AIToolResult, AIToolSpec
 from app.core.storage import Storage
 from app.course_assistant.editing.base import EditContext
+from app.course_assistant.questions import ASK_QUESTIONS, ASK_QUESTIONS_SPEC, handle_ask_questions
 from app.course_assistant.refs import CourseRefs
 from app.course_assistant.render import format_block, format_module
 from app.models.resource import STATUS_AVAILABLE
@@ -104,9 +112,13 @@ def _ref_spec(
     )
 
 
-def build_tool_specs(refs: CourseRefs, *, edit: EditContext | None = None) -> list[AIToolSpec]:
+def build_tool_specs(
+    refs: CourseRefs, *, edit: EditContext | None = None, questions: bool = False
+) -> list[AIToolSpec]:
     """Les specs du tour, ``enum`` calé sur l'instantané du cours ; ``edit``
-    (contexte d'édition) ajoute les specs de ses tools de proposition."""
+    (contexte d'édition) ajoute les specs de ses tools de proposition,
+    ``questions`` celle d'``ask_questions`` — tous bloquants (run à
+    ``thread_id`` obligatoire)."""
     specs = [
         _ref_spec(
             READ_BLOCK,
@@ -143,7 +155,9 @@ def build_tool_specs(refs: CourseRefs, *, edit: EditContext | None = None) -> li
         ),
     ]
     if edit is not None:
-        specs.extend(tool.spec(refs) for tool in edit.tools)
+        specs.extend(tool.spec(refs).model_copy(update={"blocking": True}) for tool in edit.tools)
+    if questions:
+        specs.append(ASK_QUESTIONS_SPEC)
     return specs
 
 
@@ -199,7 +213,11 @@ def read_image_sync(storage: Storage, s3_key: str) -> str:
 
 
 def build_tool_executor(
-    storage: Storage, refs: CourseRefs, *, edit: EditContext | None = None
+    storage: Storage,
+    refs: CourseRefs,
+    *,
+    edit: EditContext | None = None,
+    questions: bool = False,
 ) -> Callable[[AIToolCall], Awaitable[AIToolResult]]:
     """Fabrique l'exécuteur async passé à ``stream_agent``.
 
@@ -207,10 +225,11 @@ def build_tool_executor(
     la lecture S3 est déportée par appel dans le threadpool, ``storage`` est
     thread-safe en lecture. ``refs`` porte l'instantané du cours (blocs,
     ressources, modules et leurs références courtes). ``edit`` (contexte
-    d'édition — run à ``thread_id`` obligatoire) active ses tools de
-    proposition HITL (validation puis **interrupt** jusqu'à la décision du
-    professeur — docstring du module), qui reçoivent l'appel complet (ils
-    lisent ``call.id``, clé de reprise) et priment sur les lectures.
+    d'édition) active ses tools de proposition, ``questions`` le tool
+    ``ask_questions`` — tools HITL, run à ``thread_id`` obligatoire
+    (validation puis **interrupt** jusqu'à la réponse du professeur —
+    docstring du module), qui reçoivent l'appel complet (ils lisent
+    ``call.id``, clé de reprise) et priment sur les lectures.
     """
 
     async def _read_block(arguments: dict) -> AIToolResult:
@@ -324,15 +343,18 @@ def build_tool_executor(
         READ_RESOURCE_IMAGE: _read_resource_image,
         READ_MODULE: _read_module,
     }
-    # Tools de proposition du contexte d'édition, construits une fois par tour.
-    proposal_handlers = (
+    # Tools HITL (appel complet) : propositions du contexte d'édition,
+    # construites une fois par tour, et questions au professeur.
+    call_handlers = (
         {tool.name: tool.build_handler(refs) for tool in edit.tools} if edit is not None else {}
     )
+    if questions:
+        call_handlers[ASK_QUESTIONS] = handle_ask_questions
 
     async def executor(call: AIToolCall) -> AIToolResult:
-        proposal = proposal_handlers.get(call.name)
-        if proposal is not None:
-            return await proposal(call)
+        call_handler = call_handlers.get(call.name)
+        if call_handler is not None:
+            return await call_handler(call)
         handler = handlers.get(call.name)
         if handler is None:
             return AIToolResult(content=f"Outil inconnu : {call.name}", is_error=True)
