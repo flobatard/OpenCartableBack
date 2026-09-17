@@ -103,7 +103,13 @@ un bloc de texte s'ouvre par un titre ## qui le reprend, ses parties \
 descendant à ### ; encadrés (citation ouverte par > [!DEFINITION], [!KEYPOINT], \
 [!METHOD], [!EXAMPLE], [!NOTE] ou [!WARNING] ; un texte après le \
 marqueur remplace le titre du type ; contenu markdown sur les lignes > \
-suivantes, ligne vide après l'encadré) ; formules KaTeX entre dollars ; \
+suivantes, ligne vide après l'encadré) ; colonnes côte à côte, pour mettre en \
+regard définition et exemple ou figure et explication (précédée d'une ligne \
+vide, une ligne ::: columns ouvre, puis le markdown de la colonne de gauche, \
+une ligne +++, celui de la colonne de droite et une ligne ::: qui ferme — un \
+seul +++ par conteneur ; ::: columns 1:2 ou ::: columns 2:1 pour un tiers et \
+deux tiers ; chaque colonne accepte toutes les syntaxes de ce catalogue, et \
+les colonnes s'empilent sur un écran étroit) ; formules KaTeX entre dollars ; \
 diagrammes Mermaid (bloc de code \
 ```mermaid) ; figures TikZ (bloc ```tikz, compilé dans le navigateur ; \
 bibliothèques TikZ par \\usetikzlibrary{…} en tête du bloc, dont \

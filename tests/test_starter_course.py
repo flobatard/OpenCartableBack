@@ -1,7 +1,7 @@
 """Cours d'exemple : le manifeste embarqué et la route de rattrapage.
 
 Le contenu du manifeste est du markdown destiné aux moteurs de rendu du
-front (markdown de base, KaTeX, Mermaid, encadrés et les langages d'extension :
+front (markdown de base, KaTeX, Mermaid, encadrés, colonnes et les langages d'extension :
 JSXGraph, TikZ, frise, passage, SMILES, Vega-Lite, ABC, SQL, Python…), dont les contraintes
 ne sont vérifiées nulle part côté serveur. Les tests de gardes de syntaxe
 ci-dessous en encodent ce qui est mécaniquement vérifiable — ils n'attestent
@@ -463,6 +463,55 @@ def test_manifest_callouts_open_their_quote_with_a_canonical_keyword():
             above = _QUOTE_RE.match(lines[index - 1])[0].count(">") if index else 0
             assert above < marker[1].count(">"), line
     assert keywords, "le cours doit démontrer un encadré"
+
+
+# Colonnes (``::: columns`` … ``+++`` … ``:::``), lues ligne à ligne comme le fait
+# ``splitColumns`` (``core/markdown/course-columns.ts`` côté front) — sur la
+# prose, dont le code est déjà retiré : la source montrée dans un fence n'est
+# pas un conteneur. Tout ``:::`` suivi de texte ouvre un niveau, refermé par un
+# ``:::`` nu. Hors du cours d'exemple, le front tolère casse, indentation et
+# marqueurs plus longs ; le cours enseigne la graphie canonique.
+_COLUMNS_OPENER_RE = re.compile(r" {0,3}:{3,}[ \t]*columns(?:[ \t]+(\S+))?[ \t]*", re.IGNORECASE)
+_COLUMNS_CANONICAL = {"::: columns": "1:1", "::: columns 1:2": "1:2", "::: columns 2:1": "2:1"}
+_COLON_CLOSER_RE = re.compile(r" {0,3}:{3,}[ \t]*")
+_COLON_OPENER_RE = re.compile(r" {0,3}:{3,}(?!:)[ \t]*\S.*")
+_COLUMNS_SEPARATOR_RE = re.compile(r" {0,3}\+{3,}[ \t]*")
+
+
+def test_manifest_columns_are_well_formed():
+    # Conteneur mal formé (non fermé, zéro ou deux `+++`, ratio inconnu) : le
+    # front laisse les marqueurs en texte. Collé sous une citation, une liste ou
+    # un tableau, l'ouvrant y serait absorbé : le cours enseigne la ligne vide.
+    ratios = []
+    for markdown in _prose():
+        lines = markdown.splitlines()
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            assert not _COLUMNS_SEPARATOR_RE.fullmatch(line), line
+            assert not _COLON_CLOSER_RE.fullmatch(line), line
+            if not _COLUMNS_OPENER_RE.fullmatch(line):
+                index += 1
+                continue
+            assert line in _COLUMNS_CANONICAL, line
+            assert index and not lines[index - 1].strip(), line
+            depth = separators = 0
+            for end in range(index + 1, len(lines)):
+                if _COLON_CLOSER_RE.fullmatch(lines[end]):
+                    if not depth:
+                        break
+                    depth -= 1
+                elif _COLON_OPENER_RE.fullmatch(lines[end]):
+                    depth += 1
+                elif not depth and _COLUMNS_SEPARATOR_RE.fullmatch(lines[end]):
+                    separators += 1
+            else:
+                pytest.fail(f"colonnes jamais fermées : {line}")
+            assert separators == 1, line
+            ratios.append(_COLUMNS_CANONICAL[line])
+            index = end + 1
+    assert ratios, "le cours doit démontrer des colonnes"
+    assert {"1:2", "2:1"} & set(ratios), "le cours doit démontrer un ratio de colonnes"
 
 
 def test_manifest_mhchem_commands_stay_inside_formulas():

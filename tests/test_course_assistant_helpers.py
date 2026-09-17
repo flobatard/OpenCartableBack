@@ -365,6 +365,9 @@ def test_build_turn_context_block_text_focus() -> None:
     # les six types eux-mêmes (course-callouts.ts), jamais un alias.
     for kind in ("DEFINITION", "KEYPOINT", "METHOD", "EXAMPLE", "NOTE", "WARNING"):
         assert f"[!{kind}]" in prompt
+    # Colonnes : conteneur du front (course-columns.ts), ratios compris.
+    for marker in ("une ligne ::: columns", "::: columns 1:2", "::: columns 2:1", "une ligne +++"):
+        assert marker in prompt
     # Circuits : la bibliothèque TikZ embarquée, jamais circuitikz.
     assert "\\begin{tikzpicture}[circuit ee IEC]" in prompt
     assert "circuitikz et tout \\usepackage indisponibles" in prompt
