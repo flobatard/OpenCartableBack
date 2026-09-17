@@ -19,12 +19,20 @@ Ordre d'émission garanti (contrat des tests) :
   jamais le contenu complet ;
 - ``interrupt`` : l'événement (porteur de l'usage cumulé du run figé) est remis
   au sink ; s'il rend un payload, celui-ci est émis et le flux SE FERME sans
-  ``done`` ; ``None`` = ignoré, le flux continue ;
-- ``done`` : le sink persiste et fournit le payload ;
+  ``done`` ; ``None`` = ignoré, le flux continue (le run se termine alors
+  sans ``done`` — l'appelant décide de la suite, cf. délégation) ;
+- ``done`` : le sink persiste et fournit le payload — ou rend ``None`` pour
+  un run intermédiaire qu'il absorbe (sous-assistant terminé : aucun ``done``
+  émis, l'appelant enchaîne un autre run sur le même flux) ;
 - ``HTTPException`` mid-stream (200 déjà parti) : remboursement du quota ssi
   aucun token n'est encore sorti, texte retenu flushé, persistance best-effort
   du partiel (``sink.failed``), puis ``error`` portant le status du mapping de
   :mod:`app.core.ai.errors`.
+
+``agent`` (id de l'appel de délégation du run parent) tague chaque événement
+du run d'un **sous-assistant** (``token``, ``thinking``, ``tool_call``,
+``tool_result``, ``interrupt`` — champ additif du contrat, jamais ``done`` ni
+``error``, qui sont ceux du tour) : le front les rattache à la délégation.
 
 La session ``db`` reste utilisable pendant le flux : les dépendances ``yield``
 de FastAPI ne sont refermées qu'après l'envoi complet.
@@ -62,8 +70,9 @@ class TurnSink(Protocol):
         """Payload de l'événement ``interrupt`` (``event.usage`` = rounds déjà
         joués par l'appel), ou ``None`` pour l'ignorer."""
 
-    async def done(self, usage: dict[str, Any] | None) -> dict[str, Any]:
-        """Persiste le tour ; rend le payload de ``done``."""
+    async def done(self, usage: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Persiste le tour ; rend le payload de ``done`` — ou ``None`` pour un
+        run intermédiaire absorbé (aucun ``done`` émis, le flux continue)."""
 
     async def failed(self) -> None:
         """Persiste le partiel après une erreur mid-stream (best-effort)."""
@@ -76,17 +85,24 @@ async def encode_turn(
     refs: CourseRefs,
     ticket: QuotaTicket | None,
     sink: TurnSink,
+    agent: str | None = None,
 ) -> AsyncIterator[str]:
     """Le flux SSE d'un tour (docstring du module)."""
     rewriter = CitationRewriter(refs)
     tokens_emitted = False
+
+    def _event(name: str, payload: dict[str, Any]) -> str:
+        """Événement du run, tagué ``agent`` quand c'est celui d'un sous-assistant."""
+        if agent is not None:
+            payload = {**payload, "agent": agent}
+        return sse_event(name, payload)
 
     def _ready(text: str) -> str | None:
         """Texte prêt (citations résolues) : remis au sink, rendu en ``token``."""
         if not text:
             return None
         sink.text(text)
-        return sse_event("token", {"delta": text})
+        return _event("token", {"delta": text})
 
     try:
         async for event in events:
@@ -97,7 +113,7 @@ async def encode_turn(
                     yield sse
                 continue
             if event.type == "thinking":
-                yield sse_event("thinking", {"delta": event.delta})
+                yield _event("thinking", {"delta": event.delta})
                 continue
             # Tout autre événement : le texte retenu par le rewriter part d'abord
             # (ordre d'affichage côté front).
@@ -107,12 +123,10 @@ async def encode_turn(
             if event.type == "tool_call":
                 call = event.tool_call
                 arguments = sink.tool_call(call)
-                yield sse_event(
-                    "tool_call", {"id": call.id, "name": call.name, "args": arguments}
-                )
+                yield _event("tool_call", {"id": call.id, "name": call.name, "args": arguments})
             elif event.type == "tool_result":
                 sink.tool_result(event)
-                yield sse_event(
+                yield _event(
                     "tool_result",
                     {
                         "id": event.tool_call.id,
@@ -125,11 +139,13 @@ async def encode_turn(
             elif event.type == "interrupt":
                 payload = await sink.interrupt(event)
                 if payload is not None:
-                    yield sse_event("interrupt", payload)
+                    yield _event("interrupt", payload)
                     return
             else:  # done
                 usage = event.usage.model_dump() if event.usage else None
-                yield sse_event("done", await sink.done(usage))
+                payload = await sink.done(usage)
+                if payload is not None:
+                    yield sse_event("done", payload)
     except HTTPException as exc:
         if ticket is not None and not tokens_emitted:
             await refund_default_quota(db, ticket)

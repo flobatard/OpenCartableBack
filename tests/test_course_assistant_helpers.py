@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from pypdf import PdfWriter
 
-from app.core.ai import AIToolCall
+from app.core.ai import AIStreamEvent, AIToolCall
 from app.course_assistant import hitl
 from app.course_assistant import tools as tools_module
 from app.course_assistant.context import (
@@ -45,7 +45,11 @@ from app.course_assistant.editing.module import (
     PROPOSE_HTML_EDIT,
     PROPOSE_JS_EDIT,
 )
-from app.course_assistant.prompts import COURSE_SYSTEM_PROMPT, MODULE_LIBRARY_NAMES
+from app.course_assistant.prompts import (
+    COURSE_EDITING_SYSTEM_PROMPT,
+    COURSE_SYSTEM_PROMPT,
+    MODULE_LIBRARY_NAMES,
+)
 from app.course_assistant.render import (
     format_block,
     format_module,
@@ -66,6 +70,8 @@ from app.course_assistant.tools import (
     read_image_sync,
     read_pdf_sync,
 )
+from app.course_assistant.turn_encoder import encode_turn
+from tests.fakes import parse_sse
 
 BLOCK_ID = uuid.uuid4()
 RESOURCE_ID = uuid.uuid4()
@@ -1352,6 +1358,152 @@ def test_agent_interrupt_has_a_single_call_site() -> None:
         and path.relative_to(root).parts[:2] != ("core", "ai")
     )
     assert callers == ["course_assistant/hitl.py"]
+
+
+def test_hitl_suspend_merges_detail_into_the_payload(monkeypatch) -> None:
+    """Les clés propres au genre (cible d'une délégation) rejoignent le
+    payload, après la clé de reprise et le genre."""
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        hitl, "agent_interrupt", lambda payload: seen.append(payload) or {"ok": True}
+    )
+    value = hitl.suspend(
+        AIToolCall(id="c3", name="edit_block"),
+        kind=hitl.KIND_DELEGATION,
+        detail={"context": "block_text", "target_id": "x", "instructions": "y"},
+    )
+    assert value == {"ok": True}
+    assert seen == [
+        {
+            "tool_call_id": "c3",
+            "kind": "delegation",
+            "context": "block_text",
+            "target_id": "x",
+            "instructions": "y",
+        }
+    ]
+
+
+def test_hitl_register_refuses_a_delegation() -> None:
+    """Une délégation se traite dans le flux : jamais en attente d'une route."""
+    with pytest.raises(ValueError):
+        hitl.register(uuid.uuid4(), _pending(kind=hitl.KIND_DELEGATION))
+
+
+def test_hitl_pending_thread_ids_include_the_parent_of_a_delegation() -> None:
+    plain = _pending()
+    assert plain.thread_ids() == ("t-1",)
+    assert plain.allow_edit is False
+    assert plain.delegation is None
+    assert plain.carried_usage is None
+    delegated = _pending(
+        delegation=hitl.Delegation(
+            parent_thread_id="t-parent",
+            parent_call_id="call_d",
+            context="block_text",
+            target_id="x",
+            instructions="y",
+        )
+    )
+    assert delegated.thread_ids() == ("t-1", "t-parent")
+    assert delegated.delegation.outcomes == ()
+    assert delegated.delegation.count == 1
+
+
+def test_system_prompt_for_course_editing_variant() -> None:
+    """Le contexte ``course`` a deux prompts statiques : l'édition globale
+    ajoute la règle de délégation, jamais le catalogue de syntaxes ni le
+    protocole HITL (réservés aux sous-assistants) ; un descripteur d'édition
+    garde le sien."""
+    assert system_prompt_for(None) == COURSE_SYSTEM_PROMPT
+    assert system_prompt_for(None, allow_edit=True) == COURSE_EDITING_SYSTEM_PROMPT
+    assert COURSE_EDITING_SYSTEM_PROMPT != COURSE_SYSTEM_PROMPT
+    assert "edit_block" in COURSE_EDITING_SYSTEM_PROMPT
+    assert "edit_module" in COURSE_EDITING_SYSTEM_PROMPT
+    assert "```mermaid" not in COURSE_EDITING_SYSTEM_PROMPT
+    assert "Protocole de proposition" not in COURSE_EDITING_SYSTEM_PROMPT
+    assert system_prompt_for(BLOCK_TEXT, allow_edit=True) == BLOCK_TEXT.system_prompt
+
+
+class _RecordingSink:
+    """Sink minimal de l'encodeur : ``done`` rend le payload scripté."""
+
+    def __init__(self, done_payload) -> None:
+        self.done_payload = done_payload
+        self.texts: list[str] = []
+        self.results: list[str] = []
+
+    def text(self, delta: str) -> None:
+        self.texts.append(delta)
+
+    def tool_call(self, call: AIToolCall) -> dict:
+        return call.arguments
+
+    def tool_result(self, event) -> None:
+        self.results.append(event.delta)
+
+    async def interrupt(self, event):
+        return None
+
+    async def done(self, usage):
+        return self.done_payload
+
+    async def failed(self) -> None:
+        return None
+
+
+async def _stream(*events):
+    for event in events:
+        yield event
+
+
+def _agent_events():
+    return (
+        AIStreamEvent(type="token", delta="a"),
+        AIStreamEvent(type="thinking", delta="t"),
+        AIStreamEvent(
+            type="tool_call", tool_call=AIToolCall(id="c1", name="read_block", arguments={})
+        ),
+        AIStreamEvent(
+            type="tool_result",
+            delta="r",
+            tool_call=AIToolCall(id="c1", name="read_block"),
+            tool_result_error=False,
+        ),
+        AIStreamEvent(type="done", usage=None),
+    )
+
+
+@pytest.mark.anyio
+async def test_encode_turn_tags_agent_events_and_absorbs_an_intermediate_done() -> None:
+    """Run d'un sous-assistant : chaque événement porte ``agent`` ; un sink
+    qui absorbe ``done`` (``None``) n'en fait émettre aucun."""
+    sink = _RecordingSink(done_payload=None)
+    chunks = [
+        chunk
+        async for chunk in encode_turn(
+            _stream(*_agent_events()), db=None, refs=_refs(), ticket=None, sink=sink, agent="call_d"
+        )
+    ]
+    events = parse_sse("".join(chunks))
+    assert [k for k, _ in events] == ["token", "thinking", "tool_call", "tool_result"]
+    assert all(data["agent"] == "call_d" for _, data in events)
+    assert sink.texts == ["a"] and sink.results == ["r"]
+
+
+@pytest.mark.anyio
+async def test_encode_turn_without_agent_emits_done_untagged() -> None:
+    sink = _RecordingSink(done_payload={"usage": None})
+    chunks = [
+        chunk
+        async for chunk in encode_turn(
+            _stream(*_agent_events()), db=None, refs=_refs(), ticket=None, sink=sink
+        )
+    ]
+    events = parse_sse("".join(chunks))
+    assert [k for k, _ in events] == ["token", "thinking", "tool_call", "tool_result", "done"]
+    assert not any("agent" in data for _, data in events)
+    assert events[-1][1] == {"usage": None}
 
 
 # ---------------------------- tools de proposition d'un module (HITL)

@@ -127,9 +127,15 @@ class ConversationUpdate(BaseModel):
 
 
 class MessageCreate(BaseModel):
+    """Message du professeur. ``allow_edit`` — édition globale, opt-in du
+    tour, préférence du navigateur — n'est honoré qu'en contexte ``course`` :
+    l'assistant global reçoit alors les tools de délégation
+    (:mod:`app.course_assistant.delegation`) et le prompt qui les décrit."""
+
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    allow_edit: bool = False
 
 
 class ConversationRead(BaseModel):

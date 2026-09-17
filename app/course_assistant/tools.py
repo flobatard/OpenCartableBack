@@ -25,14 +25,18 @@ d'édition** (``edit`` = descripteur
 :class:`~app.course_assistant.editing.EditContext`), ses tools de proposition
 (:mod:`app.course_assistant.editing`) ; pour l'assistant, dans tous ses
 contextes (``questions=True``), ``ask_questions``
-(:mod:`app.course_assistant.questions`). Ils **ne mutent rien** — la
-proposition ou les questions voyagent dans les ``args`` du ``tool_call`` — et
-**figent le run** (:func:`app.course_assistant.hitl.suspend`) jusqu'à la
-réponse du professeur, dont le texte est le résultat du tool. Leurs specs
-s'ajoutent aux lectures (:func:`build_tool_specs`) et leur handler, qui reçoit
-l'appel complet (``call.id`` = clé de reprise), prime au dispatch de
-l'exécuteur (:func:`build_tool_executor`). Le tuteur d'exercice (run jamais
-checkpointé) n'en reçoit aucun.
+(:mod:`app.course_assistant.questions`) ; pour l'assistant global dont le tour
+active l'édition globale (``delegation=True``), les tools de délégation
+``edit_block``/``edit_module`` (:mod:`app.course_assistant.delegation`). Ils
+**ne mutent rien** — la proposition, les questions ou les consignes voyagent
+dans les ``args`` du ``tool_call`` — et **figent le run**
+(:func:`app.course_assistant.hitl.suspend`) jusqu'à la réponse du professeur
+(ou, pour une délégation, le compte rendu du sous-assistant), dont le texte
+est le résultat du tool. Leurs specs s'ajoutent aux lectures
+(:func:`build_tool_specs`) et leur handler, qui reçoit l'appel complet
+(``call.id`` = clé de reprise), prime au dispatch de l'exécuteur
+(:func:`build_tool_executor`). Le tuteur d'exercice (run jamais checkpointé)
+n'en reçoit aucun.
 
 Les tools ciblent une entité par sa **référence courte** (``B3``, ``R2``,
 ``M1`` — :mod:`app.course_assistant.refs`, jamais un UUID côté modèle) :
@@ -63,6 +67,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.core.ai import AIToolCall, AIToolImage, AIToolResult, AIToolSpec
 from app.core.storage import Storage
+from app.course_assistant.delegation import DELEGATION_TOOLS
 from app.course_assistant.editing.base import EditContext
 from app.course_assistant.questions import ASK_QUESTIONS, ASK_QUESTIONS_SPEC, handle_ask_questions
 from app.course_assistant.refs import CourseRefs
@@ -113,12 +118,17 @@ def _ref_spec(
 
 
 def build_tool_specs(
-    refs: CourseRefs, *, edit: EditContext | None = None, questions: bool = False
+    refs: CourseRefs,
+    *,
+    edit: EditContext | None = None,
+    questions: bool = False,
+    delegation: bool = False,
 ) -> list[AIToolSpec]:
     """Les specs du tour, ``enum`` calé sur l'instantané du cours ; ``edit``
     (contexte d'édition) ajoute les specs de ses tools de proposition,
-    ``questions`` celle d'``ask_questions`` — tous bloquants (run à
-    ``thread_id`` obligatoire)."""
+    ``delegation`` (édition globale du contexte ``course``) celles des tools de
+    délégation, ``questions`` celle d'``ask_questions`` — tous bloquants (run
+    à ``thread_id`` obligatoire)."""
     specs = [
         _ref_spec(
             READ_BLOCK,
@@ -156,6 +166,10 @@ def build_tool_specs(
     ]
     if edit is not None:
         specs.extend(tool.spec(refs).model_copy(update={"blocking": True}) for tool in edit.tools)
+    if delegation:
+        specs.extend(
+            tool.spec(refs).model_copy(update={"blocking": True}) for tool in DELEGATION_TOOLS
+        )
     if questions:
         specs.append(ASK_QUESTIONS_SPEC)
     return specs
@@ -218,6 +232,7 @@ def build_tool_executor(
     *,
     edit: EditContext | None = None,
     questions: bool = False,
+    delegation: bool = False,
 ) -> Callable[[AIToolCall], Awaitable[AIToolResult]]:
     """Fabrique l'exécuteur async passé à ``stream_agent``.
 
@@ -225,11 +240,12 @@ def build_tool_executor(
     la lecture S3 est déportée par appel dans le threadpool, ``storage`` est
     thread-safe en lecture. ``refs`` porte l'instantané du cours (blocs,
     ressources, modules et leurs références courtes). ``edit`` (contexte
-    d'édition) active ses tools de proposition, ``questions`` le tool
-    ``ask_questions`` — tools HITL, run à ``thread_id`` obligatoire
-    (validation puis **interrupt** jusqu'à la réponse du professeur —
-    docstring du module), qui reçoivent l'appel complet (ils lisent
-    ``call.id``, clé de reprise) et priment sur les lectures.
+    d'édition) active ses tools de proposition, ``delegation`` les tools de
+    délégation de l'assistant global, ``questions`` le tool ``ask_questions``
+    — tools HITL, run à ``thread_id`` obligatoire (validation puis
+    **interrupt** jusqu'à la réponse du professeur — docstring du module), qui
+    reçoivent l'appel complet (ils lisent ``call.id``, clé de reprise) et
+    priment sur les lectures.
     """
 
     async def _read_block(arguments: dict) -> AIToolResult:
@@ -344,10 +360,13 @@ def build_tool_executor(
         READ_MODULE: _read_module,
     }
     # Tools HITL (appel complet) : propositions du contexte d'édition,
-    # construites une fois par tour, et questions au professeur.
+    # délégations de l'assistant global — construites une fois par tour — et
+    # questions au professeur.
     call_handlers = (
         {tool.name: tool.build_handler(refs) for tool in edit.tools} if edit is not None else {}
     )
+    if delegation:
+        call_handlers.update({tool.name: tool.build_handler(refs) for tool in DELEGATION_TOOLS})
     if questions:
         call_handlers[ASK_QUESTIONS] = handle_ask_questions
 

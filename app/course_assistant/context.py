@@ -6,8 +6,9 @@ Helpers purs (aucune I/O, testables sans DB ni storage) :
   et ``Q1…`` pour les questions du bloc exercice édité) ;
 - :func:`system_prompt_for` donne le system prompt du contexte de
   conversation — ``course``
-  (:data:`~app.course_assistant.prompts.COURSE_SYSTEM_PROMPT`) ou un contexte
-  d'édition (descripteur :class:`~app.course_assistant.editing.EditContext`).
+  (:data:`~app.course_assistant.prompts.COURSE_SYSTEM_PROMPT`, ou sa variante
+  d'édition globale quand le tour l'active) ou un contexte d'édition
+  (descripteur :class:`~app.course_assistant.editing.EditContext`).
   Il est **statique** (cacheable par le provider) : aucun contenu de cours ;
 - :func:`build_turn_context` assemble le **contexte du tour** : la cible
   d'un contexte d'édition (``focus_block`` OU ``focus_module``, rendue en
@@ -35,7 +36,7 @@ import re
 import uuid
 
 from app.course_assistant.editing.base import EditContext
-from app.course_assistant.prompts import COURSE_SYSTEM_PROMPT
+from app.course_assistant.prompts import COURSE_EDITING_SYSTEM_PROMPT, COURSE_SYSTEM_PROMPT
 from app.course_assistant.refs import CourseRefs
 from app.course_assistant.render import (
     FOCUS_MODULE_MAX_CHARS,
@@ -88,10 +89,14 @@ def build_refs(
     )
 
 
-def system_prompt_for(edit: EditContext | None) -> str:
+def system_prompt_for(edit: EditContext | None, *, allow_edit: bool = False) -> str:
     """System prompt du contexte de conversation — statique, sans contenu de
-    cours : celui du descripteur d'édition, sinon celui du contexte ``course``."""
-    return COURSE_SYSTEM_PROMPT if edit is None else edit.system_prompt
+    cours : celui du descripteur d'édition, sinon celui du contexte ``course``
+    — sa variante avec la règle de délégation quand l'édition globale du tour
+    est activée (``allow_edit``, cf. :mod:`app.course_assistant.delegation`)."""
+    if edit is not None:
+        return edit.system_prompt
+    return COURSE_EDITING_SYSTEM_PROMPT if allow_edit else COURSE_SYSTEM_PROMPT
 
 
 def render_outline(

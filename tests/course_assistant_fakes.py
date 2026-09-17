@@ -151,12 +151,20 @@ def resource_row():
 
 
 class FakeAssistantAI:
-    """Faux AIClient pour stream_agent : validation eager scriptable."""
+    """Faux AIClient pour stream_agent : validation eager scriptable.
 
-    def __init__(self, events=None, eager_error=None, mid_stream_error=None):
+    ``events`` = événements servis à chaque appel ; ``scripts`` (additif) = une
+    liste d'événements PAR appel de ``stream_agent``, dans l'ordre — un flux à
+    délégation enchaîne plusieurs runs (assistant, sous-assistant, reprise) —,
+    une entrée qui est une exception étant levée eager par cet appel (jamais
+    enregistré dans ``calls``, comme le vrai client) ; ``events`` sert de repli
+    une fois les scripts épuisés."""
+
+    def __init__(self, events=None, eager_error=None, mid_stream_error=None, scripts=None):
         self.events = events or []
         self.eager_error = eager_error
         self.mid_stream_error = mid_stream_error
+        self.scripts = list(scripts or [])
         self.calls = []
         self.dropped_threads = []
 
@@ -175,6 +183,9 @@ class FakeAssistantAI:
     ):
         if self.eager_error is not None:
             raise self.eager_error
+        script = self.scripts.pop(0) if self.scripts else None
+        if isinstance(script, BaseException):
+            raise script
         self.calls.append(
             {
                 "messages": messages,
@@ -184,15 +195,17 @@ class FakeAssistantAI:
                 "user_id": user_id,
                 "thread_id": thread_id,
                 "resume": resume,
+                "trace_name": trace_name,
             }
         )
-        return self._gen()
+        # Sans script : ``_gen()`` tel que les sous-classes le redéfinissent.
+        return self._gen() if script is None else self._gen(script)
 
     def drop_agent_thread(self, thread_id):
         self.dropped_threads.append(thread_id)
 
-    async def _gen(self):
-        for event in self.events:
+    async def _gen(self, events=None):
+        for event in self.events if events is None else events:
             if self.mid_stream_error is not None and event.type == "done":
                 raise self.mid_stream_error
             yield event
@@ -258,4 +271,27 @@ def questions_interrupt_value(tool_call_id="call_q", shape=None):
         "tool_call_id": tool_call_id,
         "kind": "questions",
         "answer_shape": shape if shape is not None else [{"multi_select": False, "options": 2}],
+    }
+
+
+def proposal_interrupt_value(tool_call_id="call_p"):
+    """Payload d'interrupt d'un tool de proposition (``hitl_gate``)."""
+    return {"tool_call_id": tool_call_id, "kind": "proposal"}
+
+
+def delegation_interrupt_value(
+    tool_call_id="call_d",
+    context="block_text",
+    target_id=BLOCK_ID,
+    instructions="Réécris l'introduction.",
+):
+    """Payload d'interrupt d'``edit_block``/``edit_module`` (genre
+    ``delegation``, cf. ``delegation._delegate``) : jamais relayé au front,
+    lu par le driver du flux."""
+    return {
+        "tool_call_id": tool_call_id,
+        "kind": "delegation",
+        "context": context,
+        "target_id": str(target_id),
+        "instructions": instructions,
     }

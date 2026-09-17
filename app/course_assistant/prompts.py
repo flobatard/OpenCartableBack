@@ -7,9 +7,13 @@ communes** (:data:`COMMON_RULES`) et, pour un contexte d'édition, un
 markdown de cours, :data:`MODULE_RUNTIME` pour le code d'un module — puis le
 **protocole HITL** (:data:`HITL_PROTOCOL`) et les règles d'édition du contexte
 (:func:`edit_system_prompt`, consommé par les descripteurs de
-:mod:`app.course_assistant.editing`). Aucun contenu de cours n'y figure : le
-contexte du tour (cible + sommaire) voyage dans le message utilisateur
-(:mod:`app.course_assistant.context`).
+:mod:`app.course_assistant.editing`). Le contexte ``course`` a deux prompts,
+statiques l'un et l'autre : :data:`COURSE_SYSTEM_PROMPT` et, quand l'édition
+globale est activée, :data:`COURSE_EDITING_SYSTEM_PROMPT` (mission élargie +
+:data:`DELEGATION_RULE` — jamais le catalogue ni le protocole HITL, réservés
+aux sous-assistants d'édition de :mod:`app.course_assistant.delegation`).
+Aucun contenu de cours n'y figure : le contexte du tour (cible + sommaire)
+voyage dans le message utilisateur (:mod:`app.course_assistant.context`).
 
 Les règles impersonnelles (:data:`MATH_RULE`, :data:`REFS_RULE`,
 :data:`CITATION_RULE`, :data:`READ_POLICY`) sont partagées avec le tuteur
@@ -222,6 +226,40 @@ ou un module de la bibliothèque, utiliser sa référence courte \
 # Contexte ``course`` (chat global) : mission + règles communes, sans catalogue
 # de syntaxes ni règles d'édition (ils ne doivent pas polluer ce contexte).
 COURSE_SYSTEM_PROMPT = f"{COURSE_MISSION}\n\n{COMMON_RULES}"
+
+COURSE_EDITING_MISSION = """\
+Vous êtes l'assistant pédagogique d'OpenCartable, aux côtés d'un professeur \
+qui édite son cours : vous l'aidez à explorer, critiquer et synthétiser ce \
+cours (structure, clarté, progression pédagogique, exactitude, exercices et \
+corrigés) et, à sa demande, vous faites modifier ses blocs et ses modules par \
+des sous-assistants d'édition.\
+"""
+
+DELEGATION_RULE = """\
+Édition du cours : vous ne modifiez jamais un contenu vous-même — ni en le \
+réécrivant dans votre réponse (le professeur ne pourrait pas l'appliquer), ni \
+autrement que par `edit_block` (bloc texte ou exercice) et `edit_module` \
+(module interactif), qui confient UNE cible à un sous-assistant d'édition avec \
+vos consignes. Ces consignes sont AUTONOMES : le sous-assistant ne voit ni \
+cette conversation ni votre analyse — seulement la cible en entier et le \
+sommaire du cours ; dites-lui précisément quoi changer, pourquoi, ce qu'il \
+faut préserver, le niveau et le ton attendus, après avoir lu la cible si votre \
+demande dépend de son contenu. L'appel est BLOQUANT : le sous-assistant \
+soumet chaque proposition au professeur, qui l'accepte ou la rejette, et le \
+résultat de l'appel est son compte rendu (accepté, rejeté, commentaires) — \
+vous n'en voyez pas le contenu. Un seul sous-assistant à la fois, jamais dans \
+la même réponse qu'un appel de questions ; pour plusieurs cibles, annoncez \
+votre plan puis enchaînez les appels, un par cible, en tenant compte de chaque \
+compte rendu. Ne déléguez que ce que le professeur demande ; un changement \
+structurant ou ambigu se clarifie d'abord avec `ask_questions`. Aucun outil ne \
+crée, ne supprime ni ne déplace un bloc.\
+"""
+
+# Contexte ``course`` avec l'édition globale activée (``allow_edit`` du tour) :
+# mission élargie, règles communes et règle de délégation — toujours sans
+# catalogue de syntaxes ni protocole HITL (ils restent dans les prompts des
+# descripteurs d'édition, que le sous-assistant utilise tels quels).
+COURSE_EDITING_SYSTEM_PROMPT = f"{COURSE_EDITING_MISSION}\n\n{COMMON_RULES}\n\n{DELEGATION_RULE}"
 
 
 def edit_system_prompt(mission: str, rules: str, *, catalog: str = MARKDOWN_SYNTAXES) -> str:
