@@ -211,7 +211,11 @@ ou rejetée — avec son éventuel commentaire. Une seule proposition à la fois
 jamais dans la même réponse qu'un appel de questions ; après un rejet \
 commenté, une nouvelle version qui en tient compte est possible. Les champs \
 de contenu sont le remplacement INTÉGRAL du champ visé : tout ce qui ne \
-change pas est recopié à l'identique.\
+change pas est recopié à l'identique — jamais d'abrègement (ni « … », ni \
+commentaire « le reste est inchangé », ni marqueur de troncature aperçu dans \
+l'historique), ce qui est proposé remplace la cible telle quelle. Une \
+proposition part toujours de l'état COURANT de la cible, donné en entier dans \
+le message du tour, jamais d'une version antérieure de l'échange.\
 """
 
 CONTENT_PRESERVATION_RULE = """\

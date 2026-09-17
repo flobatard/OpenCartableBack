@@ -11,11 +11,15 @@ prompt du provider) :
 - résultats d'outils **abrégés** (:data:`REPLAY_TOOL_RESULT_CHARS`) : un bloc,
   un PDF ou un module lu à un tour précédent n'est jamais renvoyé en entier —
   le modèle relit au besoin ;
-- arguments chaîne des appels d'outils **abrégés** (:data:`REPLAY_ARG_CHARS`) :
-  le contenu intégral d'une proposition d'édition passée (markdown, code)
-  n'est pas rejoué — l'état courant de la cible est dans le contexte du tour.
+- arguments chaîne longs des appels d'outils **élidés** (au-delà de
+  :data:`REPLAY_ARG_CHARS`) : le contenu d'une proposition d'édition passée
+  (markdown, code) n'est pas rejoué — l'état courant de la cible est dans le
+  contexte du tour. Élidé et non abrégé : rejouer la TÊTE d'un contenu suivie
+  d'un marqueur de troncature invite le modèle à la recopier telle quelle au
+  tour suivant, marqueur compris, ou à écrire ses propositions en texte plutôt
+  qu'en appel d'outil (cf. :data:`ELIDED_ARGUMENT`).
 
-Seule exception aux abréviations : les réponses du professeur aux questions
+Seule exception aux abréviations et élisions : les réponses du professeur aux questions
 de l'assistant (résultats d'``ask_questions``, bornés par les plafonds du
 tool) restent entières — elles cadrent toute la suite de la conversation.
 
@@ -36,14 +40,24 @@ from app.models.ai_message import ROLE_ASSISTANT, ROLE_TOOL, ROLE_USER
 # conservée une fois le seuil dépassé.
 REPLAY_MESSAGE_LIMIT = 30
 REPLAY_MESSAGE_KEEP = 20
-# Plafonds (caractères) d'un résultat d'outil rejoué nativement, d'un
-# argument chaîne d'appel d'outil, et d'un résultat replié en texte.
+# Plafonds (caractères) d'un résultat d'outil rejoué nativement et d'un
+# résultat replié en texte ; seuil au-delà duquel un argument chaîne d'appel
+# d'outil est élidé (en deçà — référence, résumé — il passe tel quel).
 REPLAY_TOOL_RESULT_CHARS = 1_500
 REPLAY_ARG_CHARS = 300
 FOLDED_TOOL_RESULT_CHARS = 500
 
 TRUNCATED_HISTORY_NOTICE = (
     "Note : la conversation est longue, seuls ses derniers messages sont rejoués."
+)
+
+# Remplace un argument chaîne long au replay. Aucune tête de contenu : rejouée,
+# le modèle la recopie au tour suivant (marqueur de troncature compris) au lieu
+# de repartir de l'état courant de la cible, et une proposition d'édition sort
+# alors amputée — ou rédigée en texte.
+ELIDED_ARGUMENT = (
+    "[contenu non rejoué ({length} caractères) — repartir de l'état courant "
+    "de la cible, donné dans le message du tour]"
 )
 
 
@@ -55,12 +69,20 @@ def abridge(text: str, cap: int, *, what: str) -> str:
     return f"{text[:cap]}… [{what} abrégé au replay : {len(text)} caractères au total]"
 
 
-def _abridged_arguments(arguments: dict) -> dict:
-    """Arguments d'un appel d'outil, chaînes longues abrégées (les références
+def elide(value: str) -> str:
+    """``value`` s'il tient dans :data:`REPLAY_ARG_CHARS` caractères, sinon
+    :data:`ELIDED_ARGUMENT` — sa tête n'est JAMAIS rejouée (docstring du
+    module)."""
+    if len(value) <= REPLAY_ARG_CHARS:
+        return value
+    return ELIDED_ARGUMENT.format(length=len(value))
+
+
+def _replayed_arguments(arguments: dict) -> dict:
+    """Arguments d'un appel d'outil, chaînes longues élidées (les références
     et résumés courts passent tels quels)."""
     return {
-        key: abridge(value, REPLAY_ARG_CHARS, what="argument") if isinstance(value, str) else value
-        for key, value in arguments.items()
+        key: elide(value) if isinstance(value, str) else value for key, value in arguments.items()
     }
 
 
@@ -71,7 +93,7 @@ def _fold_tool_round(assistant_row, tool_rows) -> ChatMessage:
     results_by_id = {t.tool_call_id: t for t in tool_rows}
     for call in assistant_row.tool_calls or []:
         name = call.get("name", "?")
-        args = json.dumps(_abridged_arguments(call.get("arguments") or {}), ensure_ascii=False)
+        args = json.dumps(_replayed_arguments(call.get("arguments") or {}), ensure_ascii=False)
         result = results_by_id.get(call.get("id"))
         outcome = ""
         if result is not None:
@@ -99,7 +121,8 @@ def replay_messages(
     assistant est hors fenêtre) sont écartés. Les rounds d'outils générés par
     un AUTRE provider que ``current_provider`` sont repliés en texte
     (:func:`_fold_tool_round`) au lieu d'être rejoués nativement ; les autres
-    sont rejoués avec résultats et arguments abrégés (docstring du module).
+    sont rejoués avec résultats abrégés et arguments longs élidés (docstring
+    du module).
     """
     truncated = len(rows) > limit
     window = list(rows[-min(keep, limit) :]) if truncated else list(rows)
@@ -138,7 +161,7 @@ def replay_messages(
                             AIToolCall(
                                 id=call.get("id") or "",
                                 name=call.get("name", ""),
-                                arguments=_abridged_arguments(call.get("arguments") or {}),
+                                arguments=_replayed_arguments(call.get("arguments") or {}),
                             )
                             for call in row.tool_calls
                         ],

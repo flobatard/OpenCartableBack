@@ -59,6 +59,7 @@ from app.course_assistant.render import (
 from app.course_assistant.replay import (
     REPLAY_ARG_CHARS,
     REPLAY_TOOL_RESULT_CHARS,
+    elide,
     replay_messages,
 )
 from app.course_assistant.tools import (
@@ -706,9 +707,10 @@ def test_replay_window_hysteresis() -> None:
     assert not truncated and len(messages) == 20
 
 
-def test_replay_abridges_tool_results_and_long_arguments() -> None:
-    """Résultats d'outils et contenus de propositions passés ne sont jamais
-    rejoués en entier ; références et résumés courts passent tels quels."""
+def test_replay_abridges_tool_results_and_elides_long_arguments() -> None:
+    """Résultats d'outils abrégés ; contenus de propositions passés ÉLIDÉS —
+    même leur tête n'est pas rejouée (le modèle la recopierait au tour suivant,
+    marqueur de troncature compris) ; références et résumés courts tels quels."""
     long_result = "R" * (REPLAY_TOOL_RESULT_CHARS + 100)
     proposal = {
         "id": "call_2",
@@ -729,8 +731,10 @@ def test_replay_abridges_tool_results_and_long_arguments() -> None:
     assert messages[3].content == "ACCEPTÉ"
     args = messages[1].tool_calls[1].arguments
     assert args["summary"] == "Court"
-    assert args["new_markdown"].startswith("M" * REPLAY_ARG_CHARS)
+    assert "M" not in args["new_markdown"] and "…" not in args["new_markdown"]
     assert "1000 caractères" in args["new_markdown"]
+    # Au ras du seuil, l'argument passe tel quel (références, résumés).
+    assert elide("A" * REPLAY_ARG_CHARS) == "A" * REPLAY_ARG_CHARS
     assert messages[1].tool_calls[0].arguments == {"block_id": "b1"}
     # Déterministe : même entrée, même sortie (préfixe cacheable).
     assert replay_messages(rows, "ollama") == (messages, False)
