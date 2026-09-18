@@ -19,6 +19,12 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     pool_pre_ping=True,
+    # Une connexion inutilisée depuis des heures peut avoir été coupée sans
+    # FIN (NAT, idle timeout serveur) : `pool_pre_ping` la remplace bien, mais
+    # paie d'abord un timeout TCP complet. Les recycler préventivement évite ce
+    # coût — décisif pour le scheduler de maintenance, dont les jobs sont
+    # espacés de plusieurs heures dans un process résident.
+    pool_recycle=1800,
 )
 
 AsyncSessionLocal = async_sessionmaker(

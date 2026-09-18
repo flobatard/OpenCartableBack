@@ -209,16 +209,13 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: str = ""  # SECRET (.env)
     LANGFUSE_HOST: str = ""
 
-    # Purge périodique (app/maintenance/, exécutée par le service `purge` du
-    # compose — jamais par l'API). Rétentions en JOURS ; **0 = tâche
-    # désactivée**. Défauts volontairement prudents : rien de pédagogique ne
-    # part sans décision explicite de l'opérateur, la purge est d'abord de
-    # l'hygiène disque.
-    # Cadence : secondes entre deux passes. Seule la boucle shell du conteneur
-    # la consomme — elle la lit ICI, une fois au démarrage (cf. la commande du
-    # service `purge`), pour que tous les délais de purge vivent au même
-    # endroit : les config/<APP_ENV>.yaml.
-    PURGE_INTERVAL_SECONDS: int = 86_400
+    # Purge périodique (app/maintenance/, exécutée par le service `scheduler`
+    # du compose — jamais par l'API). Rétentions en JOURS ; **0 = tâche
+    # désactivée** (le job reste planifié, mais sort avant le moindre execute
+    # et s'enregistre en `skipped` — à ne pas confondre avec un cron vide, qui
+    # ne planifie rien du tout). Défauts volontairement prudents : rien de
+    # pédagogique ne part sans décision explicite de l'opérateur, la purge est
+    # d'abord de l'hygiène disque.
     PURGE_AI_USAGE_DAYS: int = 365
     # Contenu des tours `tool` d'ai_messages (jusqu'à 40k caractères par lecture
     # de PDF) : allégé, pas supprimé — la ligne doit survivre pour rester
@@ -241,6 +238,59 @@ class Settings(BaseSettings):
     # Tant que True, la réconciliation ne fait que JOURNALISER les candidats.
     # À basculer une fois les logs relus.
     PURGE_S3_ORPHANS_DRY_RUN: bool = True
+
+    # ── Scheduler de maintenance (app/maintenance/scheduler.py) ──────────────
+    # Fuseau des expressions cron : « 3 h du matin » n'a de sens qu'en heure
+    # LOCALE, alors que tous les timestamps du projet restent UTC. Un fuseau
+    # introuvable retombe sur UTC avec un log d'erreur, et le démarrage imprime
+    # l'heure locale qu'il a résolue — la preuve est observable.
+    MAINTENANCE_TIMEZONE: str = "Europe/Paris"
+    # Retard maximal toléré sur une occurrence : au-delà, elle est SAUTÉE.
+    # Pas de rattrapage — les tâches sont idempotentes, la suivante suffira.
+    MAINTENANCE_MISFIRE_GRACE_SECONDS: int = 300
+    # Un seul job de maintenance à la fois sur le Pi (verrou de process :
+    # `max_instances` ne protège un job que contre lui-même). Au-delà de cette
+    # attente, le job renonce — statut `skipped`, raison `busy`.
+    MAINTENANCE_LOCK_WAIT_SECONDS: int = 1_800
+    # Délai laissé au job en cours après SIGTERM, avant `engine.dispose()`.
+    # Doit rester SOUS le `stop_grace_period` du compose (30 s).
+    MAINTENANCE_SHUTDOWN_GRACE_SECONDS: int = 20
+    # Bornes de ce qui est enregistré dans maintenance_job_state.
+    MAINTENANCE_ERROR_MAX_CHARS: int = 2_000
+    MAINTENANCE_DETAIL_MAX_ITEMS: int = 20
+
+    # Cadences — UNE expression cron (5 champs) par job. Vide, `off`, `none`
+    # ou `-` = job NON PLANIFIÉ. Une expression invalide n'empêche jamais le
+    # démarrage : le job est laissé non planifié, l'erreur est journalisée.
+    # ⚠ Jour de semaine EN LETTRES (`sun`, `mon`…) : APScheduler indexe
+    #   0 = LUNDI, contrairement à crontab où 0 = dimanche.
+    # ⚠ Rien entre 02:00 et 02:59 : cette heure n'existe pas la nuit du passage
+    #   à l'heure d'été et se produit deux fois à l'automne.
+    # Les deux seuls jobs au coût non borné par la config sont hebdomadaires et
+    # sur des nuits DIFFÉRENTES (jamais un seq scan Postgres et un balayage S3
+    # le même soir) ; les purges légères sont quotidiennes et espacées de 10 min
+    # (le verrou n'est jamais contendu, chaque job forme son bloc dans les logs).
+    MAINTENANCE_CRON_S3_ORPHANS: str = "10 1 * * sat"
+    MAINTENANCE_CRON_TOOL_TURN_CONTENT: str = "20 1 * * sun"
+    MAINTENANCE_CRON_AI_USAGE_COUNTERS: str = "10 3 * * *"
+    MAINTENANCE_CRON_SHARE_LINKS: str = "20 3 * * *"
+    MAINTENANCE_CRON_PENDING_RESOURCES: str = "30 3 * * *"
+    MAINTENANCE_CRON_AI_CONVERSATIONS: str = "40 3 * * *"
+    MAINTENANCE_CRON_EXERCISE_SUBMISSIONS: str = "50 3 * * *"
+    MAINTENANCE_CRON_MISSING_S3_OBJECTS: str = "10 4 * * *"
+    MAINTENANCE_CRON_STORAGE_INVENTORY: str = "40 4 * * mon"
+
+    # Contrôle « objets S3 manquants » (lecture seule, ne corrige RIEN).
+    # Grâce sur `created_at` : elle ne couvre pas une fenêtre d'upload (la
+    # confirmation a déjà fait un HEAD) mais STABILISE le rapport — une clé
+    # signalée deux passes de suite est un vrai problème.
+    MAINTENANCE_MISSING_S3_GRACE_DAYS: int = 1
+    # Coût d'une passe : au plus MAX_CHECKS requêtes HEAD, CONCURRENCY en vol.
+    # La couverture n'est jamais complète en une fois — le curseur tourne d'une
+    # passe à l'autre (maintenance_job_state.last_detail), d'où la cadence
+    # quotidienne. C'est le prix de la borne mémoire (contrainte Pi).
+    MAINTENANCE_MISSING_S3_MAX_CHECKS: int = 2_000
+    MAINTENANCE_MISSING_S3_CONCURRENCY: int = 8
 
 
 @lru_cache

@@ -18,6 +18,7 @@ from app.models.block import Block
 from app.models.course import Course, course_education_levels, course_subjects
 from app.models.education_level import EducationLevel
 from app.models.exercise_submission import ExerciseSubmission
+from app.models.maintenance_job_state import MaintenanceJobState
 from app.models.module import Module
 from app.models.resource import Resource
 from app.models.share_link import ShareLink
@@ -34,6 +35,7 @@ __all__ = [
     "Course",
     "EducationLevel",
     "ExerciseSubmission",
+    "MaintenanceJobState",
     "Module",
     "Resource",
     "ShareLink",

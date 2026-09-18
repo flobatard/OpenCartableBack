@@ -84,15 +84,24 @@ services:
     ports:
       - "8000:8000"
 
-  # Purge périodique des données (app/maintenance/) — miroir du service du
-  # compose de preprod, mais sous le profil `maintenance` : `docker compose up`
-  # ne le démarre PAS. Pour l'exercer en dev :
-  #   docker compose --profile maintenance up purge
-  # (ou, plus simple, `python -m app.maintenance` avec le venv depuis la racine)
-  purge:
+  # Maintenance périodique (app/maintenance/) — miroir du service du compose de
+  # preprod, mais sous le profil `maintenance` : `docker compose up` ne le
+  # démarre PAS. Pour l'exercer en dev :
+  #   docker compose --profile maintenance up scheduler
+  # (ou, plus simple, `python -m app.maintenance` avec le venv depuis la racine :
+  #  une passe complète tout de suite, sans attendre un créneau)
+  scheduler:
     build: .
     profiles: ["maintenance"]
     restart: unless-stopped
+    # tini en PID 1 : reape les zombies et relaie les signaux. Le process Python
+    # installe de toute façon son propre handler SIGTERM — obligatoire, car le
+    # noyau ne délivre pas à PID 1 un signal dont le handler est celui par défaut.
+    init: true
+    # Le scheduler laisse jusqu'à MAINTENANCE_SHUTDOWN_GRACE_SECONDS (20 s) au
+    # job en cours de finir et d'écrire son état, puis dispose le pool. Les 10 s
+    # par défaut de `docker stop` le tueraient au milieu.
+    stop_grace_period: 30s
     env_file: .env
     environment:
       POSTGRES_HOST: db
@@ -106,23 +115,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # ⚠ Écrase l'ENTRYPOINT de l'image (init_db.py + alembic upgrade head) :
-    # les migrations sont le job du seul service api. Le job refuse de lui-même
-    # de purger tant que la base n'est pas à la révision Alembic de son image
+    # ⚠ Écrase l'ENTRYPOINT de l'image (init_db.py + alembic upgrade head) : les
+    # migrations sont le job du seul service api. Chaque job refuse de lui-même
+    # de travailler tant que la base n'est pas à la révision Alembic de son image
     # (app/maintenance/schema.py) — c'est ça, et non l'ordre de démarrage, qui
     # garantit qu'on ne purge jamais contre un schéma inattendu.
-    entrypoint: ["/bin/sh", "-c"]
-    # Cadence lue UNE FOIS dans config/<APP_ENV>.yaml (tous les délais y vivent) ;
-    # le `case` garde contre une valeur vide/non numérique (boucle à vide).
-    command:
-      - |
-        INTERVAL="$$(python -c 'from app.core.config import settings; print(settings.PURGE_INTERVAL_SECONDS)' 2>/dev/null || true)"
-        case "$$INTERVAL" in ''|*[!0-9]*) INTERVAL=86400 ;; esac
-        echo "purge : une passe toutes les $$INTERVAL s"
-        while true; do
-          python -m app.maintenance || echo "purge : passe sans effet ou en échec (voir ci-dessus)"
-          sleep "$$INTERVAL"
-        done
+    # Forme exec, SANS shell : SIGTERM arrive directement sur Python. `command`
+    # DOIT être posé, sinon le CMD de l'image (uvicorn …) partirait en arguments.
+    entrypoint: ["python"]
+    command: ["-m", "app.maintenance.scheduler"]
 
 volumes:
   pgdata:

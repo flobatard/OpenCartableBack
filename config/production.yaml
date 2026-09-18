@@ -28,11 +28,17 @@ S3_BUCKET: opencartable
 # Partage public (J2) — durée de vie des liens de partage élèves (jours).
 SHARE_LINK_TTL_DAYS: 270
 
-# Purge périodique (app/maintenance/, service `purge` du compose de déploiement).
-# TOUS les délais de purge vivent ici. Rétentions en JOURS, 0 = tâche
-# désactivée ; les valeurs ci-dessous sont les DÉFAUTS du code, décommenter pour
-# les changer.
-# PURGE_INTERVAL_SECONDS: 86400         # cadence (lue une fois au démarrage du conteneur)
+# Maintenance périodique (app/maintenance/, service `scheduler` du compose de déploiement).
+# TOUS les délais ET TOUTES les cadences vivent ici, jamais dans .env.
+# Les valeurs ci-dessous sont les DÉFAUTS du code, décommenter pour les changer.
+#
+# Deux leviers d'inactivité, à ne pas confondre :
+#   - rétention à 0        = TÂCHE DÉSACTIVÉE (le job reste planifié, il sort
+#                            aussitôt et s'enregistre en `skipped`) ;
+#   - cron vide ou `off`   = JOB NON PLANIFIÉ (rien ne le déclenche, il n'écrit
+#                            aucune ligne dans maintenance_job_state).
+
+# ── Rétentions, en JOURS.
 # PURGE_AI_USAGE_DAYS: 365              # compteurs de quota (plancher dur : 2 j)
 # PURGE_AI_TOOL_CONTENT_DAYS: 180       # allège le contenu des tours tool
 # PURGE_AI_CONVERSATIONS_DAYS: 0        # désactivé — travail de prof
@@ -41,3 +47,47 @@ SHARE_LINK_TTL_DAYS: 270
 # PURGE_PENDING_RESOURCES_DAYS: 30      # uploads jamais confirmés (+ objet S3)
 # PURGE_S3_ORPHANS_DAYS: 90             # grâce sur LastModified (sécurité)
 # PURGE_S3_ORPHANS_DRY_RUN: true        # à passer à false après relecture des logs
+
+# ── Fuseau des expressions cron. Heure LOCALE — « 3 h du matin » n'a de sens
+#    qu'en local ; les timestamps écrits en base restent UTC. Un fuseau
+#    introuvable retombe sur UTC, et le démarrage journalise l'heure qu'il a
+#    résolue : la preuve est dans les logs.
+# MAINTENANCE_TIMEZONE: Europe/Paris
+
+# ── Cadences : une expression cron (5 champs) par job.
+#    Une expression invalide ne fait PAS échouer le démarrage : le job est laissé
+#    non planifié et l'erreur est journalisée au boot.
+#    ⚠ Jour de semaine EN LETTRES (sun, mon, …) : APScheduler indexe 0 = LUNDI,
+#      contrairement à crontab où 0 = dimanche. Un « 0 » ici ne veut pas dire
+#      dimanche mais lundi.
+#    ⚠ Ne rien poser entre 02:00 et 02:59 : cette heure n'existe pas la nuit du
+#      passage à l'heure d'été et se produit deux fois à l'automne.
+#
+#    Nuits du week-end — les deux seuls jobs au coût non borné par la config,
+#    sur des nuits différentes (jamais un seq scan Postgres ET un balayage S3
+#    le même soir) :
+# MAINTENANCE_CRON_S3_ORPHANS:           "10 1 * * sat"  # LIST complet du bucket
+# MAINTENANCE_CRON_TOOL_TURN_CONTENT:    "20 1 * * sun"  # UPDATE lourd sur ai_messages
+#    Purges quotidiennes, sub-seconde, espacées de 10 min (verrou jamais
+#    contendu, et chaque job forme son bloc dans `docker logs`) :
+# MAINTENANCE_CRON_AI_USAGE_COUNTERS:    "10 3 * * *"
+# MAINTENANCE_CRON_SHARE_LINKS:          "20 3 * * *"
+# MAINTENANCE_CRON_PENDING_RESOURCES:    "30 3 * * *"
+# MAINTENANCE_CRON_AI_CONVERSATIONS:     "40 3 * * *"    # rétention 0 par défaut
+# MAINTENANCE_CRON_EXERCISE_SUBMISSIONS: "50 3 * * *"    # rétention 0 par défaut
+#    Contrôles en LECTURE SEULE — ils observent, ne corrigent rien :
+# MAINTENANCE_CRON_MISSING_S3_OBJECTS:   "10 4 * * *"    # borné, curseur tournant
+# MAINTENANCE_CRON_STORAGE_INVENTORY:    "40 4 * * mon"  # LIST complet + comptes
+
+# ── Contrôle « objets S3 manquants » : coût d'une passe = MAX_CHECKS requêtes
+#    HEAD, CONCURRENCY en vol. La couverture n'est jamais complète en une fois —
+#    le curseur est mémorisé dans maintenance_job_state.last_detail et avance
+#    d'une passe à l'autre. C'est le prix de la borne mémoire (contrainte Pi).
+# MAINTENANCE_MISSING_S3_GRACE_DAYS: 1
+# MAINTENANCE_MISSING_S3_MAX_CHECKS: 2000
+# MAINTENANCE_MISSING_S3_CONCURRENCY: 8
+
+# ── Divers scheduler
+# MAINTENANCE_MISFIRE_GRACE_SECONDS: 300   # au-delà, occurrence SAUTÉE (pas de rattrapage)
+# MAINTENANCE_LOCK_WAIT_SECONDS: 1800      # attente max du verrou, sinon `skipped`/busy
+# MAINTENANCE_SHUTDOWN_GRACE_SECONDS: 20   # < stop_grace_period du compose (30 s)

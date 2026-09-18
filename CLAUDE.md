@@ -18,8 +18,9 @@ ruff check . --exclude venv               # lint (config dans pyproject.toml : E
 
 uvicorn app.main:app --reload             # serveur de dev (config/development.yaml)
 docker compose up --build                 # db + minio + minio-createbucket + api (.env requis : cp .env.example .env)
-docker compose --profile maintenance up purge   # job de purge (une passe au démarrage, puis toutes les PURGE_INTERVAL_SECONDS)
-python -m app.maintenance                 # une passe de purge, à la main
+docker compose --profile maintenance up scheduler  # scheduler de maintenance (un cron par job)
+python -m app.maintenance                 # une passe complète, à la main
+python -m app.maintenance share_links s3_orphans   # un ou plusieurs jobs nommés
 
 alembic revision --autogenerate -m "..."  # nouvelle migration (modèle enregistré dans app/models/__init__.py d'abord)
 alembic upgrade head
@@ -57,9 +58,9 @@ Package-by-feature : chaque domaine = `schemas.py` (Pydantic), `service.py` (mé
 | `course_assistant/` | Assistant IA du prof : `service.py` CRUD conversations, `streaming.py` flux + reprises HITL + driver des sous-assistants (`_drive_turn`), `turn_encoder.py` boucle SSE partagée, `context.py`/`render.py`/`replay.py`/`refs.py` helpers purs, `tools.py`, `hitl.py` registre + `suspend`, `questions.py` tool `ask_questions` (tous contextes), `delegation.py` tools `edit_block`/`edit_module` de l'édition globale, `editing/` descripteurs des contextes d'édition | `/courses/{id}/assistant…` |
 | `student_exercises/` | Tuteur d'exercice de l'élève **authentifié** (JWT + accès au cours par le régime public) et routes prof d'effacement | `/student/courses/{id}/blocks/{id}…`, `/courses/{id}/blocks/{id}/submissions…` |
 | `ai/` | Routes de smoke-test du client IA, banc d'essai de la cascade config × quota (supprimable, cf. TODO.md) | `/ai/chat…` |
-| `maintenance/` | Job de purge hors API : `service.py` sept tâches, `schema.py` garde de schéma, `__main__.py` | — |
+| `maintenance/` | Jobs hors API, déclenchés par le service compose `scheduler` : `registry.py` la seule liste des neuf jobs, `service.py` les sept purges, `checks.py` les deux contrôles en lecture seule, `runner.py` l'exécution d'un job (leviers d'inactivité, garde, chrono, état), `state.py` l'upsert de `maintenance_job_state` sur session dédiée, `schema.py` la garde Alembic, `scheduler.py` le process résident APScheduler, `__main__.py` le one-shot | — |
 
-Tests : `tests/fakes.py` (fausse session FIFO, faux S3, `make_client`, `parse_sse`) et `tests/course_assistant_fakes.py` (lignes de données et faux client IA de l'assistant/tuteur), `tests/conftest.py` (JWT de test, JWKS mocké, neutralisation des `AI_*`).
+Tests : `tests/fakes.py` (fausse session FIFO, faux S3, `make_client`, `parse_sse`), `tests/course_assistant_fakes.py` (lignes de données et faux client IA de l'assistant/tuteur), `tests/maintenance_fakes.py` (session FIFO à liste d'événements partagée, faux S3 scriptable et mesurant sa concurrence), `tests/conftest.py` (JWT de test, JWKS mocké, neutralisation des `AI_*`).
 
 ## Invariants
 
@@ -93,7 +94,7 @@ Tests : `tests/fakes.py` (fausse session FIFO, faux S3, `make_client`, `parse_ss
 - Préférences de raisonnement (`AIRequestConfig.reasoning`/`reasoning_effort` — persistées avec chaque configuration, ou settings `AI_REASONING`/`AI_REASONING_EFFORT` pour le fallback serveur, résolus dans `resolve_config`) : capacités **par provider** déclarées dans `core/ai/types.py` (frozensets + niveaux natifs `PROVIDER_REASONING_EFFORTS`, miroir front `ai-credentials.model.ts`), règle de gating unique `check_reasoning_support` (422 à l'écriture d'une configuration comme à la résolution du fallback), options **proposées** par couple (provider, modèle) par le catalogue `core/ai/reasoning.py` (règles par préfixe maintenues à la main + profil embarqué `core/ai/profiles.py` ; il propose, n'impose pas ; les **règles se suffisent** — le profil est une donnée tierce qui varie avec la version du paquet, donc les familles sans raisonnement ont leur règle en dur et la table de test tourne profil neutralisé), encodage dans `core/ai/providers.py` (helpers purs, un par provider) — jamais un paramètre de raisonnement hors de `core/ai/` ; le support par **modèle** est laissé au provider (transmis, jamais abandonné en silence).
 - Le prompt `MODULE_RUNTIME` (`course_assistant/prompts.py`) est le miroir du bac à sable front (`shared/module-runner/module-document.ts`) et `MODULE_LIBRARY_NAMES` celui de son catalogue de librairies (`module-libraries.ts`) : les faire évoluer ensemble.
 
-**Configuration** : `settings = get_settings()` s'évalue **à l'import** — dans les tests, les variables d'env sont posées en tête de `tests/conftest.py` avant tout import de `app.*`. Tous les délais de purge vivent dans `config/*.yaml`, jamais dans `.env`.
+**Configuration** : `settings = get_settings()` s'évalue **à l'import** — dans les tests, les variables d'env sont posées en tête de `tests/conftest.py` avant tout import de `app.*`. Tous les délais **et toutes les cadences** de maintenance vivent dans `config/*.yaml`, jamais dans `.env` ; le défaut d'une cadence vit sur le champ `Settings`, jamais recopié dans le registre.
 
 **Tests** : sans réseau, Postgres ni Zitadel. **L'ordre des `execute` d'une fonction de service est un contrat** rejoué par la fausse session FIFO — documenté dans chaque docstring, à préserver à tout refactor. FTS et purge sont testées sur le **SQL compilé** (`stmt.compile(dialect=postgresql.dialect())`). `GenericFakeChatModel` ne sait pas streamer des tool calls : les tests agent utilisent `SeqToolModel` (`tests/test_ai_agent.py`).
 
@@ -108,9 +109,9 @@ Détails et contexte dans `../docs/decisions.md`.
 - Dépendances IA inutilisées de `requirements.txt` conservées ; `langchain*` sur la ligne 1.x.
 - `requirements.txt` en **versions exactes** (`==`) : l'image fait un `pip install` au build, une fourchette y ferait entrer autre chose qu'en dev. Monter une version = `pip install -U <paquet>`, `pytest` + `ruff check`, puis reporter le numéro obtenu. Pas de lock des transitives (les wheels nvidia/cuda de la pile ML n'existent pas en ARM64).
 - Pas de reverse proxy dans ce repo (nginx d'infra) ; l'API écoute sur 8000.
-- Purge en job compose séparé, jamais dans le process uvicorn.
+- Maintenance en job compose séparé (`scheduler`, APScheduler résident, un cron par job), jamais dans le process uvicorn. Jour de semaine cron **en lettres** (APScheduler indexe 0 = lundi, pas dimanche) ; aucune occurrence entre 02:00 et 02:59 (heure inexistante au passage à l'heure d'été). Jamais `shutdown(wait=True)` : l'exécuteur asyncio **annule** au lieu d'attendre.
 - Cours d'exemple : seed **best effort** après le commit de l'onboarding (une erreur ne remonte jamais), manifeste JSON **sans ressource** (donc sans `Storage`), et `POST /courses/starter` ne déduplique pas.
 
 ## Approfondissements
 
-`docs/architecture.md` — Auth et comptes · Configuration · Taxonomies · Modèle des cours et contrats JSONB · Ressources S3 · Modules · Export/import · Régime public · Recherche FTS · Client IA · Credentials et quota · Assistant de cours · Tuteur d'exercice · Purge.
+`docs/architecture.md` — Auth et comptes · Configuration · Taxonomies · Modèle des cours et contrats JSONB · Ressources S3 · Modules · Export/import · Régime public · Recherche FTS · Client IA · Credentials et quota · Assistant de cours · Tuteur d'exercice · Maintenance.

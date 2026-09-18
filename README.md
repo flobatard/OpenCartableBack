@@ -14,7 +14,7 @@ Stack : **FastAPI** · **SQLAlchemy 2.0 async** + **asyncpg** · **Alembic** · 
 - **Recherche** (`search`) : plein texte Postgres sur les cours publics et les profs opt-in, sans JWT.
 - **Export / import** (`course_transfer`) : archive `.zip` d'un cours, réimport en cours neuf.
 - **IA** : assistant de cours du prof avec tools de lecture et propositions d'édition validées humainement (`course_assistant`), tuteur d'exercice de l'élève authentifié (`student_exercises`), client générique (`core/ai`).
-- **Maintenance** (`maintenance`) : job de purge des données (rétentions, orphelins S3), hors API.
+- **Maintenance** (`maintenance`) : scheduler hors API (purges par rétention, orphelins S3, contrôles de cohérence), une cadence par tâche.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ app/
 ├── courses/  resources/  modules/  share_links/  course_transfer/
 ├── public/  search/                       # régime élève et recherche, sans JWT
 ├── course_assistant/  student_exercises/  ai/   # briques IA
-└── maintenance/       # job de purge (python -m app.maintenance)
+└── maintenance/       # scheduler de maintenance (python -m app.maintenance.scheduler)
 config/                # réglages publics par environnement : development / preprod / production
 alembic/               # migrations (env.py async)
 tests/                 # pytest, sans réseau, ni Postgres, ni Zitadel (fakes dans tests/fakes.py)
@@ -68,7 +68,7 @@ cp .env.example .env          # secrets ; les URL Zitadel vont dans config/devel
 ```bash
 cp .env.example .env          # POSTGRES_PASSWORD (et APP_ENV=production sur le Pi)
 docker compose up --build     # db + minio + minio-createbucket + api
-docker compose --profile maintenance up purge   # job de purge (optionnel en dev)
+docker compose --profile maintenance up scheduler   # scheduler de maintenance (optionnel en dev)
 ```
 
 Les migrations tournent au démarrage de l'`api` (`alembic upgrade head`), puis l'API écoute sur le port 8000. Le reverse proxy nginx (TLS, routage) est fourni par l'infra, hors de ce dépôt.

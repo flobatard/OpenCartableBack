@@ -9,25 +9,27 @@ Règles communes à toutes :
   timestamps du projet sont en UTC (``ai_daily_usage.day`` est même un ``Date``
   UTC — un ``WHERE day < now() - interval 'N days'`` dériverait d'un jour).
 - **Une transaction par tâche**, commitée par la tâche : l'échec de l'une ne
-  doit ni annuler ni empêcher les autres (l'orchestrateur les isole aussi).
+  doit ni annuler ni empêcher les autres (:mod:`app.maintenance.runner` les
+  isole aussi).
 - Chaque tâche renvoie un **compte** de lignes touchées, pour le journal.
 
 Les tâches qui touchent S3 suivent le motif de ``delete_course``
 (:mod:`app.courses.service`) : DELETE en base → ``commit`` → **puis** purge du
 bucket. Un échec S3 après commit laisse un orphelin (que la réconciliation
 rattrape) ; l'inverse laisserait une référence DB pointant un objet absent.
+
+Ces fonctions ne se connaissent pas entre elles : la liste des tâches, leur
+cadence et leur enchaînement vivent dans :mod:`app.maintenance.registry` et
+:mod:`app.maintenance.runner`. Les contrôles en lecture seule, qui ne suivent
+aucune des règles ci-dessus, vivent dans :mod:`app.maintenance.checks`.
 """
 
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from functools import partial
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.storage import Storage
 from app.models.ai_conversation import AIConversation
 from app.models.ai_daily_usage import AIDailyUsage
@@ -268,84 +270,3 @@ async def reconcile_s3_orphans(
     return found
 
 
-@dataclass(frozen=True)
-class TaskResult:
-    """Issue d'une tâche : son libellé, ce qu'elle a touché, si elle a échoué."""
-
-    name: str
-    count: int
-    failed: bool = False
-
-
-@dataclass(frozen=True)
-class PurgeReport:
-    """Synthèse d'une passe complète."""
-
-    tasks: list[TaskResult]
-
-    @property
-    def failed(self) -> bool:
-        return any(task.failed for task in self.tasks)
-
-    def summary(self) -> str:
-        return ", ".join(
-            f"{task.name}={'échec' if task.failed else task.count}" for task in self.tasks
-        )
-
-
-async def run_purge(db: AsyncSession, storage: Storage) -> PurgeReport:
-    """Exécute toutes les tâches selon les rétentions configurées.
-
-    Chaque tâche est **isolée** : son échec est journalisé, la session est
-    rollbackée et la passe continue — une erreur sur un jeu de données ne doit
-    pas priver les autres de leur purge. Les rétentions sont lues dans les
-    settings (surchargeables par variable d'env, sans reconstruire l'image).
-    """
-    # Des *callables*, pas des coroutines : rien ne démarre avant son tour, et
-    # un échec ne laisse pas derrière lui des coroutines jamais attendues.
-    plan: list[tuple[str, Callable[[], Awaitable[int]]]] = [
-        ("compteurs_quota", partial(purge_ai_daily_usage, db, settings.PURGE_AI_USAGE_DAYS)),
-        (
-            "contenu_tours_tool",
-            partial(purge_tool_message_content, db, settings.PURGE_AI_TOOL_CONTENT_DAYS),
-        ),
-        (
-            "conversations_ia",
-            partial(purge_ai_conversations, db, settings.PURGE_AI_CONVERSATIONS_DAYS),
-        ),
-        (
-            "tentatives_eleves",
-            partial(
-                purge_exercise_submissions, db, settings.PURGE_EXERCISE_SUBMISSIONS_DAYS
-            ),
-        ),
-        ("liens_partage", partial(purge_share_links, db, settings.PURGE_SHARE_LINKS_DAYS)),
-        (
-            "ressources_pending",
-            partial(
-                purge_pending_resources, db, storage, settings.PURGE_PENDING_RESOURCES_DAYS
-            ),
-        ),
-        (
-            "orphelins_s3",
-            partial(
-                reconcile_s3_orphans,
-                db,
-                storage,
-                settings.PURGE_S3_ORPHANS_DAYS,
-                settings.PURGE_S3_ORPHANS_DRY_RUN,
-            ),
-        ),
-    ]
-    results: list[TaskResult] = []
-    for name, task in plan:
-        try:
-            count = await task()
-        except Exception:  # noqa: BLE001 — une tâche qui tombe n'arrête pas la passe
-            logger.exception("purge %s : échec", name)
-            await db.rollback()
-            results.append(TaskResult(name=name, count=0, failed=True))
-        else:
-            logger.info("purge %s : %d", name, count)
-            results.append(TaskResult(name=name, count=count))
-    return PurgeReport(tasks=results)

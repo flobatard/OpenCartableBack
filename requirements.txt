@@ -29,6 +29,12 @@ psycopg2-binary==2.9.12
 sqlalchemy==2.0.52
 asyncpg==0.31.0
 
+# Scheduler du job de maintenance (app/maintenance/scheduler.py) —
+# AsyncIOScheduler in-process, une expression cron par tâche. Pur Python
+# (ARM64 OK). Tire tzlocal, laissé transitif : le scheduler impose son fuseau
+# explicitement (MAINTENANCE_TIMEZONE) et ne consulte jamais celui du système.
+APScheduler==3.11.3
+
 # LangChain & IA — noyau 1.x (client multi-provider confiné dans app/core/ai/)
 langchain==1.4.0
 langchain-core==1.6.2

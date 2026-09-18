@@ -69,6 +69,33 @@ async def current_revision(db: AsyncSession) -> str | None:
     return result.scalars().first()
 
 
+async def is_current(db: AsyncSession, *, job_label: str = "") -> bool:
+    """La base est-elle à la révision de cette image ? **Sans jamais attendre.**
+
+    Un seul ``SELECT``, aucun ``sleep`` : c'est la garde de **régime**, rejouée
+    avant chaque job par le scheduler — qui, lui, vit des semaines pendant que
+    l'api déploie de nouvelles migrations. :func:`wait_until_current` est la
+    variante patiente, pour un démarrage ; elle ne passe délibérément pas par
+    celle-ci, dont le WARNING se répéterait à chaque tour de boucle.
+
+    ``False`` fait renoncer le job (statut ``skipped``) : ne rien purger est
+    toujours sûr, purger contre un schéma inattendu ne l'est pas.
+    """
+    head = expected_head()
+    if head is None:
+        return False
+    revision = await current_revision(db)
+    if revision == head:
+        return True
+    logger.warning(
+        "%s: schéma pas à la révision de cette image (base=%s, image=%s) — passe ignorée",
+        job_label or "maintenance",
+        revision or "aucune",
+        head,
+    )
+    return False
+
+
 async def wait_until_current(
     db: AsyncSession,
     *,
