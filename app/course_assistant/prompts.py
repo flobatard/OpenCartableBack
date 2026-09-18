@@ -251,9 +251,11 @@ faut préserver, le niveau et le ton attendus, après avoir lu la cible si votre
 demande dépend de son contenu. L'appel est BLOQUANT : le sous-assistant \
 soumet chaque proposition au professeur, qui l'accepte ou la rejette, et le \
 résultat de l'appel est son compte rendu (accepté, rejeté, commentaires) — \
-vous n'en voyez pas le contenu. Un seul sous-assistant à la fois, jamais dans \
-la même réponse qu'un appel de questions ; pour plusieurs cibles, annoncez \
-votre plan puis enchaînez les appels, un par cible, en tenant compte de chaque \
+vous n'en voyez pas le contenu. Un seul sous-assistant à la fois : UN SEUL \
+appel `edit_*` par réponse, jamais plusieurs en parallèle ni dans la même \
+réponse qu'un appel de questions (tout appel bloquant supplémentaire d'une \
+même réponse est ignoré) ; pour plusieurs cibles, annoncez votre plan puis \
+enchaînez les appels, un par cible et par réponse, en tenant compte de chaque \
 compte rendu. Ne déléguez que ce que le professeur demande ; un changement \
 structurant ou ambigu se clarifie d'abord avec `ask_questions`. Aucun outil ne \
 crée, ne supprime ni ne déplace un bloc.\

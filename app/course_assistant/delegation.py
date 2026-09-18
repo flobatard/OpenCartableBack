@@ -23,8 +23,10 @@ de reprise du parent — donc le résultat du tool ``edit_*``
 seulement ce qui a été accepté ou rejeté.
 
 Un seul sous-assistant à la fois : le parent est figé pendant toute sa durée,
-et la garde des tools bloquants (:mod:`app.core.ai.agent`) n'exécute qu'un
-``edit_*`` (ou ``ask_questions``) par réponse du modèle. Le nombre de
+et la garde des tools bloquants (:mod:`app.core.ai.agent`) ne retient qu'un
+``edit_*`` (ou ``ask_questions``) par réponse du modèle — les autres appels
+bloquants de la réponse sont retirés avant l'état (jamais relayés, exécutés ni
+revus par le modèle, qui les renouvelle un par un). Le nombre de
 délégations d'un tour est plafonné par le driver
 (:data:`MAX_DELEGATIONS_PER_TURN` — le plafond de rounds du graphe repart à
 chaque reprise, il ne borne pas les délégations).
@@ -151,7 +153,9 @@ def _edit_block_spec(refs: CourseRefs) -> AIToolSpec:
             "Confie la modification d'un bloc texte ou exercice du cours à un "
             "sous-assistant d'édition, qui soumet ses propositions au professeur (chacune "
             "acceptée ou rejetée par lui), et ATTEND son compte rendu : le résultat de "
-            "l'appel dit ce qui a été accepté ou rejeté."
+            "l'appel dit ce qui a été accepté ou rejeté. Un seul appel edit_* par "
+            "réponse : les suivants d'une même réponse sont ignorés — enchaînez-les un "
+            "par un, après chaque compte rendu."
         ),
         parameters={
             "type": "object",
@@ -175,7 +179,9 @@ def _edit_module_spec(refs: CourseRefs) -> AIToolSpec:
             "Confie la modification d'un module interactif du cours (HTML, CSS, "
             "JavaScript) à un sous-assistant d'édition, qui soumet ses propositions au "
             "professeur (chacune acceptée ou rejetée par lui), et ATTEND son compte rendu : "
-            "le résultat de l'appel dit ce qui a été accepté ou rejeté."
+            "le résultat de l'appel dit ce qui a été accepté ou rejeté. Un seul appel "
+            "edit_* par réponse : les suivants d'une même réponse sont ignorés — "
+            "enchaînez-les un par un, après chaque compte rendu."
         ),
         parameters={
             "type": "object",

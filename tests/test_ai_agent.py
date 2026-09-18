@@ -38,7 +38,7 @@ from app.core.ai import (
     agent_interrupt,
 )
 from app.core.ai import client as client_module
-from app.core.ai.agent import _BLOCKING_TOOL_CONFLICT, _blocking_conflict, build_agent
+from app.core.ai.agent import build_agent, prune_blocking_calls
 from app.core.ai.messages import to_langchain_messages, to_usage
 
 MESSAGES = [ChatMessage(role="user", content="Bonjour")]
@@ -329,34 +329,71 @@ def _calls_message(calls: list[tuple[str, str]]) -> AIMessage:
     )
 
 
-def test_blocking_conflict_rules() -> None:
-    """Seul le premier appel bloquant d'une réponse passe ; les appels non
-    bloquants, un état sans réponse ou un appel absent ne sont jamais écartés ;
-    des ids vides ou dupliqués écartent tous les appels bloquants."""
+def test_prune_blocking_calls_rules() -> None:
+    """Seul le premier appel bloquant d'une réponse est retenu, les appels
+    non bloquants restent (ordre préservé) ; une réponse sans excédent est
+    rendue telle quelle ; un id partagé avec l'appel retenu ne retire rien du
+    contenu."""
     blocking = frozenset({"ask"})
-    response = _calls_message([("read_block", "r"), ("ask", "a1"), ("ask", "a2")])
-    history = [HumanMessage(content="Bonjour"), response]
+    response = _calls_message(
+        [("read_block", "r"), ("ask", "a1"), ("ask", "a2"), ("read_block", "r2")]
+    )
+    pruned = prune_blocking_calls(response, blocking)
+    assert [c["id"] for c in pruned.tool_calls] == ["r", "a1", "r2"]
 
-    def conflict(name: str, call_id: str, messages=history) -> bool:
-        return _blocking_conflict({"name": name, "id": call_id}, messages, blocking)
+    single = _calls_message([("read_block", "r"), ("ask", "a1")])
+    assert prune_blocking_calls(single, blocking) is single
+    assert prune_blocking_calls(_final_message(), blocking).tool_calls == []
 
-    assert conflict("read_block", "r") is False
-    assert conflict("ask", "a1") is False
-    assert conflict("ask", "a2") is True
-    assert conflict("ask", "a1", messages=[]) is False
-    assert conflict("ask", "ailleurs") is False
-    single = [_calls_message([("read_block", "r"), ("ask", "a1")])]
-    assert conflict("ask", "a1", messages=single) is False
-    duplicated = [_calls_message([("ask", "a1"), ("ask", "a1")])]
-    assert conflict("ask", "a1", messages=duplicated) is True
+    duplicated = _calls_message([("ask", "a1"), ("ask", "a1")])
+    duplicated.content = [{"type": "tool_use", "id": "a1", "name": "ask", "input": {}}]
+    pruned = prune_blocking_calls(duplicated, blocking)
+    assert [c["id"] for c in pruned.tool_calls] == ["a1"]
+    assert pruned.content == duplicated.content
+
+
+def test_prune_blocking_calls_scrubs_provider_copies() -> None:
+    """Un appel retiré disparaît des blocs de contenu qui le portent (tool_use
+    Anthropic, function_call Responses apparié par call_id, tool_call v1), de
+    la copie brute ``additional_kwargs`` et des ``tool_call_chunks`` d'un chunk
+    agrégé ; le texte, le raisonnement et les blocs de l'appel retenu restent."""
+    blocking = frozenset({"ask"})
+    content = [
+        {"type": "reasoning", "reasoning": "Deux questions."},
+        {"type": "text", "text": "Je demande."},
+        {"type": "tool_use", "id": "a1", "name": "ask", "input": {"question": "Niveau ?"}},
+        {"type": "tool_use", "id": "a2", "name": "ask", "input": {"question": "Durée ?"}},
+        {"type": "function_call", "id": "fc_x", "call_id": "a3", "name": "ask", "arguments": "{}"},
+        {"type": "tool_call", "id": "a4", "name": "ask", "args": {}},
+    ]
+    raw = [{"id": call_id, "type": "function"} for call_id in ("a1", "a2", "a3", "a4")]
+    chunk = AIMessageChunk(
+        content=content,
+        tool_call_chunks=[
+            {"name": "ask", "args": json.dumps({"question": q}), "id": call_id, "index": i}
+            for i, (call_id, q) in enumerate(
+                [("a1", "Niveau ?"), ("a2", "Durée ?"), ("a3", ""), ("a4", "")]
+            )
+        ],
+        additional_kwargs={"tool_calls": raw, "other": True},
+    )
+    assert [c["id"] for c in chunk.tool_calls] == ["a1", "a2", "a3", "a4"]
+
+    pruned = prune_blocking_calls(chunk, blocking)
+    assert [c["id"] for c in pruned.tool_calls] == ["a1"]
+    assert pruned.content == content[:3]
+    assert pruned.additional_kwargs == {"tool_calls": raw[:1], "other": True}
+    assert [c["id"] for c in pruned.tool_call_chunks] == ["a1"]
+    assert chunk.content == content  # jamais muté en place
 
 
 @pytest.mark.anyio
 async def test_agent_blocking_tools_one_interrupt_per_response(fake_build) -> None:
-    """Deux appels bloquants dans la même réponse : la garde écarte le second
-    (résultat d'échec, tool jamais exécuté), un SEUL interrupt fige le run, et
-    la reprise aboutit — sans l'erreur LangGraph des interrupts multiples ; le
-    round suivant voit les deux résultats."""
+    """Deux appels bloquants dans la même réponse : la garde retire le second
+    de la réponse AVANT l'état — jamais relayé (ni ``tool_call`` ni
+    ``tool_result``), jamais exécuté —, un SEUL interrupt fige le run, et la
+    reprise aboutit ; le round suivant ne voit que l'appel retenu et son
+    résultat."""
     model = SeqToolModel(
         responses=[_calls_message([("ask", "call_a"), ("ask", "call_b")]), _final_message()]
     )
@@ -380,23 +417,22 @@ async def test_agent_blocking_tools_one_interrupt_per_response(fake_build) -> No
         )
 
     first = [e async for e in _events()]
+    assert [e.tool_call.id for e in first if e.type == "tool_call"] == ["call_a"]
     interrupts = [e for e in first if e.type == "interrupt"]
     assert [e.interrupt_value for e in interrupts] == [{"tool_call_id": "call_a"}]
-    rejected = [e for e in first if e.type == "tool_result"]
-    assert [(e.tool_call.id, e.tool_result_error) for e in rejected] == [("call_b", True)]
-    assert rejected[0].delta == _BLOCKING_TOOL_CONFLICT
-    assert "done" not in [e.type for e in first]
+    assert [e.type for e in first if e.type in ("tool_result", "done")] == []
 
     second = [e async for e in _events(resume={"value": "Seconde"}, messages=[SYSTEM])]
-    answered = [e for e in second if e.type == "tool_result" and e.tool_call.id == "call_a"]
-    assert [(e.delta, e.tool_result_error) for e in answered] == [("réponse : Seconde", False)]
+    answered = [e for e in second if e.type == "tool_result"]
+    assert [(e.tool_call.id, e.delta, e.tool_result_error) for e in answered] == [
+        ("call_a", "réponse : Seconde", False)
+    ]
     assert second[-1].type == "done"
-    assert set(executed) == {"call_a"}
+    assert set(executed) == {"call_a"}  # ré-exécuté à la reprise, jamais call_b
+    ai_messages = [m for m in model.received[1] if isinstance(m, AIMessage)]
+    assert [c["id"] for c in ai_messages[-1].tool_calls] == ["call_a"]
     tool_messages = [m for m in model.received[1] if isinstance(m, ToolMessage)]
-    assert {(m.tool_call_id, m.status) for m in tool_messages} == {
-        ("call_a", "success"),
-        ("call_b", "error"),
-    }
+    assert [(m.tool_call_id, m.status) for m in tool_messages] == [("call_a", "success")]
 
 
 @pytest.mark.anyio

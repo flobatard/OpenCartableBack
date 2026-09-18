@@ -9,8 +9,8 @@
   hors du package ;
 - le middleware image (:func:`_tool_image_middleware`) montre au modèle les
   images retournées par les tools ;
-- la garde des tools bloquants (:func:`_blocking_guard_middleware`) n'exécute
-  qu'un tool bloquant par réponse du modèle.
+- la garde des tools bloquants (:func:`_blocking_guard_middleware`) ne laisse
+  entrer dans l'état qu'un tool bloquant par réponse du modèle.
 
 Imports langchain/langgraph paresseux (dans les fonctions), comme partout
 dans le package : rien n'est chargé au boot de l'API.
@@ -52,12 +52,11 @@ _TOOL_FAILURE_FALLBACK = "Échec interne de l'outil"
 _TOOL_IMAGE_MARKER = "oc_tool_image"
 _TOOL_IMAGE_DEFAULT_CAPTION = "Image jointe au résultat de l'outil {name}."
 
-# Résultat d'un appel bloquant écarté par la garde (lu par le modèle).
-_BLOCKING_TOOL_CONFLICT = (
-    "Appel ignoré : un seul outil bloquant (en attente d'une réponse humaine) "
-    "s'exécute par réponse, et un autre le précède dans celle-ci. Regroupez vos "
-    "demandes dans un seul appel, ou renouvelez celle-ci après le résultat du premier."
-)
+# Blocs de contenu d'un ``AIMessage`` porteurs d'un appel d'outil, que les
+# providers re-sérialisent en plus de ``tool_calls`` : ``tool_use``
+# (Anthropic), ``function_call`` (OpenAI Responses, id d'appel en
+# ``call_id``), ``tool_call`` (blocs standard langchain-core v1).
+_TOOL_CALL_BLOCK_TYPES = frozenset({"tool_use", "function_call", "tool_call"})
 
 
 def agent_interrupt(payload: dict[str, Any]) -> Any:
@@ -106,7 +105,7 @@ def build_agent(
     la joint au modèle dans un message utilisateur.
 
     Si une spec est ``blocking``, la garde de :func:`_blocking_guard_middleware`
-    n'exécute que le premier appel bloquant de chaque réponse du modèle.
+    ne retient que le premier appel bloquant de chaque réponse du modèle.
     """
     from langchain.agents import create_agent
     from langchain.agents.middleware import ModelCallLimitMiddleware
@@ -277,43 +276,52 @@ def _tool_image_middleware() -> type:
     return ToolImageMiddleware
 
 
-def _blocking_conflict(
-    tool_call: dict[str, Any], messages: Sequence[Any], blocking: frozenset[str]
-) -> bool:
-    """Vrai si ``tool_call`` est un appel bloquant que la garde doit écarter.
+def _block_call_id(block: Any) -> Any:
+    """Id d'appel porté par un bloc de contenu d'appel d'outil (``None`` pour
+    tout autre bloc) — ``call_id`` d'un ``function_call`` Responses (son ``id``
+    est celui de l'item), ``id`` sinon."""
+    if not isinstance(block, dict) or block.get("type") not in _TOOL_CALL_BLOCK_TYPES:
+        return None
+    return block.get("call_id") or block.get("id")
 
-    Règle déterministe, rejouée à l'identique quand un run figé reprend (seul
-    le tool interrompu est ré-exécuté, sa décision doit rester la même) : dans
-    la réponse du modèle qui a émis l'appel — le dernier ``AIMessage`` de
-    l'état —, seul le PREMIER appel bloquant par ordre s'exécute. Des ids
-    vides ou dupliqués parmi les appels bloquants les écartent tous (aucun
-    appariement fiable). Un état sans cette réponse (hors graphe) ou un appel
-    qu'elle ne porte pas ne sont jamais écartés.
+
+def prune_blocking_calls(message: Any, blocking: frozenset[str]) -> Any:
+    """La réponse du modèle réduite à son PREMIER appel bloquant, par ordre
+    d'émission ; les appels bloquants suivants en sont retirés, les appels non
+    bloquants conservés. Rend le message tel quel s'il n'y a rien à retirer.
+
+    Un appel retiré disparaît de tout ce qu'un provider re-sérialise ensuite
+    (``tool_calls``, les blocs de contenu :data:`_TOOL_CALL_BLOCK_TYPES` qui le
+    portent, la copie brute ``additional_kwargs["tool_calls"]`` d'OpenAI/
+    Mistral) et des ``tool_call_chunks`` d'un chunk agrégé — l'historique
+    renvoyé au modèle reste cohérent (chaque appel restant aura son résultat).
+    Les blocs et copies sont appariés par id : un id partagé avec l'appel
+    retenu (id dupliqué, provider défaillant) n'est pas retiré du contenu.
     """
-    if tool_call.get("name") not in blocking:
-        return False
-    response = next((m for m in reversed(messages) if getattr(m, "type", None) == "ai"), None)
-    if response is None:
-        return False
-    ids = [
-        call.get("id")
-        for call in getattr(response, "tool_calls", None) or []
-        if call.get("name") in blocking
-    ]
-    if len(ids) <= 1:
-        return False
-    if not all(ids) or len(set(ids)) != len(ids):
-        return True
-    if tool_call.get("id") not in ids:
-        return False
-    return tool_call.get("id") != ids[0]
-
-
-def _state_messages(state: Any) -> Sequence[Any]:
-    """Messages de l'état agent (dict ou modèle), vide hors graphe."""
-    if isinstance(state, dict):
-        return state.get("messages") or []
-    return getattr(state, "messages", None) or []
+    calls = getattr(message, "tool_calls", None) or []
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for call in calls:
+        if call.get("name") in blocking and any(c.get("name") in blocking for c in kept):
+            dropped.append(call)
+        else:
+            kept.append(call)
+    if not dropped:
+        return message
+    dropped_ids = {c.get("id") for c in dropped} - {c.get("id") for c in kept}
+    update: dict[str, Any] = {"tool_calls": kept}
+    if isinstance(message.content, list):
+        update["content"] = [b for b in message.content if _block_call_id(b) not in dropped_ids]
+    raw_calls = message.additional_kwargs.get("tool_calls")
+    if isinstance(raw_calls, list):
+        update["additional_kwargs"] = {
+            **message.additional_kwargs,
+            "tool_calls": [c for c in raw_calls if c.get("id") not in dropped_ids],
+        }
+    chunks = getattr(message, "tool_call_chunks", None)
+    if chunks:
+        update["tool_call_chunks"] = [c for c in chunks if c.get("id") not in dropped_ids]
+    return message.model_copy(update=update)
 
 
 @lru_cache
@@ -323,40 +331,33 @@ def _blocking_guard_middleware() -> type:
     Les appels d'un round s'exécutent chacun dans leur tâche : deux tools
     bloquants appelés dans la même réponse figeraient le run deux fois, et la
     reprise (``Command(resume=…)`` sans id d'interrupt) échouerait. La garde
-    répond à chaque appel bloquant écarté par :func:`_blocking_conflict` un
-    ``ToolMessage`` d'échec, sans exécuter le tool ; le modèle voit pourquoi
-    et peut renouveler l'appel au round suivant. Classe définie paresseusement
-    (imports langchain différés, motif de :func:`_tool_image_middleware`).
+    élague la réponse du modèle AVANT qu'elle n'entre dans l'état
+    (:func:`prune_blocking_calls`) : les appels bloquants excédentaires ne sont
+    ni relayés au flux, ni exécutés, ni revus par le modèle — qui, au round
+    suivant, ne voit que l'appel retenu et son résultat, et renouvelle les
+    autres un par un. Classe définie paresseusement (imports langchain
+    différés, motif de :func:`_tool_image_middleware`).
     """
-    from langchain.agents.middleware import AgentMiddleware
-    from langchain_core.messages import ToolMessage
+    from dataclasses import replace
 
-    def _rejection(request: Any) -> Any:
-        return ToolMessage(
-            content=_BLOCKING_TOOL_CONFLICT,
-            name=request.tool_call.get("name"),
-            tool_call_id=request.tool_call.get("id") or "",
-            status="error",
-        )
+    from langchain.agents.middleware import AgentMiddleware
 
     class BlockingToolGuard(AgentMiddleware):
         def __init__(self, blocking: frozenset[str]) -> None:
             super().__init__()
             self._blocking = blocking
 
-        def _conflict(self, request: Any) -> bool:
-            return _blocking_conflict(
-                request.tool_call, _state_messages(request.state), self._blocking
-            )
+        def _prune(self, response: Any) -> Any:
+            result = [
+                prune_blocking_calls(m, self._blocking) if getattr(m, "type", None) == "ai" else m
+                for m in response.result
+            ]
+            return replace(response, result=result)
 
-        async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ANN202
-            if self._conflict(request):
-                return _rejection(request)
-            return await handler(request)
+        async def awrap_model_call(self, request, handler):  # noqa: ANN001, ANN202
+            return self._prune(await handler(request))
 
-        def wrap_tool_call(self, request, handler):  # noqa: ANN001, ANN202
-            if self._conflict(request):
-                return _rejection(request)
-            return handler(request)
+        def wrap_model_call(self, request, handler):  # noqa: ANN001, ANN202
+            return self._prune(handler(request))
 
     return BlockingToolGuard
