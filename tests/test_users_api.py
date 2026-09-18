@@ -42,6 +42,7 @@ def _user_row(**overrides):
         avatar_mime=None,
         avatar_status=None,
         onboarded_at=None,
+        platform_role="public",
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -71,6 +72,7 @@ def test_me_first_login_auto_provisions():
     assert body["onboarding_complete"] is False
     assert body["is_teacher"] is False and body["is_student"] is False
     assert body["teaching"] is None and body["learning"] is None
+    assert body["platform_role"] == "public"
 
     # Le premier statement est bien l'upsert ON CONFLICT sur users.
     stmt, _ = session.executed[0]
@@ -78,6 +80,23 @@ def test_me_first_login_auto_provisions():
     sql = str(stmt.compile(dialect=postgresql.dialect()))
     assert "ON CONFLICT" in sql
     assert session.commits >= 1
+
+
+def test_me_exposes_the_platform_role():
+    """Le front lit le rôle pour afficher l'entrée d'administration — il ne
+    fait que masquer : c'est le 403 de /admin/* qui barre."""
+    session = FakeSession([[_user_row(platform_role="super_admin")], [], []])
+    response = make_client(session).get("/api/v1/users/me")
+
+    assert response.status_code == 200
+    assert response.json()["platform_role"] == "super_admin"
+
+
+def test_profile_update_never_writes_the_platform_role():
+    """Aucune route n'écrit le rôle : un champ glissé dans le PUT est ignoré."""
+    from app.users.schemas import ProfileUpdate
+
+    assert "platform_role" not in ProfileUpdate.model_fields
 
 
 def test_me_refreshes_email_from_claim():

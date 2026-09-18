@@ -21,8 +21,9 @@ Un enseignant produit beaucoup de supports hétérogènes (PDF, images, schémas
 |------|------------------|------|
 | **Prof** (toi) | OIDC / Zitadel | Créer / organiser / éditer cours, ressources et modules ; gérer les liens de partage |
 | **Élève** | Optionnelle : aucune (lien public) ou compte OIDC / Zitadel | Consulter un cours partagé, télécharger les documents, lancer les modules interactifs — sans compte ; un compte (facultatif) porte un profil (système scolaire, niveaux, matières apprises) |
+| **Super admin** | OIDC / Zitadel (compte promu par l'opérateur) | Ouvrir le backoffice : suivre le scheduler de maintenance, en lancer les jobs à la main |
 
-Les rôles applicatifs sont **cumulables** : un même compte peut être prof *et* élève (ex. enseignant en reprise d'études). Tout compte passe par un **onboarding bloquant** à la première connexion (rôles → système scolaire → niveaux → matières, par contexte « enseigne »/« apprend »). L'accès par lien public reste le mode par défaut pour les élèves : le compte élève est une commodité de profil, jamais une condition d'accès aux cours partagés.
+Les rôles applicatifs sont **cumulables** : un même compte peut être prof *et* élève (ex. enseignant en reprise d'études). Tout compte passe par un **onboarding bloquant** à la première connexion (rôles → système scolaire → niveaux → matières, par contexte « enseigne »/« apprend »). L'accès par lien public reste le mode par défaut pour les élèves : le compte élève est une commodité de profil, jamais une condition d'accès aux cours partagés. Super admin n'est pas un rôle pédagogique mais un **rôle de plateforme**, unique par compte (`public` par défaut), qui ne s'attribue que par une commande opérateur.
 
 ### Cas d'usage clés (user stories)
 - *En tant que prof*, je crée un cours « Suites numériques » et j'y agence un texte d'introduction, deux PDF, trois images et un quiz interactif, dans l'ordre que je veux.
@@ -67,6 +68,8 @@ flowchart TB
     end
     subgraph Serveur["Backend auto-hébergé"]
         B["API Python / FastAPI"]
+        C["Scheduler de maintenance<br/>(APScheduler, même image)"]
+        R[("Redis<br/>(sans persistance)")]
         D[("PostgreSQL")]
     end
     Z["Zitadel<br/>(OIDC Provider)"]
@@ -78,6 +81,10 @@ flowchart TB
     B -- SQL --> D
     B -- "presigned URL (PUT/GET)" --> S
     A -. "upload / download direct<br/>via presigned URL" .-> S
+    B -- "demandes de passe" --> R
+    C -- "relève, statut" --> R
+    C -- "SQL (passes seulement)" --> D
+    C -- "purge, inventaire" --> S
 ```
 
 ### Composants & responsabilités
@@ -85,6 +92,8 @@ flowchart TB
 - **API FastAPI** — logique métier, autorisation, modèle de données, signature des URL S3, recherche. Choix de Python pour préparer la couche IA.
 - **PostgreSQL** — source de vérité des métadonnées, du contenu éditorial (blocs) et de l'indexation plein texte. Si une indexation sémantique est actée plus tard, elle passera par une base vectorielle dédiée (ChromaDB pressenti), pas par une extension Postgres.
 - **S3** — stockage des binaires (fichiers, images, bundles de modules). Bucket **privé** ; tout accès passe par des URL présignées.
+- **Scheduler de maintenance** — process résident (même image que l'API, hors de son worker) qui exécute les purges et contrôles périodiques ; lui seul exécute un job, l'API ne fait qu'en demander.
+- **Redis** — canal éphémère entre l'API et le scheduler (demandes de passe manuelle, statut publié), sans persistance : aucune donnée du domaine. Il évite tout accès périodique à Postgres, qui peut ainsi être une base managée se mettant en veille.
 - **Zitadel** — fournisseur OIDC, gère uniquement l'identité du/des profs.
 
 ### Stack retenue
@@ -96,6 +105,7 @@ flowchart TB
 | Auth API | validation JWT via **JWKS** Zitadel (`pyjwt`) | le flow OIDC est géré par la SPA |
 | Stockage | **boto3** (compatible S3) | presigned URLs |
 | Recherche | Postgres **FTS** (`tsvector`/GIN) → puis vectorisation éventuelle via **ChromaDB** (à confirmer) | |
+| Maintenance | **APScheduler** résident + **Redis** (`redis-py` asyncio) | un cron par job ; canal de contrôle du backoffice |
 | Déploiement | Docker Compose ; reverse proxy **nginx** fourni et branché par l'infra | sur Raspberry Pi |
 
 ---
@@ -106,10 +116,11 @@ C'est le cœur du projet. Chaque point ci-dessous est un vrai arbitrage à tranc
 
 ### 5.1 Authentification & double régime d'accès
 Le point structurant : **deux populations, deux modèles d'accès** sur la même API.
-- **Prof** : flow OIDC *Authorization Code + PKCE* entièrement géré **côté front** (client public Angular, pas de secret). Le back ne reçoit que le token : il ne fait **pas** de session, il valide le JWT Zitadel à chaque requête (signature via JWKS découvert depuis l'issuer, vérif `issuer` / `audience` / expiration) et lit les rôles dans les claims. Seuls deux réglages côté API : `OIDC_ISSUER` et `OIDC_AUDIENCE`.
+- **Prof** : flow OIDC *Authorization Code + PKCE* entièrement géré **côté front** (client public Angular, pas de secret). Le back ne reçoit que le token : il ne fait **pas** de session, il valide le JWT Zitadel à chaque requête (signature via JWKS découvert depuis l'issuer, vérif `issuer` / `audience` / expiration) ; les rôles, eux, se lisent en base (ci-dessous). Seuls deux réglages côté API : `OIDC_ISSUER` et `OIDC_AUDIENCE`.
 - **Élève** : **non authentifié** pour la consultation. L'accès aux cours partagés est porté par un *token de partage* opaque (cf. 5.6), pas par une identité. Un élève *peut* toutefois créer un compte OIDC pour disposer d'un profil — cela ne change rien au régime d'accès aux liens publics.
-- Conséquence : des routes « admin » (JWT requis) et des routes « publiques » (token de partage requis) bien séparées, avec deux dépendances d'autorisation distinctes côté FastAPI.
+- Conséquence : des routes « prof » (JWT requis) et des routes « publiques » (token de partage requis) bien séparées, avec deux dépendances d'autorisation distinctes côté FastAPI.
 - **Comptes & profil** : l'API ne stocke toujours aucun credential — la table `users` ne porte que le `sub` OIDC (auto-provisioning au premier `GET /api/v1/users/me` d'un JWT valide, `ON CONFLICT DO NOTHING`), l'e-mail en snapshot et le profil d'onboarding (rôles cumulables `is_teacher`/`is_student`, système scolaire, niveaux et matières par contexte). Les rôles applicatifs vivent **en base**, indépendants des rôles Zitadel des claims (`urn:zitadel:iam:...`) : changer d'IdP ne touche ni le modèle ni l'onboarding.
+- **Backoffice** : un **rôle de plateforme** (`platform_role` : `public` par défaut, `super_admin`), en base lui aussi et **jamais écrit par une route** (commande opérateur `python -m app.users.roles`), ouvre les routes `/api/v1/admin/*` ; un compte sans le rôle y reçoit un **403** (401 reste réservé au JWT). Premier écran : l'état du scheduler de maintenance et le lancement manuel d'un job — l'API n'exécute jamais un job elle-même, elle **dépose une demande dans Redis** (service partagé avec le scheduler, sans persistance), que le scheduler relève et exécute. Rien ne sollicite Postgres périodiquement : une base managée peut se mettre en veille entre deux passes (décision 39).
 
 ### 5.2 Stockage & gestion des fichiers (S3)
 - **Bucket privé**, jamais exposé directement. L'API mint des **URL présignées** : `PUT` pour l'upload, `GET` (TTL court) pour la lecture/téléchargement.
@@ -192,6 +203,7 @@ erDiagram
       bool searchable
       bool is_teacher
       bool is_student
+      string platform_role
       string school_system
       timestamptz onboarded_at
       timestamptz updated_at
@@ -259,7 +271,7 @@ erDiagram
 
 `EDUCATION_LEVEL` est auto-référencée : cycle (profondeur 0, ex. « Collège ») → classe (1, ex. « 6e »), un arbre par système scolaire (`system`, « fr » seul pour l'instant). Les noms sont des noms propres nationaux, jamais traduits ; le rapprochement entre pays passe par les pivots internationaux `cite` (CITE/ISCED 2011, NULL quand le nœud couvre plusieurs niveaux, ex. « Supérieur ») et `age_min`/`age_max`. Pré-remplie par migration de seed (IDs uuid5 déterministes, codes manuscrits préfixés système ex. `fr.college.6e` — source de vérité : `app/education_levels/seed_data.py`, contrat append-only ; lecture `GET /api/v1/education-levels/tree`). Le lien `COURSE }o--o{ EDUCATION_LEVEL` (table d'association `course_education_levels`, remplace l'ancien champ texte `niveau`) est implémenté.
 
-`USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `context` (« teaching » / « learning ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `school_system` du profil (validation en service ; soumission `PUT /api/v1/users/me/onboarding`, sémantique remplacement → sert aussi d'édition de profil).
+`USER` est le compte applicatif (prof et/ou élève, rôles cumulables) : `sub` = identifiant OIDC opaque (seule donnée IdP persistée, ligne créée par auto-provisioning au premier `GET /api/v1/users/me`), `id` = identifiant interne, seul référencé par les autres tables. Le profil d'onboarding (complet quand `onboarded_at` est posé) relie l'utilisateur aux matières (`user_subjects`) et aux niveaux (`user_education_levels`) via des tables d'association qualifiées par `context` (« teaching » / « learning ») — c'est le contexte, pas le rôle, qui porte la sémantique d'une ligne ; les niveaux choisis doivent appartenir au `school_system` du profil (validation en service ; soumission `PUT /api/v1/users/me/profile`, sémantique remplacement → sert aussi d'édition de profil). `platform_role` (`public` / `super_admin`) porte les droits d'administration, indépendamment des rôles pédagogiques ; aucune route ne l'écrit.
 
 `COURSE` appartient à un utilisateur (`owner_id`, CASCADE) et est classé par matières (`course_subjects`, M2M : un cours peut relever de plusieurs matières) et par niveaux (`course_education_levels`, M2M). Son contenu est une liste de `BLOCK` triés par `position` (pas d'unicité `(course_id, position)` en base — le réordonnancement réécrit les positions côté service, tri stable `position, id`) ; le `type` (`text`/`exercise`/`document`/`module`) détermine le schéma du `content` JSONB (cf. §5.3) et seuls les blocs `document` peuvent porter une FK `resource_id` — **nullable** (bloc créé vide) et `ON DELETE CASCADE` (supprimer la ressource supprime les blocs qui la pointent) — CHECK de cohérence en base. `RESOURCE` est la **bibliothèque du cours**, indépendante des blocs : `s3_key` plate unique, ligne créée en `status='pending'` avant l'upload presigned puis confirmée `'available'` (cf. §5.2), CRUD complet (liste, renommage, suppression avec purge S3). `MODULE` est la **bibliothèque de modules interactifs du cours** (J4, livré) : `title` + code `html`/`css`/`js` en colonnes texte (pas de S3, cf. §5.5), CRUD complet ; seuls les blocs `module` peuvent porter une FK `module_id` — **nullable** et `ON DELETE CASCADE`, CHECK de cohérence symétrique à celui des documents. `SHARE_LINK` (J2) est en place (token opaque, expiration obligatoire, révocation soft — cf. §5.6), tout comme les **`search_vector` FTS** de `COURSE` et `BLOCK` (J3) — maintenus par triggers, jamais écrits par l'ORM (cf. §5.4) — et l'opt-in `USER.searchable` de la recherche publique de professeurs.
 

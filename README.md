@@ -2,7 +2,7 @@
 
 API d'**OpenCartable**, plateforme pédagogique libre (AGPLv3) et auto-hébergée (Raspberry Pi ARM64) : un prof compose ses cours par blocs, les partage à ses élèves par liens publics, et dispose d'un assistant IA ; un élève connecté dispose d'un tuteur IA d'exercice.
 
-Stack : **FastAPI** · **SQLAlchemy 2.0 async** + **asyncpg** · **Alembic** · **PostgreSQL** (FTS `french_unaccent`) · **S3** (MinIO en dev) · **Zitadel** (OIDC, validé côté API) · **LangChain / LangGraph** (client IA multi-provider, BYO token).
+Stack : **FastAPI** · **SQLAlchemy 2.0 async** + **asyncpg** · **Alembic** · **PostgreSQL** (FTS `french_unaccent`) · **S3** (MinIO en dev) · **Redis** (canal éphémère API ↔ scheduler) · **Zitadel** (OIDC, validé côté API) · **LangChain / LangGraph** (client IA multi-provider, BYO token).
 
 ## Ce que fait l'API
 
@@ -15,18 +15,20 @@ Stack : **FastAPI** · **SQLAlchemy 2.0 async** + **asyncpg** · **Alembic** · 
 - **Export / import** (`course_transfer`) : archive `.zip` d'un cours, réimport en cours neuf.
 - **IA** : assistant de cours du prof avec tools de lecture et propositions d'édition validées humainement (`course_assistant`), tuteur d'exercice de l'élève authentifié (`student_exercises`), client générique (`core/ai`).
 - **Maintenance** (`maintenance`) : scheduler hors API (purges par rétention, orphelins S3, contrôles de cohérence), une cadence par tâche.
+- **Backoffice** (`admin`) : réservé au rôle de plateforme `super_admin` (posé par `python -m app.users.roles`) — état des jobs de maintenance et demande de passe manuelle, relevée par le scheduler via Redis.
 
 ## Architecture
 
 ```
 app/
 ├── main.py            # fabrique FastAPI : CORS, lifespan, table ROUTERS
-├── core/              # transverse : config, database, auth (IdP), storage (S3), crypto, http, sse, ai/
+├── core/              # transverse : config, database, auth (IdP), storage (S3), kv (Redis), crypto, http, sse, ai/
 ├── models/            # un module par modèle SQLAlchemy, tous listés dans __init__.py
 ├── system/            # /health (public), /me (route protégée de référence)
 ├── users/  ai_credentials/  subjects/  education_levels/
 ├── courses/  resources/  modules/  share_links/  course_transfer/
 ├── public/  search/                       # régime élève et recherche, sans JWT
+├── admin/             # backoffice super admin (403 sinon)
 ├── course_assistant/  student_exercises/  ai/   # briques IA
 └── maintenance/       # scheduler de maintenance (python -m app.maintenance.scheduler)
 config/                # réglages publics par environnement : development / preprod / production
@@ -67,7 +69,7 @@ cp .env.example .env          # secrets ; les URL Zitadel vont dans config/devel
 
 ```bash
 cp .env.example .env          # POSTGRES_PASSWORD (et APP_ENV=production sur le Pi)
-docker compose up --build     # db + minio + minio-createbucket + api
+docker compose up --build     # db + minio + minio-createbucket + redis + api
 docker compose --profile maintenance up scheduler   # scheduler de maintenance (optionnel en dev)
 ```
 

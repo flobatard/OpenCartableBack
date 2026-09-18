@@ -133,6 +133,12 @@ class Settings(BaseSettings):
     OIDC_ISSUER: str
     OIDC_AUDIENCE: str
 
+    # Redis partagé par l'API et le scheduler (service compose `redis`, sans
+    # persistance) : canal de contrôle du backoffice — demandes de passe
+    # manuelle, statut publié par le scheduler. Rien de ce qui y vit n'est une
+    # donnée du domaine. Toute la logique redis est confinée dans app/core/kv.py.
+    REDIS_URL: str = "redis://localhost:6379/0"
+
     # Stockage objet S3 — bucket PRIVÉ, jamais exposé : l'API mint des URL
     # présignées (PUT pour l'upload direct navigateur→S3, GET à TTL court pour
     # la lecture). Toute la logique boto3 est confinée dans app/core/storage.py.
@@ -258,6 +264,14 @@ class Settings(BaseSettings):
     # Bornes de ce qui est enregistré dans maintenance_job_state.
     MAINTENANCE_ERROR_MAX_CHARS: int = 2_000
     MAINTENANCE_DETAIL_MAX_ITEMS: int = 20
+    # Canal de contrôle du backoffice (app/maintenance/control.py, par Redis) :
+    # l'API n'exécute jamais un job, elle dépose une demande que le scheduler
+    # relève toutes les POLL secondes quand aucune passe n'est en vol. JAMAIS
+    # d'accès périodique à Postgres : une base managée qui se met en veille
+    # (Neon) doit pouvoir le faire entre deux passes. Une demande que personne
+    # ne prend (scheduler arrêté) expire au bout de TTL secondes.
+    MAINTENANCE_REQUEST_POLL_SECONDS: int = 5
+    MAINTENANCE_REQUEST_TTL_SECONDS: int = 3_600
 
     # Cadences — UNE expression cron (5 champs) par job. Vide, `off`, `none`
     # ou `-` = job NON PLANIFIÉ. Une expression invalide n'empêche jamais le

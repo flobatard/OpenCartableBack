@@ -20,8 +20,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,8 +43,15 @@ def expected_head() -> str | None:
     (dont le ``script_location`` est relatif au cwd) : on impose un chemin
     absolu. ``None`` si la tête est indéterminable — dossier absent, ou
     plusieurs têtes.
+
+    Import **paresseux** d'alembic : l'API importe le registre des jobs (via ce
+    paquet) pour le backoffice, et n'a que faire d'alembic et de mako en
+    mémoire — seuls le scheduler et le one-shot appellent cette fonction.
     """
     try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
         config = Config()
         config.set_main_option("script_location", str(ALEMBIC_DIR))
         return ScriptDirectory.from_config(config).get_current_head()

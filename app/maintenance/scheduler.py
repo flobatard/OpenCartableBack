@@ -30,13 +30,25 @@ neuf jobs au boot annulerait l'objectif de répartition, et taperait sur le Pi
 au moment précis où l'api applique ses migrations. À la place, le démarrage
 **journalise le plan** — cadence et prochaine occurrence de chaque job — et une
 passe immédiate reste à un ``docker compose exec scheduler python -m
-app.maintenance`` près.
+app.maintenance`` près, ou à un clic dans le backoffice.
+
+Le backoffice passe par le **canal de contrôle** (:mod:`app.maintenance.control`,
+Redis) : une boucle asyncio à côté des crons (:func:`consume_requests`) relève
+les demandes de passe manuelle et les exécute par le même :func:`_execute` que
+les crons — même verrou, même état. Une demande ne patiente jamais derrière le
+verrou : elle n'est prise que quand aucune passe n'est en vol. Le statut (passe
+en cours, plan) est republié au démarrage puis au début et à la fin de chaque
+passe, **jamais périodiquement** ; aucun battement : que le process vive est
+l'affaire de docker, et rien ici ne touche Postgres hors des passes (une base
+managée qui se met en veille, comme Neon, doit pouvoir le faire entre deux).
 """
 
 import asyncio
+import contextlib
 import logging
 import signal
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -45,8 +57,16 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, engine
+from app.core.kv import KeyValueStore, KVUnavailable, close_kv, get_kv
 from app.core.storage import get_storage
-from app.maintenance.registry import JOBS, MaintenanceJob, cron_for, retention_for
+from app.maintenance import control
+from app.maintenance.registry import (
+    JOBS,
+    JOBS_BY_NAME,
+    MaintenanceJob,
+    cron_for,
+    retention_for,
+)
 from app.maintenance.results import SKIP_BUSY
 from app.maintenance.runner import record_skip, run_job
 from app.maintenance.schema import wait_until_current
@@ -63,8 +83,30 @@ _INFLIGHT: set[asyncio.Task] = set()
 # Un seul job de maintenance à la fois : `max_instances=1` ne protège un job que
 # contre lui-même, et deux balayages lourds en parallèle sur un Pi, non.
 _LOCK = asyncio.Lock()
+# La passe qui tient le verrou (nom, début), publiée dans le statut. Scalaire,
+# puisque le verrou sérialise tout.
+_RUNNING: tuple[str, datetime] | None = None
+
+
+@dataclass(frozen=True)
+class StatusContext:
+    """De quoi republier le statut — posé par :func:`main`, absent ailleurs."""
+
+    kv: KeyValueStore
+    scheduler: AsyncIOScheduler
+    started_at: datetime
+    timezone: str
+
+
+# `None` hors du process résident (tests, one-shot) : rien n'est publié.
+_STATUS: StatusContext | None = None
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %Z"
+
+# Attente maximale de la boucle de contrôle à l'arrêt, avant le drain des passes.
+CONTROL_STOP_SECONDS = 5.0
+# Après une panne de Redis, la boucle réessaie à ce rythme (une trace, puis rien).
+CONTROL_RETRY_SECONDS = 10.0
 
 
 def resolve_timezone() -> tzinfo:
@@ -150,9 +192,7 @@ async def run_scheduled(job: MaintenanceJob) -> None:
     :func:`main` la retrouve dans ``_INFLIGHT`` pour lui laisser le temps de
     finir.
     """
-    task = asyncio.create_task(_execute(job), name=f"maintenance:{job.name}")
-    _INFLIGHT.add(task)
-    task.add_done_callback(_INFLIGHT.discard)
+    task = _spawn(job)
     try:
         await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -162,8 +202,23 @@ async def run_scheduled(job: MaintenanceJob) -> None:
         logger.info("job %s : arrêt demandé — la passe en cours se termine", job.label)
 
 
+def _spawn(job: MaintenanceJob) -> asyncio.Task:
+    """Détache la passe dans une tâche suivie par ``_INFLIGHT`` (drainée à l'arrêt)."""
+    task = asyncio.create_task(_execute(job), name=f"maintenance:{job.name}")
+    _INFLIGHT.add(task)
+    task.add_done_callback(_INFLIGHT.discard)
+    return task
+
+
 async def _execute(job: MaintenanceJob) -> None:
-    """Prend le verrou de maintenance, ouvre une session neuve, exécute la passe."""
+    """Prend le verrou de maintenance, ouvre une session neuve, exécute la passe.
+
+    Le statut est republié une fois le verrou pris (« en cours » = en train de
+    travailler, pas en attente du verrou) puis après l'écriture de l'état : le
+    backoffice voit le résultat avant que la passe en cours disparaisse, et le
+    plan publié suit la prochaine occurrence du job.
+    """
+    global _RUNNING
     try:
         await asyncio.wait_for(
             _LOCK.acquire(), timeout=settings.MAINTENANCE_LOCK_WAIT_SECONDS
@@ -177,11 +232,41 @@ async def _execute(job: MaintenanceJob) -> None:
         await record_skip(job, SKIP_BUSY)
         return
     try:
+        _RUNNING = (job.name, datetime.now(UTC))
+        await publish_status()
         storage = get_storage() if job.needs_storage else None
         async with AsyncSessionLocal() as db:
             await run_job(job, db=db, storage=storage)
     finally:
+        # Verrou rendu AVANT la publication : une annulation pendant l'écriture
+        # (arrêt au-delà du délai de grâce) ne doit jamais le laisser pris.
+        _RUNNING = None
         _LOCK.release()
+        await publish_status()
+
+
+async def publish_status() -> None:
+    """Republie le statut (passe en cours, plan) — best effort, jamais au prix
+    d'une passe : un Redis en panne ne coûte que l'affichage du backoffice."""
+    if _STATUS is None:
+        return
+    try:
+        await control.publish_status(
+            _STATUS.kv,
+            started_at=_STATUS.started_at,
+            timezone=_STATUS.timezone,
+            running=_RUNNING,
+            # `getattr` : un job pas encore remis à son jobstore (scheduler non
+            # démarré) n'a pas d'attribut `next_run_time` du tout.
+            next_runs=control.serialize_plan(
+                {
+                    job.id: getattr(job, "next_run_time", None)
+                    for job in _STATUS.scheduler.get_jobs()
+                }
+            ),
+        )
+    except KVUnavailable as exc:
+        logger.warning("statut du scheduler non publié : %s", exc)
 
 
 def log_plan(scheduler: AsyncIOScheduler, tz: tzinfo) -> None:
@@ -229,7 +314,75 @@ def log_plan(scheduler: AsyncIOScheduler, tz: tzinfo) -> None:
     )
 
 
+async def poll_once(kv: KeyValueStore) -> None:
+    """Prend au plus une demande de passe manuelle et la lance.
+
+    Rien — pas même une lecture de Redis — tant qu'une passe est en vol ou
+    attend le verrou : une demande ne patiente jamais derrière lui (elle
+    finirait sautée en ``busy``), elle attend son tour dans le magasin. La
+    prise la supprime (``GETDEL``) : au plus une exécution par demande.
+    """
+    if _INFLIGHT:
+        return
+    if _STATUS is not None and await control.read_status(kv) is None:
+        # Redis redémarré (il est sans persistance) : sans ça, le backoffice
+        # afficherait « aucun statut » jusqu'à la prochaine passe.
+        await publish_status()
+    claimed = await control.claim_request(kv, JOBS_BY_NAME)
+    if claimed is None:
+        return
+    job = JOBS_BY_NAME[claimed.job_name]
+    logger.info(
+        "job %s — %s : passe manuelle demandée par l'utilisateur %s",
+        job.name,
+        job.label,
+        claimed.requested_by or "(inconnu)",
+    )
+    _spawn(job)
+
+
+async def consume_requests(kv: KeyValueStore, stop: asyncio.Event) -> None:
+    """Relève des demandes de passe manuelle, jusqu'à ``stop``.
+
+    Une tâche asyncio et non un job APScheduler à intervalle : l'exécuteur
+    écrit deux lignes INFO par exécution, et le job fausserait ``get_jobs()``
+    — donc le plan journalisé et publié. La relève ne lit que Redis, jamais
+    Postgres. Une panne du canal est journalisée **une fois**, trace comprise,
+    puis tue jusqu'au premier tour réussi ; elle ne coûte jamais une passe
+    planifiée : les crons ne dépendent pas de cette boucle.
+    """
+    failing = False
+    while not stop.is_set():
+        try:
+            await poll_once(kv)
+        except Exception:
+            if not failing:
+                logger.exception(
+                    "canal de contrôle indisponible — nouvel essai toutes les %d s, "
+                    "sans nouveau log jusqu'à son rétablissement",
+                    CONTROL_RETRY_SECONDS,
+                )
+                failing = True
+            delay = CONTROL_RETRY_SECONDS
+        else:
+            if failing:
+                logger.info("canal de contrôle rétabli")
+                failing = False
+            delay = settings.MAINTENANCE_REQUEST_POLL_SECONDS
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+
+
+async def _clear_status(kv: KeyValueStore) -> None:
+    """À l'arrêt propre : plus de statut, le backoffice n'affiche rien de périmé."""
+    try:
+        await control.clear_status(kv)
+    except KVUnavailable as exc:
+        logger.warning("statut du scheduler non effacé à l'arrêt : %s", exc)
+
+
 async def main() -> int:
+    global _STATUS
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -240,6 +393,8 @@ async def main() -> int:
 
     tz = resolve_timezone()
     scheduler = build_scheduler()
+    kv = get_kv()
+    control_task: asyncio.Task | None = None
     try:
         async with AsyncSessionLocal() as db:
             # NON fatal, contrairement au one-shot : ce process est résident et
@@ -249,9 +404,23 @@ async def main() -> int:
             await wait_until_current(db)
         scheduler.start()
         log_plan(scheduler, tz)
+        _STATUS = StatusContext(
+            kv=kv, scheduler=scheduler, started_at=datetime.now(UTC), timezone=str(tz)
+        )
+        await publish_status()
+        control_task = asyncio.create_task(
+            consume_requests(kv, stop), name="maintenance:control"
+        )
         await stop.wait()
     finally:
         logger.info("arrêt demandé — plus aucune occurrence n'est déclenchée")
+        # Plus aucune demande n'est relevée ; la boucle attend `stop`, elle
+        # sort aussitôt — borné au cas où une écriture traînerait, et court :
+        # ce délai s'ajoute à celui du drain, sous le stop_grace_period (30 s).
+        stop.set()
+        if control_task is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(control_task, timeout=CONTROL_STOP_SECONDS)
         # `wait=True` serait un mensonge : l'exécuteur asyncio annule au lieu
         # d'attendre. On draine nous-mêmes les passes en vol.
         scheduler.shutdown(wait=False)
@@ -265,6 +434,9 @@ async def main() -> int:
                     len(pending),
                     settings.MAINTENANCE_SHUTDOWN_GRACE_SECONDS,
                 )
+        await _clear_status(kv)
+        _STATUS = None
+        await close_kv()
         await engine.dispose()
         logger.info("scheduler arrêté proprement")
     return 0

@@ -11,6 +11,16 @@ def not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
+def forbidden(detail: str) -> HTTPException:
+    """403 : réservé au **rôle de plateforme** (routes ``/admin/*``).
+
+    Jamais pour une ressource : un cours d'autrui reste introuvable (404) et
+    un token absent ou invalide reste un 401. Une route n'est pas un secret
+    (le code est public) — refuser l'accès ne révèle rien.
+    """
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
 def conflict(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 

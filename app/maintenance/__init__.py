@@ -13,7 +13,10 @@ jobs, déclenchés par le service ``scheduler`` du compose
 (:mod:`app.maintenance.scheduler`, un ``AsyncIOScheduler`` résident, une
 expression cron par job). Les faire tourner dans le process uvicorn
 contredirait la contrainte Pi « déporter le lourd » — la réconciliation S3
-énumère tout le bucket — et les coupleraient à l'uptime de l'API.
+énumère tout le bucket — et les coupleraient à l'uptime de l'API. Le
+backoffice (:mod:`app.admin`) lit leur état et **demande** une passe par
+Redis (:mod:`app.maintenance.control`) ; seul le scheduler l'exécute, et rien
+ne touche Postgres hors des passes (une base qui se met en veille le peut).
 
 Deux **leviers d'inactivité** coexistent et ne veulent pas dire la même chose :
 
@@ -24,8 +27,9 @@ Deux **leviers d'inactivité** coexistent et ne veulent pas dire la même chose 
 
 Carte du paquet : ``registry`` la liste des jobs · ``service`` les sept purges ·
 ``checks`` les deux contrôles en lecture seule · ``runner`` l'exécution d'un job
-· ``state`` l'état en base · ``schema`` la garde Alembic · ``scheduler`` le
-process résident · ``__main__`` la passe à la main.
+· ``state`` l'état en base · ``control`` le canal backoffice ↔ scheduler
+(demandes, statut publié, par Redis) · ``schema`` la garde Alembic · ``scheduler`` le process
+résident · ``__main__`` la passe à la main.
 """
 
 from app.maintenance.registry import JOBS, JOBS_BY_NAME, MaintenanceJob

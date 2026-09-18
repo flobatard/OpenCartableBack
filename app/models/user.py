@@ -8,6 +8,12 @@ cumulables (un enseignant peut aussi apprendre) ; le profil est complet
 quand ``onboarded_at`` est posé. Matières et niveaux du profil vivent dans
 les tables d'association, qualifiées par ``context`` (« teaching » /
 « learning ») — c'est lui, pas le rôle, qui porte la sémantique d'une ligne.
+
+Deux notions de rôle, à ne pas confondre : les rôles **pédagogiques**
+(``is_teacher``/``is_student``, cumulables, choisis à l'onboarding) et le rôle
+**de plateforme** (``platform_role``, unique, droits d'administration). Ce
+dernier vit en base, indépendant des rôles Zitadel des claims, et **aucune
+route ne l'écrit** : il se pose par ``python -m app.users.roles``.
 """
 
 import uuid
@@ -23,6 +29,7 @@ from sqlalchemy import (
     Table,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -32,6 +39,10 @@ from app.core.database import Base
 CONTEXT_TEACHING = "teaching"
 CONTEXT_LEARNING = "learning"
 
+PLATFORM_ROLE_PUBLIC = "public"
+PLATFORM_ROLE_SUPER_ADMIN = "super_admin"
+PLATFORM_ROLES = (PLATFORM_ROLE_PUBLIC, PLATFORM_ROLE_SUPER_ADMIN)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -40,6 +51,10 @@ class User(Base):
         CheckConstraint(
             "onboarded_at IS NULL OR is_teacher OR is_student",
             name="ck_users_onboarded_requires_role",
+        ),
+        CheckConstraint(
+            f"platform_role IN ('{PLATFORM_ROLE_PUBLIC}', '{PLATFORM_ROLE_SUPER_ADMIN}')",
+            name="ck_users_platform_role",
         ),
         CheckConstraint(
             "(avatar_s3_key IS NULL AND avatar_mime IS NULL AND avatar_status IS NULL) "
@@ -84,6 +99,13 @@ class User(Base):
     # token (config explicite ou configuration active) ne sont jamais comptés ;
     # le comptage par jour vit dans la table ai_daily_usage.
     ai_daily_call_quota: Mapped[int | None] = mapped_column(Integer)
+    # Rôle de plateforme (voir docstring du module) : `public` pour tous,
+    # `super_admin` pour le backoffice (/admin/*). Jamais écrit par une route —
+    # un utilisateur pourrait s'y promouvoir ; posé par la CLI app.users.roles.
+    # server_default 'public' : aucun compte existant n'hérite d'un privilège.
+    platform_role: Mapped[str] = mapped_column(
+        String(20), default=PLATFORM_ROLE_PUBLIC, server_default=text("'public'")
+    )
     is_teacher: Mapped[bool] = mapped_column(default=False, server_default="false")
     is_student: Mapped[bool] = mapped_column(default=False, server_default="false")
     # Même dimension que education_levels.system ; validé en service

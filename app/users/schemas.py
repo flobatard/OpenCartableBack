@@ -38,6 +38,10 @@ class UserProfileRead(BaseModel):
     # None si pas d'avatar ou upload non confirmé. Jamais la clé S3.
     avatar_url: str | None
     onboarding_complete: bool
+    # Rôle de plateforme (backoffice) : lu par le front pour afficher l'entrée
+    # d'administration. Le front ne fait que masquer — c'est le 403 de
+    # /admin/* qui barre. Absent de ProfileUpdate : aucune route ne l'écrit.
+    platform_role: Literal["public", "super_admin"]
     teaching: ProfileContext | None
     learning: ProfileContext | None
 

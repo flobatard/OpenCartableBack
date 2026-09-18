@@ -15,6 +15,7 @@ from sqlalchemy.sql.dml import Delete, Insert, Update
 from app.core.ai import get_ai_client
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.kv import KVUnavailable, get_kv
 from app.core.storage import get_storage
 from app.main import create_app
 
@@ -111,11 +112,60 @@ class FakeStorage:
         self.deleted.extend(s3_keys)
 
 
+class FakeKV:
+    """Faux magasin clé-valeur (interface de ``app.core.kv.KeyValueStore``).
+
+    Un dict ; les expirations sont relevées (``ttls``) sans jamais expirer ;
+    ``down=True`` fait lever ``KVUnavailable`` à chaque opération, comme un
+    Redis injoignable.
+    """
+
+    def __init__(self, data=None, *, down=False):
+        self.data: dict[str, str] = dict(data or {})
+        self.ttls: dict[str, int] = {}
+        self.down = down
+
+    def _check(self):
+        if self.down:
+            raise KVUnavailable("redis injoignable (fake)")
+
+    async def set_if_absent(self, key, value, ttl_seconds):
+        self._check()
+        if key in self.data:
+            return False
+        self.data[key] = value
+        self.ttls[key] = ttl_seconds
+        return True
+
+    async def put(self, key, value):
+        self._check()
+        self.data[key] = value
+
+    async def get(self, key):
+        self._check()
+        return self.data.get(key)
+
+    async def get_many(self, keys):
+        self._check()
+        return [self.data.get(key) for key in keys]
+
+    async def take(self, key):
+        self._check()
+        return self.data.pop(key, None)
+
+    async def delete(self, key):
+        self._check()
+        self.data.pop(key, None)
+
+    async def close(self):
+        pass
+
+
 def make_client(
-    session, storage=None, *, ai_client=None, authenticated=True, email=None
+    session, storage=None, *, ai_client=None, authenticated=True, email=None, kv=None
 ) -> TestClient:
-    """TestClient sur ``create_app()`` avec la session, le storage et
-    (optionnellement) l'auth et le client IA remplacés.
+    """TestClient sur ``create_app()`` avec la session, le storage, le magasin
+    clé-valeur et (optionnellement) l'auth et le client IA remplacés.
 
     ``authenticated=False`` laisse ``get_current_user`` en place : c'est le
     cas des routes publiques, qui ne le portent pas.
@@ -127,6 +177,7 @@ def make_client(
         )
     app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[get_storage] = lambda: storage or FakeStorage()
+    app.dependency_overrides[get_kv] = lambda: kv if kv is not None else FakeKV()
     if ai_client is not None:
         app.dependency_overrides[get_ai_client] = lambda: ai_client
     return TestClient(app)

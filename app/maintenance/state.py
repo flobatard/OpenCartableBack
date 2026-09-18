@@ -2,7 +2,8 @@
 
 **Une seule écriture par passe, à la fin.** Rien n'est posé au démarrage d'un
 job : la table est un *état de dernière passe*, pas un état d'exécution — « en
-cours » est une affaire de logs, et un état à moitié écrit ne renseignerait
+cours » vit ailleurs, dans le statut que le scheduler publie sur Redis
+(:mod:`app.maintenance.control`), et un état à moitié écrit ne renseignerait
 personne tout en doublant les allers-retours de pool.
 
 Trois règles de l'upsert, qui ne sont pas des détails :
@@ -84,6 +85,11 @@ def build_state_select(job_name: str) -> Select:
     return select(MaintenanceJobState.last_detail).where(
         MaintenanceJobState.job_name == job_name
     )
+
+
+def build_states_select() -> Select:
+    """Toutes les lignes d'état, pour le backoffice (une par job au plus)."""
+    return select(MaintenanceJobState)
 
 
 def build_state_upsert(

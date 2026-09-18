@@ -9,6 +9,21 @@
 # REGISTRY / IMAGE / IMAGE_TAG sont exportés par le workflow de déploiement
 # avant `docker compose pull && up` ; ce fichier ne les définit pas.
 services:
+  # Canal de contrôle backoffice ↔ scheduler (app/maintenance/control.py),
+  # partagé par l'api et le scheduler (REDIS_URL de config/preprod.yaml).
+  # Éphémère : aucune persistance, aucun port publié. C'est lui — et non
+  # Postgres — qui porte les demandes de passe : la base (managée, en veille
+  # quand rien ne la sollicite) n'est touchée que par les passes elles-mêmes.
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "32mb"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   api:
     image: ${REGISTRY}/${IMAGE}:${IMAGE_TAG}
     restart: unless-stopped
@@ -51,6 +66,8 @@ services:
     # déploiements ultérieurs, pendant lesquels ce conteneur-ci tourne déjà.
     depends_on:
       api:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     # ⚠ Écrase l'ENTRYPOINT de l'image (docker-entrypoint.sh = init_db.py +
     # alembic upgrade head) : sans ça, ce conteneur rejouerait les migrations en

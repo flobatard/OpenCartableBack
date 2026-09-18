@@ -43,6 +43,10 @@ S3_ENDPOINT_URL: https://minio-s3.home.fbatard.fr
 S3_REGION: eu-west-3
 S3_BUCKET: opencartable
 
+# Redis — service `redis` de la stack (docker-compose.preprod.yml), partagé par
+# l'api et le scheduler : canal de contrôle du backoffice, sans persistance.
+REDIS_URL: redis://redis:6379/0
+
 # Partage public (J2) — durée de vie des liens de partage élèves (jours).
 SHARE_LINK_TTL_DAYS: 270
 
@@ -128,3 +132,7 @@ LANGFUSE_HOST: "https://cloud.langfuse.com"
 # MAINTENANCE_MISFIRE_GRACE_SECONDS: 300   # au-delà, occurrence SAUTÉE (pas de rattrapage)
 # MAINTENANCE_LOCK_WAIT_SECONDS: 1800      # attente max du verrou, sinon `skipped`/busy
 # MAINTENANCE_SHUTDOWN_GRACE_SECONDS: 20   # < stop_grace_period du compose (30 s)
+
+# ── Canal de contrôle du backoffice (Redis : lancement manuel d'un job, statut du scheduler)
+# MAINTENANCE_REQUEST_POLL_SECONDS: 5      # relève des demandes dans Redis — jamais Postgres
+# MAINTENANCE_REQUEST_TTL_SECONDS: 3600    # une demande que personne ne prend expire

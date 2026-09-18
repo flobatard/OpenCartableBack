@@ -6,7 +6,8 @@ dizaine de lignes) et n'a jamais besoin d'être purgée elle-même — contraire
 à un historique une-ligne-par-exécution, qui aurait exigé son propre job.
 
 C'est un **état de dernière passe, pas un état d'exécution** : rien n'est écrit
-au démarrage d'un job, seulement à sa fin. « En cours » est une affaire de logs.
+au démarrage d'un job, seulement à sa fin. « En cours » se lit dans le statut
+que le scheduler publie sur Redis (:mod:`app.maintenance.control`).
 
 Écarts assumés aux conventions du projet, parce que c'est de la métadonnée
 opérationnelle et non une entité du domaine :

@@ -28,6 +28,11 @@ S3_ENDPOINT_URL: http://localhost:9000
 S3_REGION: us-east-1
 S3_BUCKET: opencartable
 
+# Redis du docker-compose (canal de contrôle backoffice ↔ scheduler), exposé
+# sur localhost:6389 pour l'uvicorn local ; les conteneurs, eux, reçoivent
+# REDIS_URL=redis://redis:6379/0 par le compose.
+REDIS_URL: redis://localhost:6389/0
+
 # Partage public (J2) — durée de vie des liens de partage élèves (jours).
 SHARE_LINK_TTL_DAYS: 270
 
@@ -117,3 +122,7 @@ AI_BASE_URL: https://api.mistral.ai/v1
 # MAINTENANCE_MISFIRE_GRACE_SECONDS: 300   # au-delà, occurrence SAUTÉE (pas de rattrapage)
 # MAINTENANCE_LOCK_WAIT_SECONDS: 1800      # attente max du verrou, sinon `skipped`/busy
 # MAINTENANCE_SHUTDOWN_GRACE_SECONDS: 20   # < stop_grace_period du compose (30 s)
+
+# ── Canal de contrôle du backoffice (Redis : lancement manuel d'un job, statut du scheduler)
+# MAINTENANCE_REQUEST_POLL_SECONDS: 5      # relève des demandes dans Redis — jamais Postgres
+# MAINTENANCE_REQUEST_TTL_SECONDS: 3600    # une demande que personne ne prend expire

@@ -48,6 +48,23 @@ services:
       mc mb --ignore-existing local/$${S3_BUCKET};
       "
 
+  # Canal de contrôle backoffice ↔ scheduler (app/maintenance/control.py) :
+  # demandes de passe manuelle et statut publié par le scheduler. Éphémère par
+  # construction — aucune persistance, rien de ce qui y vit n'est une donnée du
+  # domaine. Port publié sur localhost pour l'uvicorn de dev (6389, comme le
+  # 5429 de Postgres, pour ne pas heurter un Redis de l'hôte).
+  redis:
+    image: redis:8-alpine
+    restart: always
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "32mb"]
+    ports:
+      - "127.0.0.1:6389:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   api:
     build: .
     # Les migrations s'appliquent au démarrage (no-op tant que versions/ est vide)
@@ -69,6 +86,8 @@ services:
       S3_ENDPOINT_URL: http://minio:9000
       S3_BUCKET: ${S3_BUCKET:-opencartable}
       S3_REGION: ${S3_REGION:-us-east-1}
+      # Redis sur le réseau compose (le YAML de dev vise localhost:6389).
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
@@ -112,8 +131,11 @@ services:
       S3_ENDPOINT_URL: http://minio:9000
       S3_BUCKET: ${S3_BUCKET:-opencartable}
       S3_REGION: ${S3_REGION:-us-east-1}
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     # ⚠ Écrase l'ENTRYPOINT de l'image (init_db.py + alembic upgrade head) : les
     # migrations sont le job du seul service api. Chaque job refuse de lui-même

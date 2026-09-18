@@ -111,6 +111,7 @@ def _profile(
         searchable=user.searchable,
         avatar_url=avatar_url_for(user.avatar_s3_key, user.avatar_status, storage),
         onboarding_complete=user.onboarded_at is not None,
+        platform_role=user.platform_role,
         teaching=teaching,
         learning=learning,
     )

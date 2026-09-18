@@ -17,10 +17,11 @@ pytest tests/test_auth.py::test_me_with_valid_token   # un seul test
 ruff check . --exclude venv               # lint (config dans pyproject.toml : E, F, I, UP, B)
 
 uvicorn app.main:app --reload             # serveur de dev (config/development.yaml)
-docker compose up --build                 # db + minio + minio-createbucket + api (.env requis : cp .env.example .env)
+docker compose up --build                 # db + minio + minio-createbucket + redis + api (.env requis : cp .env.example .env)
 docker compose --profile maintenance up scheduler  # scheduler de maintenance (un cron par job)
 python -m app.maintenance                 # une passe complète, à la main
 python -m app.maintenance share_links s3_orphans   # un ou plusieurs jobs nommés
+python -m app.users.roles grant prof@example.org   # rôle de plateforme super_admin (revoke, list) ; compte déjà connecté une fois
 
 alembic revision --autogenerate -m "..."  # nouvelle migration (modèle enregistré dans app/models/__init__.py d'abord)
 alembic upgrade head
@@ -28,7 +29,7 @@ alembic upgrade head
 
 **L'utilisateur lance lui-même les commandes alembic** (création et application des migrations) ; ne pas les exécuter à sa place. `scripts/` est maintenu à la main par l'utilisateur : ne pas y toucher sans demande.
 
-Dev local nominal : uvicorn local + Postgres docker (port 5429) + MinIO docker (console `:9001`). Une URL présignée mintée par l'API en conteneur pointe `minio:9000`, injoignable par le navigateur : pour tester un upload de bout en bout, lancer uvicorn en local.
+Dev local nominal : uvicorn local + Postgres docker (port 5429) + MinIO docker (console `:9001`) + Redis docker (port 6389, canal de contrôle du backoffice). Une URL présignée mintée par l'API en conteneur pointe `minio:9000`, injoignable par le navigateur : pour tester un upload de bout en bout, lancer uvicorn en local.
 
 ## Carte de `app/`
 
@@ -40,11 +41,13 @@ Package-by-feature : chaque domaine = `schemas.py` (Pydantic), `service.py` (mé
 | `core/database.py` | Engine/session async, `Base`, `touch(*rows)` (bump `updated_at` côté Python) | — |
 | `core/auth.py` | Validation du JWT Zitadel, `get_current_user` — **seul module IdP** | — |
 | `core/storage.py` | Client S3 (presign, HEAD, delete, listing, bytes pour l'export/import) — **seul module boto3** | — |
+| `core/kv.py` | Magasin clé-valeur partagé (Redis, sans persistance) : interface étroite, une seule exception `KVUnavailable` — **seul module redis** | — |
 | `core/crypto.py` | Chiffrement des clés API IA — **seul module `cryptography`** | — |
-| `core/http.py`, `core/sse.py` | Constructeurs d'erreurs HTTP partagés ; contrat SSE de référence + `sse_event`/`sse_response` | — |
+| `core/http.py`, `core/sse.py` | Constructeurs d'erreurs HTTP partagés (`forbidden` = le 403 du seul rôle de plateforme) ; contrat SSE de référence + `sse_event`/`sse_response` | — |
 | `core/ai/` | Client IA multi-provider (LangChain/LangGraph) — **seul paquet langchain/langgraph/langfuse** : `client.py` façade, `agent.py` graphe + HITL, `messages.py`, `providers.py`, `errors.py`, `model_catalog.py`, `reasoning.py` (catalogue des options de raisonnement par couple provider/modèle), `profiles.py` (profil embarqué langchain), `observability.py` | — |
 | `system/` | Sonde `/health` (publique) et `/me` (route protégée de référence) | `/health`, `/me` |
-| `users/` | Comptes auto-provisionnés au premier appel, profil d'onboarding, avatar | `/users/me…` |
+| `users/` | Comptes auto-provisionnés au premier appel, profil d'onboarding, avatar ; rôle de plateforme : `dependencies.py` garde `require_super_admin`, `roles.py` CLI `python -m app.users.roles` (seul écrivain de `platform_role`) | `/users/me…` |
+| `admin/` | Backoffice, garde `require_super_admin` posée sur le router : vue d'ensemble des jobs de maintenance, demande de passe manuelle (jamais exécutée ici) | `/admin/maintenance/jobs…` |
 | `ai_credentials/` | Configurations IA nommées (plusieurs par utilisateur, clé chiffrée, au plus une active), cascade `effective_config`, quota quotidien de l'IA par défaut | `/users/me/ai-credentials…` |
 | `subjects/`, `education_levels/` | Taxonomies seedées (`seed_data.py` APPEND-ONLY), arbres en une requête | `/subjects/tree`, `/education-levels/tree` |
 | `courses/` | Cours (`service.py`), blocs (`blocks.py`), lectures partagées (`queries.py` : `get_owned_course`, lectures batchées) | `/courses…` |
@@ -58,9 +61,9 @@ Package-by-feature : chaque domaine = `schemas.py` (Pydantic), `service.py` (mé
 | `course_assistant/` | Assistant IA du prof : `service.py` CRUD conversations, `streaming.py` flux + reprises HITL + driver des sous-assistants (`_drive_turn`), `turn_encoder.py` boucle SSE partagée, `context.py`/`render.py`/`replay.py`/`refs.py` helpers purs, `tools.py`, `hitl.py` registre + `suspend`, `questions.py` tool `ask_questions` (tous contextes), `delegation.py` tools `edit_block`/`edit_module` de l'édition globale, `editing/` descripteurs des contextes d'édition | `/courses/{id}/assistant…` |
 | `student_exercises/` | Tuteur d'exercice de l'élève **authentifié** (JWT + accès au cours par le régime public) et routes prof d'effacement | `/student/courses/{id}/blocks/{id}…`, `/courses/{id}/blocks/{id}/submissions…` |
 | `ai/` | Routes de smoke-test du client IA, banc d'essai de la cascade config × quota (supprimable, cf. TODO.md) | `/ai/chat…` |
-| `maintenance/` | Jobs hors API, déclenchés par le service compose `scheduler` : `registry.py` la seule liste des neuf jobs, `service.py` les sept purges, `checks.py` les deux contrôles en lecture seule, `runner.py` l'exécution d'un job (leviers d'inactivité, garde, chrono, état), `state.py` l'upsert de `maintenance_job_state` sur session dédiée, `schema.py` la garde Alembic, `scheduler.py` le process résident APScheduler, `__main__.py` le one-shot | — |
+| `maintenance/` | Jobs hors API, déclenchés par le service compose `scheduler` : `registry.py` la seule liste des neuf jobs, `service.py` les sept purges, `checks.py` les deux contrôles en lecture seule, `runner.py` l'exécution d'un job (leviers d'inactivité, garde, chrono, état), `state.py` l'upsert de `maintenance_job_state` sur session dédiée, `control.py` le canal backoffice ↔ scheduler par Redis (demandes à expiration, statut publié : plan, passe en cours), `schema.py` la garde Alembic, `scheduler.py` le process résident APScheduler et sa boucle de contrôle, `__main__.py` le one-shot | — |
 
-Tests : `tests/fakes.py` (fausse session FIFO, faux S3, `make_client`, `parse_sse`), `tests/course_assistant_fakes.py` (lignes de données et faux client IA de l'assistant/tuteur), `tests/maintenance_fakes.py` (session FIFO à liste d'événements partagée, faux S3 scriptable et mesurant sa concurrence), `tests/conftest.py` (JWT de test, JWKS mocké, neutralisation des `AI_*`).
+Tests : `tests/fakes.py` (fausse session FIFO, faux S3, faux magasin Redis `FakeKV`, `make_client`, `parse_sse`), `tests/course_assistant_fakes.py` (lignes de données et faux client IA de l'assistant/tuteur), `tests/maintenance_fakes.py` (session FIFO à liste d'événements partagée, faux S3 scriptable et mesurant sa concurrence), `tests/conftest.py` (JWT de test, JWKS mocké, neutralisation des `AI_*`).
 
 ## Invariants
 
@@ -69,8 +72,9 @@ Tests : `tests/fakes.py` (fausse session FIFO, faux S3, `make_client`, `parse_ss
 - Régime public (`/public/*`, `/public/search/*`) : **aucune dépendance JWT** ; l'autorisation vit dans `app/public/access.py` ; **404 uniforme « Cours introuvable »**, jamais 401/403/410 (aucun oracle) ; le token de partage voyage en `?token=`.
 - Le tuteur élève (`/student/*`) exige le JWT **et** passe par `get_public_course` : l'appel IA est imputé à la config de l'élève.
 - Un cours d'autrui est **introuvable (404), jamais interdit (403)** — `get_owned_course`. 401 est réservé au JWT : une clé IA refusée par le provider est un **400**.
+- **403 réservé au rôle de plateforme** : `users.platform_role` (`public`/`super_admin`) n'est **jamais écrit par une route** (CLI `app.users.roles`) ; les routes `/admin/*` héritent de la garde `require_super_admin` posée sur leur router (une route qui veut le compte la redemande en paramètre, résolue une fois par requête).
 
-**Confinement des dépendances** (remplaçabilité) : IdP → `core/auth.py` ; boto3 → `core/storage.py` ; `cryptography` → `core/crypto.py` ; langchain/langgraph/langfuse → `core/ai/` (imports **paresseux** dans les fonctions, rien n'est chargé au boot ; pas `init_chat_model` — son backend huggingface charge un modèle local, mortel sur Pi). Les consommateurs n'importent que les ré-exports de `app.core.ai`.
+**Confinement des dépendances** (remplaçabilité) : IdP → `core/auth.py` ; boto3 → `core/storage.py` ; redis → `core/kv.py` ; `cryptography` → `core/crypto.py` ; langchain/langgraph/langfuse → `core/ai/` (imports **paresseux** dans les fonctions, rien n'est chargé au boot ; pas `init_chat_model` — son backend huggingface charge un modèle local, mortel sur Pi). Les consommateurs n'importent que les ré-exports de `app.core.ai`.
 
 **Données**
 - 100 % async (SQLAlchemy 2.0 + asyncpg, y compris `alembic/env.py`) ; **aucune relation ORM chargée** (lazy-load async interdit : arbres assemblés en Python).
@@ -109,9 +113,9 @@ Détails et contexte dans `../docs/decisions.md`.
 - Dépendances IA inutilisées de `requirements.txt` conservées ; `langchain*` sur la ligne 1.x.
 - `requirements.txt` en **versions exactes** (`==`) : l'image fait un `pip install` au build, une fourchette y ferait entrer autre chose qu'en dev. Monter une version = `pip install -U <paquet>`, `pytest` + `ruff check`, puis reporter le numéro obtenu. Pas de lock des transitives (les wheels nvidia/cuda de la pile ML n'existent pas en ARM64).
 - Pas de reverse proxy dans ce repo (nginx d'infra) ; l'API écoute sur 8000.
-- Maintenance en job compose séparé (`scheduler`, APScheduler résident, un cron par job), jamais dans le process uvicorn. Jour de semaine cron **en lettres** (APScheduler indexe 0 = lundi, pas dimanche) ; aucune occurrence entre 02:00 et 02:59 (heure inexistante au passage à l'heure d'été). Jamais `shutdown(wait=True)` : l'exécuteur asyncio **annule** au lieu d'attendre.
+- Maintenance en job compose séparé (`scheduler`, APScheduler résident, un cron par job), jamais dans le process uvicorn : le backoffice **demande** une passe par Redis (`control.py`), seul le scheduler l'exécute — jamais `app.maintenance.scheduler` importé par l'API. **Aucun accès périodique à Postgres** (ni battement, ni relève en base, ni vérification de vie — c'est l'affaire de docker) : la base managée (Neon) doit pouvoir se mettre en veille entre deux passes. Boucle de relève en tâche asyncio, pas en job APScheduler à intervalle (bruit de logs, `get_jobs()` faussé). Jour de semaine cron **en lettres** (APScheduler indexe 0 = lundi, pas dimanche) ; aucune occurrence entre 02:00 et 02:59 (heure inexistante au passage à l'heure d'été). Jamais `shutdown(wait=True)` : l'exécuteur asyncio **annule** au lieu d'attendre.
 - Cours d'exemple : seed **best effort** après le commit de l'onboarding (une erreur ne remonte jamais), manifeste JSON **sans ressource** (donc sans `Storage`), et `POST /courses/starter` ne déduplique pas.
 
 ## Approfondissements
 
-`docs/architecture.md` — Auth et comptes · Configuration · Taxonomies · Modèle des cours et contrats JSONB · Ressources S3 · Modules · Export/import · Régime public · Recherche FTS · Client IA · Credentials et quota · Assistant de cours · Tuteur d'exercice · Maintenance.
+`docs/architecture.md` — Auth et comptes · Configuration · Taxonomies · Modèle des cours et contrats JSONB · Ressources S3 · Modules · Export/import · Régime public · Recherche FTS · Client IA · Credentials et quota · Assistant de cours · Tuteur d'exercice · Maintenance · Backoffice.

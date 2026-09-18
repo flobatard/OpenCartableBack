@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.admin.router import router as admin_router
 from app.ai.router import router as ai_router
 from app.ai_credentials.router import router as ai_credentials_router
 from app.core.ai import shutdown_langfuse
 from app.core.config import settings
 from app.core.database import engine
+from app.core.kv import close_kv
 from app.course_assistant.router import router as course_assistant_router
 from app.course_transfer.router import router as course_transfer_router
 from app.courses.router import router as courses_router
@@ -46,6 +48,7 @@ ROUTERS: tuple[APIRouter, ...] = (
     share_links_router,
     public_router,  # sans JWT : visibilité + token de partage
     search_router,  # sans JWT : /public/search
+    admin_router,  # /admin/* : backoffice, rôle super_admin (403 sinon)
     ai_router,  # smoke-test du client IA, supprimable
 )
 
@@ -53,8 +56,10 @@ ROUTERS: tuple[APIRouter, ...] = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    # Shutdown : flush des traces Langfuse (no-op sans config), puis le pool.
+    # Shutdown : flush des traces Langfuse (no-op sans config), le client
+    # Redis s'il a servi (backoffice), puis le pool.
     shutdown_langfuse()
+    await close_kv()
     await engine.dispose()
 
 
