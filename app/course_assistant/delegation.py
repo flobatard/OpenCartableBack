@@ -47,7 +47,13 @@ from typing import Any
 from app.core.ai import AIToolCall, AIToolResult, AIToolSpec
 from app.course_assistant import hitl
 from app.course_assistant.context import teacher_message
-from app.course_assistant.editing.base import Handler, ProposalTool, string_arg, tool_error
+from app.course_assistant.editing.base import (
+    Handler,
+    ProposalTool,
+    ref_schema,
+    string_arg,
+    tool_error,
+)
 from app.course_assistant.refs import CourseRefs
 from app.models.ai_conversation import CONTEXT_BLOCK_EXERCISE, CONTEXT_BLOCK_TEXT, CONTEXT_MODULE
 from app.models.block import TYPE_EXERCISE, TYPE_MODULE, TYPE_TEXT
@@ -137,15 +143,6 @@ def _editable_block(block) -> bool:
     return context_for_block(block) is not None
 
 
-def _target_schema(description: str, refs: list[str]) -> dict:
-    """Paramètre « cible », ``enum`` des références éligibles (omis si vide —
-    motif ``_ref_spec`` de :mod:`app.course_assistant.tools`)."""
-    schema: dict = {"type": "string", "description": description}
-    if refs:
-        schema["enum"] = refs
-    return schema
-
-
 def _edit_block_spec(refs: CourseRefs) -> AIToolSpec:
     return AIToolSpec(
         name=EDIT_BLOCK,
@@ -160,7 +157,7 @@ def _edit_block_spec(refs: CourseRefs) -> AIToolSpec:
         parameters={
             "type": "object",
             "properties": {
-                "target_ref": _target_schema(
+                "target_ref": ref_schema(
                     "Référence du bloc texte ou exercice à modifier, telle qu'indiquée "
                     "dans le sommaire (ex. B3)",
                     [e.ref for e in refs.entries["block"] if _editable_block(e.entity)],
@@ -186,7 +183,7 @@ def _edit_module_spec(refs: CourseRefs) -> AIToolSpec:
         parameters={
             "type": "object",
             "properties": {
-                "target_ref": _target_schema(
+                "target_ref": ref_schema(
                     "Référence du module à modifier, telle qu'indiquée dans le sommaire (ex. M1)",
                     refs.refs("module"),
                 ),

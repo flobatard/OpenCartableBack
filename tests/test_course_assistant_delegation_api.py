@@ -803,11 +803,13 @@ def test_parent_questions_resume_replays_allow_edit(allow_edit) -> None:
 
 def test_proposal_decision_on_course_context_without_delegation_404() -> None:
     """Une proposition hors contexte d'édition n'existe que derrière une
-    délégation : sans elle, 404 sans consommer le registre."""
+    délégation ou dans un tour à édition globale (proposition structurelle,
+    ``test_course_assistant_structure_api.py``) : sans l'un ni l'autre, 404
+    sans consommer le registre."""
     hitl.register(
         CONVERSATION_ID,
         hitl.PendingInterrupt(
-            thread_id="t-x", tool_call_id="call_c", provider="ollama", config=None, allow_edit=True
+            thread_id="t-x", tool_call_id="call_c", provider="ollama", config=None
         ),
     )
     try:

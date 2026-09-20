@@ -27,7 +27,9 @@ d'édition** (``edit`` = descripteur
 contextes (``questions=True``), ``ask_questions``
 (:mod:`app.course_assistant.questions`) ; pour l'assistant global dont le tour
 active l'édition globale (``delegation=True``), les tools de délégation
-``edit_block``/``edit_module`` (:mod:`app.course_assistant.delegation`). Ils
+``edit_block``/``edit_module`` (:mod:`app.course_assistant.delegation`) et les
+propositions structurelles ``propose_block_add``/``propose_block_delete``/
+``propose_blocks_reorder`` (:mod:`app.course_assistant.structure`). Ils
 **ne mutent rien** — la proposition, les questions ou les consignes voyagent
 dans les ``args`` du ``tool_call`` — et **figent le run**
 (:func:`app.course_assistant.hitl.suspend`) jusqu'à la réponse du professeur
@@ -72,7 +74,11 @@ from app.course_assistant.editing.base import EditContext
 from app.course_assistant.questions import ASK_QUESTIONS, ASK_QUESTIONS_SPEC, handle_ask_questions
 from app.course_assistant.refs import CourseRefs
 from app.course_assistant.render import format_block, format_module
+from app.course_assistant.structure import STRUCTURE_TOOLS
 from app.models.resource import STATUS_AVAILABLE
+
+# Tools de l'édition globale (flag ``delegation``) : délégation + structure.
+GLOBAL_EDIT_TOOLS = DELEGATION_TOOLS + STRUCTURE_TOOLS
 
 PDF_MIME = "application/pdf"
 PDF_MAX_BYTES = 20 * 1024 * 1024
@@ -127,8 +133,8 @@ def build_tool_specs(
     """Les specs du tour, ``enum`` calé sur l'instantané du cours ; ``edit``
     (contexte d'édition) ajoute les specs de ses tools de proposition,
     ``delegation`` (édition globale du contexte ``course``) celles des tools de
-    délégation, ``questions`` celle d'``ask_questions`` — tous bloquants (run
-    à ``thread_id`` obligatoire)."""
+    délégation et des propositions structurelles, ``questions`` celle
+    d'``ask_questions`` — tous bloquants (run à ``thread_id`` obligatoire)."""
     specs = [
         _ref_spec(
             READ_BLOCK,
@@ -168,7 +174,7 @@ def build_tool_specs(
         specs.extend(tool.spec(refs).model_copy(update={"blocking": True}) for tool in edit.tools)
     if delegation:
         specs.extend(
-            tool.spec(refs).model_copy(update={"blocking": True}) for tool in DELEGATION_TOOLS
+            tool.spec(refs).model_copy(update={"blocking": True}) for tool in GLOBAL_EDIT_TOOLS
         )
     if questions:
         specs.append(ASK_QUESTIONS_SPEC)
@@ -241,7 +247,7 @@ def build_tool_executor(
     thread-safe en lecture. ``refs`` porte l'instantané du cours (blocs,
     ressources, modules et leurs références courtes). ``edit`` (contexte
     d'édition) active ses tools de proposition, ``delegation`` les tools de
-    délégation de l'assistant global, ``questions`` le tool ``ask_questions``
+    délégation et de structure de l'assistant global, ``questions`` le tool ``ask_questions``
     — tools HITL, run à ``thread_id`` obligatoire (validation puis
     **interrupt** jusqu'à la réponse du professeur — docstring du module), qui
     reçoivent l'appel complet (ils lisent ``call.id``, clé de reprise) et
@@ -366,7 +372,7 @@ def build_tool_executor(
         {tool.name: tool.build_handler(refs) for tool in edit.tools} if edit is not None else {}
     )
     if delegation:
-        call_handlers.update({tool.name: tool.build_handler(refs) for tool in DELEGATION_TOOLS})
+        call_handlers.update({tool.name: tool.build_handler(refs) for tool in GLOBAL_EDIT_TOOLS})
     if questions:
         call_handlers[ASK_QUESTIONS] = handle_ask_questions
 

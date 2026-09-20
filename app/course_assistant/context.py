@@ -66,7 +66,7 @@ _RESOURCE_REF_RE = re.compile(rf"oc-resource:({_UUID_RE})")
 
 
 def build_refs(
-    blocks, resources, modules, *, focus_block=None, question_refs=None
+    blocks, resources, modules, *, focus_block=None, question_refs=None, block_refs=None
 ) -> CourseRefs:
     """Références courtes du tour — blocs déjà triés (``position, id``), le
     titre affiché d'un bloc sans titre étant son libellé de type.
@@ -74,7 +74,9 @@ def build_refs(
     ``focus_block`` (bloc en cours d'édition) de type exercice : ses questions
     reçoivent les références ``Q1…`` — ``question_refs`` (mapping capturé à
     l'interrupt) rejoue la numérotation du tour lors d'une reprise HITL
-    (docstring de :mod:`app.course_assistant.refs`).
+    (docstring de :mod:`app.course_assistant.refs`). ``block_refs`` (même
+    capture, pour les blocs) ne rejoue rien : il désigne les blocs apparus ou
+    disparus depuis, à la reprise d'une proposition structurelle.
     """
     questions: list = []
     if focus_block is not None and focus_block.type == TYPE_EXERCISE:
@@ -86,6 +88,7 @@ def build_refs(
         block_titles={b.id: block_title(b) for b in blocks},
         questions=questions,
         question_refs=question_refs,
+        block_refs=block_refs,
     )
 
 

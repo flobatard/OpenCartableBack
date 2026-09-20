@@ -32,6 +32,17 @@ ref → id capturé à l'interrupt, cf. ``hitl.PendingInterrupt``) rejoue la
 numérotation d'origine, une question disparue **libère sa référence sans
 qu'elle soit réattribuée**, une question nouvelle reçoit la suivante.
 
+Les références des **blocs** restent en revanche **positionnelles** (``B1`` est
+toujours le premier bloc affiché) : une proposition structurelle acceptée
+(ajout, suppression, réordonnancement — :mod:`app.course_assistant.structure`)
+les renumérote à la reprise, et le résultat du tool rend alors le nouveau
+sommaire. ``block_refs`` (mapping ref → id capturé à l'interrupt, comme
+``question_refs``) ne sert qu'à **détecter** ce qui a changé depuis :
+:attr:`CourseRefs.new_block_refs` (blocs apparus — la référence du bloc
+ajouté) et :attr:`CourseRefs.stale_blocks` (références d'origine dont le bloc
+a disparu — :meth:`CourseRefs.block_gone`, validation idempotente d'une
+suppression ré-exécutée à la reprise).
+
 Les citations ``[titre](oc-block:B3)`` / ``oc-resource:R2`` écrites par le
 modèle sont **réécrites en UUID** avant tout usage (front, ``extract_sources``,
 persistance) par :class:`CitationRewriter`, qui travaille **en flux** (retenue
@@ -75,6 +86,7 @@ _KIND_LABELS: dict[Kind, tuple[str, str]] = {
 _REF_RE = re.compile(r"^(?:([a-z]+)\s*)?#?(\d+)$")
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
 _QUESTION_REF_RE = re.compile(r"^Q(\d+)$")
+_BLOCK_REF_RE = re.compile(r"^B(\d+)$")
 
 
 def _normalize(text: str) -> str:
@@ -189,13 +201,22 @@ class CourseRefs:
     numérotation rejouée. ``stale_questions`` en est le miroir : les
     références de la numérotation rejouée dont la question a DISPARU du bloc
     (ref → id d'origine) — à la reprise d'une suppression acceptée, c'est la
-    question que le front vient de supprimer (cf. :meth:`question_gone`)."""
+    question que le front vient de supprimer (cf. :meth:`question_gone`).
+
+    ``new_block_refs`` / ``stale_blocks`` : même paire pour les blocs, depuis
+    ``block_refs`` (numérotation d'origine, capturée à l'interrupt) — mais la
+    numérotation des blocs n'est PAS rejouée, elle reste positionnelle
+    (docstring du module) : ces deux attributs ne font que nommer, dans la
+    numérotation courante, le bloc ajouté ou la référence d'origine du bloc
+    supprimé."""
 
     entries: dict[Kind, list[RefEntry]] = field(
         default_factory=lambda: {"block": [], "resource": [], "module": [], "question": []}
     )
     new_question_refs: tuple[str, ...] = ()
     stale_questions: dict[str, str] = field(default_factory=dict)
+    new_block_refs: tuple[str, ...] = ()
+    stale_blocks: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def build(
@@ -207,13 +228,16 @@ class CourseRefs:
         block_titles: dict | None = None,
         questions: Sequence = (),
         question_refs: Mapping[str, str] | None = None,
+        block_refs: Mapping[str, str] | None = None,
     ) -> "CourseRefs":
         """Numérote blocs (ordre reçu = ordre d'affichage), ressources et
         modules. ``block_titles`` (optionnel) donne le titre affiché d'un bloc
         sans titre (libellé de type, cf. ``context.format_block``).
         ``questions`` (dicts du content d'un bloc exercice — le bloc édité)
         et ``question_refs`` (numérotation d'origine à rejouer) alimentent le
-        genre ``question`` (:func:`_question_entries`)."""
+        genre ``question`` (:func:`_question_entries`). ``block_refs``
+        (numérotation d'origine des blocs) n'alimente que ``new_block_refs``
+        et ``stale_blocks`` — jamais la numérotation elle-même."""
         refs = cls()
         titles = block_titles or {}
         for kind, items, title_of in (
@@ -237,6 +261,17 @@ class CourseRefs:
                 str(ref): str(raw_id)
                 for ref, raw_id in question_refs.items()
                 if _QUESTION_REF_RE.match(str(ref)) and str(ref) not in present
+            }
+        if block_refs:
+            known = {_uuid_str(raw_id) for raw_id in block_refs.values()}
+            present_ids = {str(e.id) for e in refs.entries["block"]}
+            refs.new_block_refs = tuple(
+                e.ref for e in refs.entries["block"] if str(e.id) not in known
+            )
+            refs.stale_blocks = {
+                str(ref): str(raw_id)
+                for ref, raw_id in block_refs.items()
+                if _BLOCK_REF_RE.match(str(ref)) and _uuid_str(raw_id) not in present_ids
             }
         return refs
 
@@ -275,7 +310,19 @@ class CourseRefs:
         d'origine). Sert aux validations idempotentes des tools de
         proposition : à la reprise d'une suppression acceptée, la question
         visée a déjà été retirée par le front."""
-        if not self.stale_questions:
+        return self._gone("question", self.stale_questions, raw)
+
+    def block_gone(self, raw: object) -> bool:
+        """Miroir de :meth:`question_gone` pour les blocs : ``raw`` est une
+        référence de la numérotation D'ORIGINE (ou l'UUID) d'un bloc qui a
+        disparu depuis — à la reprise d'une suppression acceptée, la
+        référence positionnelle désigne désormais un AUTRE bloc, d'où ce test
+        AVANT toute résolution."""
+        return self._gone("block", self.stale_blocks, raw)
+
+    @staticmethod
+    def _gone(kind: Kind, stale: Mapping[str, str], raw: object) -> bool:
+        if not stale:
             return False
         query = str(raw or "").strip()
         if not query:
@@ -283,15 +330,15 @@ class CourseRefs:
         match = _REF_RE.match(query.casefold())
         if match:
             word, number = match.groups()
-            if (word is None or word in _KIND_WORDS["question"]) and (
-                f"Q{int(number)}" in self.stale_questions
+            if (word is None or word in _KIND_WORDS[kind]) and (
+                f"{_KIND_PREFIX[kind]}{int(number)}" in stale
             ):
                 return True
         try:
             parsed = uuid.UUID(query)
         except ValueError:
             return False
-        return any(str(parsed) == _uuid_str(v) for v in self.stale_questions.values())
+        return any(str(parsed) == _uuid_str(v) for v in stale.values())
 
     def by_uuid(self, kind: Kind, raw: str) -> RefEntry | None:
         try:

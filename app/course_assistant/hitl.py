@@ -2,8 +2,9 @@
 
 Deux genres d'attente (:data:`KIND_PROPOSAL`, :data:`KIND_QUESTIONS`) passent
 par l'**interrupt LangGraph** : un tool bloquant — proposition d'édition d'un
-contexte d'édition (:mod:`app.course_assistant.editing`), ou questions au
-professeur (:mod:`app.course_assistant.questions`, tous contextes) — appelle
+contexte d'édition (:mod:`app.course_assistant.editing`), proposition
+structurelle de l'assistant global (:mod:`app.course_assistant.structure`), ou
+questions au professeur (:mod:`app.course_assistant.questions`, tous contextes) — appelle
 :func:`suspend`, **seul point d'appel d'``agent_interrupt``** du package ; le
 flux SSE émet ``interrupt`` et SE FERME ; l'état du run vit au **checkpointer
 InMemory** du client IA (:mod:`app.core.ai`), et CE registre retient de quoi
@@ -107,6 +108,12 @@ class PendingInterrupt:
     # Références ``Q…`` → id des questions du bloc édité (contexte exercice),
     # telles que numérotées au tour de l'interrupt ; ``None`` sinon.
     question_refs: dict[str, str] | None = None
+    # Références ``B…`` → id des blocs du cours, telles que numérotées au tour
+    # de l'interrupt. Jamais rejouées (les ``B…`` restent positionnelles) :
+    # elles ne servent qu'à repérer, à la reprise d'une proposition
+    # structurelle, le bloc apparu ou disparu (``CourseRefs.new_block_refs`` /
+    # ``stale_blocks``).
+    block_refs: dict[str, str] | None = None
     kind: str = KIND_PROPOSAL
     # Questions au professeur : ``[{"multi_select": bool, "options": n}]``,
     # une entrée par question (cf. ``questions.answer_shape``) ; ``None`` sinon.

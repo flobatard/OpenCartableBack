@@ -45,6 +45,17 @@ SUMMARY_SCHEMA = {
 }
 
 
+def ref_schema(description: str, refs: list[str]) -> dict:
+    """Paramètre « référence » d'un tool HITL, ``enum`` des références
+    éligibles du tour — omis si la liste est vide (un ``enum`` vide est un
+    schéma invalide chez certains providers, motif ``_ref_spec`` de
+    :mod:`app.course_assistant.tools`)."""
+    schema: dict = {"type": "string", "description": description}
+    if refs:
+        schema["enum"] = refs
+    return schema
+
+
 def hitl_description(action: str) -> str:
     """Description d'un tool de proposition : l'action, puis le rappel du
     protocole HITL (détaillé une seule fois dans le system prompt)."""

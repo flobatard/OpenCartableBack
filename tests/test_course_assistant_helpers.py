@@ -1149,6 +1149,29 @@ async def test_executor_exercise_delete_tolerates_the_question_already_removed(
     assert unknown.is_error and "introuvable" in unknown.content
 
 
+def test_block_refs_are_compared_never_replayed() -> None:
+    """``block_refs`` (numérotation capturée à l'interrupt) ne rejoue rien — les
+    ``B…`` restent positionnelles — mais désigne le bloc apparu
+    (``new_block_refs``, dans la numérotation courante) et la référence
+    d'origine du bloc disparu (``stale_blocks`` / ``block_gone``)."""
+    a, b, c, d = (uuid.uuid4() for _ in range(4))
+    origin = {"B1": str(a), "B2": str(b), "B3": str(c)}
+    rows = [_block(id=d, title="Nouveau"), _block(id=a), _block(id=c)]
+    refs = build_refs(rows, [], [], block_refs=origin)
+    assert refs.refs("block") == ["B1", "B2", "B3"]
+    assert refs.ref_of("block", a) == "B2"
+    assert refs.new_block_refs == ("B1",)
+    assert refs.stale_blocks == {"B2": str(b)}
+    for raw in ("B2", "b2", "bloc 2", str(b)):
+        assert refs.block_gone(raw)
+    for raw in ("B1", "B3", "Q2", str(a), "", None):
+        assert not refs.block_gone(raw)
+
+    plain = build_refs(rows, [], [])
+    assert plain.new_block_refs == () and plain.stale_blocks == {}
+    assert not plain.block_gone("B2")
+
+
 @pytest.mark.anyio
 async def test_executor_exercise_validates_before_interrupting(monkeypatch) -> None:
     """Args invalides : échec immédiat et actionnable, JAMAIS d'interrupt."""
@@ -1424,6 +1447,9 @@ def test_system_prompt_for_course_editing_variant() -> None:
     assert COURSE_EDITING_SYSTEM_PROMPT != COURSE_SYSTEM_PROMPT
     assert "edit_block" in COURSE_EDITING_SYSTEM_PROMPT
     assert "edit_module" in COURSE_EDITING_SYSTEM_PROMPT
+    for name in ("propose_block_add", "propose_block_delete", "propose_blocks_reorder"):
+        assert name in COURSE_EDITING_SYSTEM_PROMPT
+        assert name not in COURSE_SYSTEM_PROMPT
     assert "```mermaid" not in COURSE_EDITING_SYSTEM_PROMPT
     assert "Protocole de proposition" not in COURSE_EDITING_SYSTEM_PROMPT
     assert system_prompt_for(BLOCK_TEXT, allow_edit=True) == BLOCK_TEXT.system_prompt

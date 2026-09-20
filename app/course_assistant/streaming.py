@@ -52,6 +52,17 @@ tour) puis répond. La transcription du sous-assistant n'est **pas persistée**
 son résultat (compte rendu) le sont ; l'usage de ses rounds s'ajoute à celui
 du flux.
 
+**Propositions structurelles** (:mod:`app.course_assistant.structure`) : dans
+le même régime d'édition globale, ``propose_block_add``/``propose_block_delete``/
+``propose_blocks_reorder`` sont des propositions de l'assistant global
+LUI-MÊME — ``interrupt`` de genre ``proposal`` **sans** ``agent``, args
+réécrits (ids résolus), reprise par la route de décision, que ``allow_edit``
+retenu au registre autorise hors contexte d'édition. Le front applique
+l'opération acceptée avant sa décision ; la reprise recharge l'instantané, où
+les références ``B…`` — positionnelles — sont renumérotées : le résultat du
+tool rend le nouveau sommaire (``block_refs`` capturés à l'interrupt pour
+nommer le bloc apparu et tolérer le bloc disparu).
+
 Un flux refermé sans ``done``, erreur ni ``interrupt`` (Stop, déconnexion)
 purge ses threads checkpointés (:func:`_release_on_close`) ; supprimer une
 conversation abandonne sa reprise (:func:`drop_pending_resume`) — les threads
@@ -113,7 +124,6 @@ from app.course_assistant.context import (
     turn_message,
 )
 from app.course_assistant.delegation import (
-    DELEGATION_TOOLS,
     DELEGATIONS_EXCEEDED_NOTICE,
     INTERRUPTED_TEXT,
     MAX_DELEGATIONS_PER_TURN,
@@ -135,7 +145,7 @@ from app.course_assistant.schemas import (
     QuestionAnswerCreate,
 )
 from app.course_assistant.service import load_conversation, load_messages, load_snapshot
-from app.course_assistant.tools import build_tool_executor, build_tool_specs
+from app.course_assistant.tools import GLOBAL_EDIT_TOOLS, build_tool_executor, build_tool_specs
 from app.course_assistant.turn_encoder import TOOL_RESULT_EXCERPT_CHARS as TOOL_RESULT_EXCERPT_CHARS
 from app.course_assistant.turn_encoder import encode_turn
 from app.courses.queries import get_owned_course
@@ -189,8 +199,8 @@ def _turn_tools(
 ) -> tuple[list[AIToolSpec], ToolExecutor]:
     """Specs et exécuteur d'un run d'assistant — identiques à l'aller et à
     la reprise (contrat de ``stream_agent``) : lectures du cours, tools de
-    proposition du contexte d'édition, tools de délégation (édition globale
-    du contexte ``course``), questions au professeur."""
+    proposition du contexte d'édition, tools de délégation et de structure
+    (édition globale du contexte ``course``), questions au professeur."""
     return (
         build_tool_specs(refs, edit=edit, questions=True, delegation=delegation),
         build_tool_executor(storage, refs, edit=edit, questions=True, delegation=delegation),
@@ -199,10 +209,11 @@ def _turn_tools(
 
 def _hitl_tools(edit: EditContext | None, allow_edit: bool) -> dict[str, ProposalTool]:
     """Tools dont les args d'un appel sont réécrits à l'émission (sink) :
-    propositions du contexte d'édition, délégations de l'assistant global."""
+    propositions du contexte d'édition, délégations et propositions
+    structurelles de l'assistant global."""
     tools = {tool.name: tool for tool in edit.tools} if edit is not None else {}
     if allow_edit:
-        tools.update({tool.name: tool for tool in DELEGATION_TOOLS})
+        tools.update({tool.name: tool for tool in GLOBAL_EDIT_TOOLS})
     return tools
 
 
@@ -614,7 +625,8 @@ async def _sse_resume(
 
     404 ``missing_detail`` si rien n'attend pour cet appel et ce genre
     (inconnu, déjà repris, expiré, perdu au redémarrage — ou proposition hors
-    contexte d'édition qui ne vient pas d'un sous-assistant). ``build_resume``
+    contexte d'édition qui ne vient ni d'un sous-assistant ni d'un tour à
+    édition globale). ``build_resume``
     construit la valeur de reprise depuis l'entrée en attente, AVANT qu'elle
     ne soit consommée : son refus (HTTPException, 422) laisse la reprise
     disponible. La **config de la reprise est celle du tour d'origine**
@@ -645,13 +657,15 @@ async def _sse_resume(
     for expired in hitl.sweep_expired():
         _drop_threads(client, expired)
     pending = hitl.peek(conversation.id, tool_call_id, kind=kind)
-    # Une proposition n'existe que dans un contexte d'édition — ou chez un
-    # sous-assistant d'édition (délégation) ; des questions, dans tous.
+    # Une proposition n'existe que dans un contexte d'édition, chez un
+    # sous-assistant d'édition (délégation) ou — proposition structurelle —
+    # chez l'assistant global en édition globale ; des questions, dans tous.
     if (
         pending is not None
         and kind == hitl.KIND_PROPOSAL
         and edit is None
         and pending.delegation is None
+        and not pending.allow_edit
     ):
         pending = None
     if pending is None:
@@ -666,7 +680,9 @@ async def _sse_resume(
     if delegation is None:
         # La cible éditée (absente = supprimée pendant l'attente, cas
         # théorique : le tool répondra par une erreur actionnable) et la
-        # numérotation Q… du tour d'origine, rejouée pour la suite du tour.
+        # numérotation Q… du tour d'origine, rejouée pour la suite du tour ;
+        # celle des blocs n'est que comparée (proposition structurelle : le
+        # résultat du tool nomme le bloc apparu, tolère le bloc disparu).
         allow_edit = edit is None and pending.allow_edit
         focus_block, _ = _resolve_focus(edit, conversation, blocks, modules)
         refs = build_refs(
@@ -675,6 +691,7 @@ async def _sse_resume(
             modules,
             focus_block=focus_block,
             question_refs=pending.question_refs,
+            block_refs=pending.block_refs,
         )
         tools, executor = _turn_tools(storage, refs, edit, delegation=allow_edit)
         system_prompt = system_prompt_for(edit, allow_edit=allow_edit)
@@ -1039,6 +1056,11 @@ class _AssistantTurn:
         # Numérotation Q… des questions du bloc édité, rejouée à la reprise
         # (références stables le temps du tour).
         question_refs = {e.ref: str(e.id) for e in run_refs.entries["question"]}
+        # Numérotation B… du flux (refs de l'assistant, jamais celles d'un
+        # sous-assistant) : elle ne sera pas rejouée — positionnelle — mais
+        # désigne, à la reprise d'une proposition structurelle, le bloc apparu
+        # ou disparu (``CourseRefs.new_block_refs`` / ``stale_blocks``).
+        block_refs = {e.ref: str(e.id) for e in self.refs.entries["block"]}
         delegation = None
         if run is not None:
             delegation = hitl.Delegation(
@@ -1059,6 +1081,7 @@ class _AssistantTurn:
                 provider=self.provider,
                 config=self.config,
                 question_refs=question_refs or None,
+                block_refs=block_refs or None,
                 kind=kind,
                 answer_shape=value.get("answer_shape"),
                 allow_edit=self.allow_edit,

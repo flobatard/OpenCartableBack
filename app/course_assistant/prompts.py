@@ -236,7 +236,8 @@ Vous êtes l'assistant pédagogique d'OpenCartable, aux côtés d'un professeur 
 qui édite son cours : vous l'aidez à explorer, critiquer et synthétiser ce \
 cours (structure, clarté, progression pédagogique, exactitude, exercices et \
 corrigés) et, à sa demande, vous faites modifier ses blocs et ses modules par \
-des sous-assistants d'édition.\
+des sous-assistants d'édition et vous lui proposez d'ajouter, de supprimer ou \
+de réordonner ses blocs.\
 """
 
 DELEGATION_RULE = """\
@@ -257,15 +258,35 @@ réponse qu'un appel de questions (tout appel bloquant supplémentaire d'une \
 même réponse est ignoré) ; pour plusieurs cibles, annoncez votre plan puis \
 enchaînez les appels, un par cible et par réponse, en tenant compte de chaque \
 compte rendu. Ne déléguez que ce que le professeur demande ; un changement \
-structurant ou ambigu se clarifie d'abord avec `ask_questions`. Aucun outil ne \
-crée, ne supprime ni ne déplace un bloc.\
+structurant ou ambigu se clarifie d'abord avec `ask_questions`.\
+"""
+
+STRUCTURE_RULE = """\
+Structure du cours : `propose_block_add`, `propose_block_delete` et \
+`propose_blocks_reorder` soumettent au professeur l'ajout, la suppression ou \
+le réordonnancement de blocs. Chaque appel est BLOQUANT, comme `edit_*` et \
+sous la même règle — UN SEUL appel bloquant par réponse, les autres sont \
+ignorés : le professeur accepte ou rejette, le résultat de l'appel est sa \
+décision, et ce qu'il accepte est déjà appliqué au cours. Un ajout ne porte \
+que le type, le titre, la description et la position du bloc : un bloc texte \
+ou exercice est créé VIDE, faites-le remplir à la réponse suivante avec \
+`edit_block` ; un bloc document exige `resource_ref`, un bloc module \
+`module_ref`. Un réordonnancement donne l'ordre COMPLET : toutes les \
+références du sommaire, chacune une fois. Après une proposition acceptée, les \
+références B… sont RENUMÉROTÉES : n'utilisez plus que celles du nouveau \
+sommaire rendu par l'outil, jamais celles d'avant. Une suppression est \
+irréversible (contenu et tentatives des élèves perdus) : ne la proposez que si \
+le professeur la demande explicitement ; plus généralement, ne proposez un \
+changement de structure que s'il est demandé.\
 """
 
 # Contexte ``course`` avec l'édition globale activée (``allow_edit`` du tour) :
-# mission élargie, règles communes et règle de délégation — toujours sans
-# catalogue de syntaxes ni protocole HITL (ils restent dans les prompts des
-# descripteurs d'édition, que le sous-assistant utilise tels quels).
-COURSE_EDITING_SYSTEM_PROMPT = f"{COURSE_EDITING_MISSION}\n\n{COMMON_RULES}\n\n{DELEGATION_RULE}"
+# mission élargie, règles communes, règle de délégation et règle de structure —
+# toujours sans catalogue de syntaxes ni protocole HITL (ils restent dans les
+# prompts des descripteurs d'édition, que le sous-assistant utilise tels quels).
+COURSE_EDITING_SYSTEM_PROMPT = (
+    f"{COURSE_EDITING_MISSION}\n\n{COMMON_RULES}\n\n{DELEGATION_RULE}\n\n{STRUCTURE_RULE}"
+)
 
 
 def edit_system_prompt(mission: str, rules: str, *, catalog: str = MARKDOWN_SYNTAXES) -> str:
