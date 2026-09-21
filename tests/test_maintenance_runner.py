@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import text
 
 from app.core.config import settings
+from app.core.logging import get_correlation_id
 from app.maintenance import runner, state
 from app.maintenance.registry import JOBS, JOBS_BY_NAME
 from app.maintenance.results import (
@@ -319,3 +320,37 @@ async def test_a_fully_skipped_report_is_not_a_failure(
 def test_state_module_is_the_only_writer_of_the_state_table():
     """Le runner passe par ``state.record_state`` — jamais par la session du job."""
     assert runner.record_state is state.record_state
+
+
+# ─────────────────────────────────────────────
+# Corrélation
+# ─────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_a_job_runs_under_its_own_correlation_id(
+    monkeypatch, current_schema, purge_settings
+):
+    """Toutes les lignes d'une passe partagent un id — celles de ``service.py``,
+    ``checks.py`` et ``state.py`` comprises, puisqu'elles s'exécutent dessous.
+
+    Deux passes reçoivent deux ids : les lignes d'une nuit ne se mélangent pas,
+    et celles de la boucle de relève Redis (qui tourne dans la même boucle
+    asyncio, hors de toute passe) restent démêlables.
+    """
+    seen: list[str | None] = []
+
+    async def record(job_name, **state_kwargs):
+        seen.append(get_correlation_id())
+
+    monkeypatch.setattr(runner, "record_state", record)
+    job = JOBS_BY_NAME["share_links"]
+
+    for _ in range(2):
+        db = FakeSession([FakeResult(rows=["rev"]), FakeResult(rowcount=1)])
+        await runner.run_job(job, db=db, storage=None)
+
+    assert all(value is not None for value in seen)
+    assert seen[0] != seen[1]
+    # Hors passe, la colonne d'id retombe à « - » : la portée ne fuit pas.
+    assert get_correlation_id() is None

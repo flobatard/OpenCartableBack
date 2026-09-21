@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import correlation_scope, new_correlation_id
 from app.core.storage import Storage
 from app.maintenance.registry import MaintenanceJob, retention_for
 from app.maintenance.results import (
@@ -82,57 +83,64 @@ async def run_job(
     l'état est écrit quand même : c'est précisément quand un job tombe que
     savoir qu'il est tombé compte.
     """
-    retention = retention_for(job)
-    if retention is not None and retention <= 0:
-        logger.info("job %s : ignoré — rétention à 0 (tâche désactivée)", job.label)
-        return await record_skip(job, SKIP_RETENTION)
+    # Un id de corrélation PAR JOB, pas par passe : run_jobs en enchaîne jusqu'à
+    # neuf, et ce qu'on veut grepper c'est « tout ce qu'a produit s3_orphans
+    # cette nuit-là » — lignes de service.py, checks.py, state.py et schema.py
+    # comprises. Utile même sur une passe d'un seul job : la boucle de relève
+    # Redis du scheduler tourne dans la même boucle asyncio, et ses lignes
+    # s'entrelacent aujourd'hui sans moyen de les démêler.
+    with correlation_scope(new_correlation_id()):
+        retention = retention_for(job)
+        if retention is not None and retention <= 0:
+            logger.info("job %s : ignoré — rétention à 0 (tâche désactivée)", job.label)
+            return await record_skip(job, SKIP_RETENTION)
 
-    if not await is_current(db, job_label=f"job {job.label}"):
-        return await record_skip(job, SKIP_SCHEMA)
+        if not await is_current(db, job_label=f"job {job.label}"):
+            return await record_skip(job, SKIP_SCHEMA)
 
-    previous_detail = None
-    if job.needs_previous_detail:
-        previous_detail = await load_detail(db, job.name)
+        previous_detail = None
+        if job.needs_previous_detail:
+            previous_detail = await load_detail(db, job.name)
 
-    logger.info("job %s : démarrage", job.label)
-    started_at = datetime.now(UTC)
-    started = time.monotonic()
-    count, detail, error = 0, None, None
-    status = STATUS_OK
-    try:
-        outcome = await job.bind(
-            JobContext(db=db, storage=storage, previous_detail=previous_detail)
-        )()
-    except Exception as exc:  # noqa: BLE001 — un job qui tombe n'arrête pas les autres
-        status = STATUS_FAILED
-        error = format_error(exc)
-        logger.exception("job %s : échec", job.label)
-        await db.rollback()
-    else:
-        if isinstance(outcome, JobOutcome):
-            count, detail = outcome.count, outcome.detail
+        logger.info("job %s : démarrage", job.label)
+        started_at = datetime.now(UTC)
+        started = time.monotonic()
+        count, detail, error = 0, None, None
+        status = STATUS_OK
+        try:
+            outcome = await job.bind(
+                JobContext(db=db, storage=storage, previous_detail=previous_detail)
+            )()
+        except Exception as exc:  # noqa: BLE001 — un job qui tombe n'arrête pas les autres
+            status = STATUS_FAILED
+            error = format_error(exc)
+            logger.exception("job %s : échec", job.label)
+            await db.rollback()
         else:
-            count = outcome
-    duration_ms = int((time.monotonic() - started) * 1000)
+            if isinstance(outcome, JobOutcome):
+                count, detail = outcome.count, outcome.detail
+            else:
+                count = outcome
+        duration_ms = int((time.monotonic() - started) * 1000)
 
-    if status == STATUS_OK:
-        logger.info("job %s : %d en %d ms", job.label, count, duration_ms)
-    else:
-        logger.error("job %s : échec en %d ms", job.label, duration_ms)
+        if status == STATUS_OK:
+            logger.info("job %s : %d en %d ms", job.label, count, duration_ms)
+        else:
+            logger.error("job %s : échec en %d ms", job.label, duration_ms)
 
-    await _record_safely(
-        job,
-        started_at=started_at,
-        finished_at=datetime.now(UTC),
-        status=status,
-        count=count,
-        duration_ms=duration_ms,
-        error=error,
-        detail=detail,
-    )
-    return JobResult(
-        name=job.name, status=status, count=count, duration_ms=duration_ms
-    )
+        await _record_safely(
+            job,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            status=status,
+            count=count,
+            duration_ms=duration_ms,
+            error=error,
+            detail=detail,
+        )
+        return JobResult(
+            name=job.name, status=status, count=count, duration_ms=duration_ms
+        )
 
 
 async def run_jobs(

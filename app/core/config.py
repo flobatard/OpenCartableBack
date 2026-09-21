@@ -100,6 +100,24 @@ class Settings(BaseSettings):
     # CORS — origines de la SPA Angular (vide = middleware désactivé)
     CORS_ORIGINS: list[str] = []
 
+    # Journalisation (app/core/logging.py, seule config de log du projet).
+    # Niveau des loggers `app.*` SEULEMENT : la racine reste à WARNING pour ne
+    # pas allumer httpx (une ligne par appel sortant vers Zitadel et vers le
+    # provider IA), botocore, apscheduler ni langchain. Une valeur invalide
+    # retombe sur INFO avec un log — jamais une erreur au boot (même doctrine
+    # qu'une expression cron de maintenance invalide).
+    LOG_LEVEL: str = "INFO"
+    # Une ligne par requête HTTP servie (méthode, cible, statut, durée, id de
+    # corrélation) sur le logger `app.access`. La sonde /health y est
+    # journalisée en DEBUG : invisible à INFO, disponible si on descend le
+    # niveau. L'id de corrélation et l'en-tête X-Request-ID, eux, ne dépendent
+    # pas de ce réglage.
+    LOG_ACCESS: bool = True
+    # Au-delà de ce délai, la ligne d'access-log passe en WARNING (requête
+    # lente greppable sur un Pi). Les réponses `text/event-stream` en sont
+    # exclues : une génération IA dure une minute par nature.
+    LOG_SLOW_REQUEST_MS: int = 1_000
+
     # Base de données PostgreSQL — par composants (dev local / docker compose).
     POSTGRES_USER: str = "cartable"
     POSTGRES_PASSWORD: str = ""  # SECRET (.env)

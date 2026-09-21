@@ -58,6 +58,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, engine
 from app.core.kv import KeyValueStore, KVUnavailable, close_kv, get_kv
+from app.core.logging import configure_logging
 from app.core.storage import get_storage
 from app.maintenance import control
 from app.maintenance.registry import (
@@ -443,9 +444,8 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    # Process autonome : il pose sa propre config de log (l'API n'en a aucune).
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-5.5s [%(name)s] %(message)s",
-    )
+    # Process autonome : l'API pose la même config à l'import de app.main, lui
+    # doit le faire à la main — même format, même LOG_LEVEL, donc des lignes
+    # qui se lisent côte à côte dans `docker compose logs`.
+    configure_logging()
     sys.exit(asyncio.run(main()))

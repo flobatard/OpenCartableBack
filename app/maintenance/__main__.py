@@ -22,6 +22,7 @@ import logging
 import sys
 
 from app.core.database import AsyncSessionLocal, engine
+from app.core.logging import configure_logging
 from app.core.storage import get_storage
 from app.maintenance.registry import JOBS, JOBS_BY_NAME, MaintenanceJob
 from app.maintenance.runner import run_jobs
@@ -73,9 +74,8 @@ async def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    # Process autonome : il pose sa propre config de log (l'API n'en a aucune).
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-5.5s [%(name)s] %(message)s",
-    )
+    # Process autonome : l'API pose la même config à l'import de app.main, lui
+    # doit le faire à la main — même format, même LOG_LEVEL, donc des lignes
+    # qui se lisent côte à côte dans `docker compose logs`.
+    configure_logging()
     sys.exit(asyncio.run(main(sys.argv[1:])))

@@ -1,5 +1,6 @@
-"""Fabrique de l'application : CORS, lifespan et montage des routeurs."""
+"""Fabrique de l'application : logs, CORS, lifespan et montage des routeurs."""
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
@@ -12,6 +13,7 @@ from app.core.ai import shutdown_langfuse
 from app.core.config import settings
 from app.core.database import engine
 from app.core.kv import close_kv
+from app.core.logging import REQUEST_ID_HEADER, AccessLogMiddleware, configure_logging
 from app.course_assistant.router import router as course_assistant_router
 from app.course_transfer.router import router as course_transfer_router
 from app.courses.router import router as courses_router
@@ -27,6 +29,15 @@ from app.student_exercises.router import teacher_router as student_exercises_tea
 from app.subjects.router import router as subjects_router
 from app.system.router import router as system_router
 from app.users.router import router as users_router
+
+# Effet de bord à l'import, comme le `settings = get_settings()` de
+# core/config.py : c'est le seul emplacement qui marche partout à la fois —
+# uvicorn (sa propre config de log a lieu AVANT l'import de l'app, on reprend
+# donc la main), `--reload`, et les tests (l'appel a lieu pendant la collecte,
+# avant que pytest ne pose le handler de caplog sur la racine). Jamais dans
+# create_app() : dictConfig y arracherait ce handler à chaque test.
+configure_logging()
+logger = logging.getLogger(__name__)
 
 # Ordre de montage = ordre de matching. Une seule contrainte load-bearing :
 # course_transfer AVANT courses — le littéral POST /courses/import doit primer
@@ -55,6 +66,15 @@ ROUTERS: tuple[APIRouter, ...] = (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Preuve observable que la configuration a bien été appliquée, dans
+    # l'esprit du log_plan() du scheduler (qui imprime le fuseau qu'il a
+    # résolu). N'apparaît pas dans les tests : ils n'exécutent pas le lifespan.
+    logger.info(
+        "démarrage — APP_ENV=%s, DEBUG=%s, LOG_LEVEL=%s",
+        settings.APP_ENV,
+        settings.DEBUG,
+        settings.LOG_LEVEL,
+    )
     yield
     # Shutdown : flush des traces Langfuse (no-op sans config), le client
     # Redis s'il a servi (backoffice), puis le pool.
@@ -77,7 +97,20 @@ def create_app() -> FastAPI:
             allow_credentials=False,  # auth par Bearer, aucun cookie
             allow_methods=["*"],
             allow_headers=["Authorization", "Content-Type"],
+            # Une permission, pas un contrat : le front l'ignore aujourd'hui,
+            # mais sans elle il ne pourra jamais lire l'id de corrélation d'une
+            # réponse en erreur. Pas dans allow_headers pour autant — laisser
+            # le front IMPOSER l'id est une autre décision.
+            expose_headers=[REQUEST_ID_HEADER],
         )
+
+    # Ajouté en DERNIER, donc middleware le PLUS EXTERNE (add_middleware
+    # insère en tête de pile) : la durée mesurée couvre le CORS, et les
+    # préflights sont journalisés. Inconditionnel, contrairement au CORS.
+    app.add_middleware(
+        AccessLogMiddleware,
+        quiet_paths=frozenset({f"{settings.API_V1_PREFIX}/health"}),
+    )
 
     for router in ROUTERS:
         app.include_router(router, prefix=settings.API_V1_PREFIX)

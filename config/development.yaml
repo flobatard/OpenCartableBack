@@ -5,6 +5,14 @@
 
 DEBUG: true
 
+# Journalisation (app/core/logging.py) — défauts sur Settings : LOG_LEVEL INFO
+# (loggers `app.*` seulement ; la racine reste à WARNING pour ne pas allumer
+# httpx/botocore/apscheduler), access-log actif, requête lente au-delà de
+# 1000 ms. Décommenter pour changer :
+# LOG_LEVEL: DEBUG
+# LOG_ACCESS: false
+# LOG_SLOW_REQUEST_MS: 2000
+
 CORS_ORIGINS:
   - http://localhost:4200
 

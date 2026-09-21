@@ -9,6 +9,14 @@
 
 DEBUG: false
 
+# Journalisation (app/core/logging.py) — défauts sur Settings : LOG_LEVEL INFO
+# (loggers `app.*` seulement ; la racine reste à WARNING pour ne pas allumer
+# httpx/botocore/apscheduler), access-log actif, requête lente au-delà de
+# 1000 ms. Décommenter pour changer :
+# LOG_LEVEL: DEBUG
+# LOG_ACCESS: false
+# LOG_SLOW_REQUEST_MS: 2000
+
 # Front et API sont sur DEUX origines distinctes en preprod
 # (preprod.opencartable.com / api.preprod.opencartable.com) : le middleware CORS
 # est donc actif et doit lister l'origine EXACTE de la SPA (schéma + hôte, sans
