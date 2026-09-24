@@ -19,6 +19,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.storage import Storage
+from app.course_assistant.queries import available_attachment_keys_statement
 from app.maintenance.results import JobOutcome
 from app.maintenance.service import S3_PREFIXES
 from app.models.ai_attachment import AIAttachment
@@ -54,6 +55,35 @@ TABLE_SIZES_SQL = text(
     "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
     "WHERE n.nspname = current_schema() AND c.relkind = 'r'"
 )
+
+
+def _available_resource_keys_statement(cursor: str | None, limit: int, cutoff):
+    """Tranche de clés de ressources ``available`` à vérifier (cf. les pièces
+    jointes, même forme dans `app/course_assistant/queries.py`)."""
+    condition = (Resource.status == STATUS_AVAILABLE) & (Resource.created_at < cutoff)
+    if cursor:
+        condition &= Resource.s3_key > cursor
+    return select(Resource.s3_key).where(condition).order_by(Resource.s3_key).limit(limit)
+
+
+# Tables dont les clés sont balayées par tranches, DANS CET ORDRE (contrat des
+# tests : un execute chacune, et la dernière reçoit le reliquat de budget).
+# Toute table qui écrit une clé S3 et sert des URL présignées doit y figurer,
+# sinon ses lignes cassées ne sont jamais signalées.
+_CURSORED_TABLES = (
+    ("resources", _available_resource_keys_statement),
+    ("ai_attachments", available_attachment_keys_statement),
+)
+
+
+def _cursors(cursor) -> dict[str, str]:
+    """Position par table. Compat : une **chaîne** est un curseur d'avant
+    l'ajout des pièces jointes, quand seule ``resources`` était balayée."""
+    if isinstance(cursor, str):
+        return {"resources": cursor}
+    if isinstance(cursor, dict):
+        return {k: v for k, v in cursor.items() if isinstance(v, str) and v}
+    return {}
 
 
 def _human_bytes(size: int) -> str:
@@ -146,11 +176,18 @@ async def missing_s3_objects(
     présignée qui rendra 404 au prof ou à l'élève.
 
     **Stratégie : curseur tournant + HEAD à concurrence bornée.** Les avatars
-    d'abord, tous (quelques dizaines de lignes) ; puis une tranche de
-    ``resources`` ordonnée par ``s3_key``, reprise là où la passe précédente
-    s'était arrêtée. L'index unique ``uq_resources_s3_key`` en fait un parcours
-    d'index, pas un tri. Une tranche plus courte que le budget = table épuisée,
-    le curseur s'enroule.
+    d'abord, tous (quelques dizaines de lignes) ; puis une tranche de chacune
+    des tables à clés — ``resources`` et ``ai_attachments`` — ordonnée par
+    ``s3_key`` et reprise là où la passe précédente s'était arrêtée. Leur index
+    unique en fait un parcours d'index, pas un tri. Une tranche plus courte que
+    son budget = table épuisée, son curseur s'enroule.
+
+    Le budget restant est **partagé** entre les deux tables, et ce qu'une
+    n'utilise pas revient à la suivante : sans ce partage, la plus grosse
+    (``resources``) mangerait tout le budget et l'autre ne serait jamais
+    vérifiée. Le curseur est donc un **dict par table** ; une chaîne (état
+    d'une passe antérieure à cette extension) est lue comme le curseur de
+    ``resources``.
 
     La direction inverse **n'est pas décomposable par page** comme l'est la
     réconciliation : la seule alternative (lister le bucket et compléter) exige
@@ -163,8 +200,9 @@ async def missing_s3_objects(
     HEAD sur l'objet) : elle **stabilise le rapport**, en laissant hors champ ce
     qui vient d'être créé pendant une restauration ou un dérèglement d'horloge.
 
-    Ordre des execute (contrat) : 1) les avatars, 2) la tranche de ressources.
-    Aucune écriture, aucun commit, **aucune suppression** — jamais.
+    Ordre des execute (contrat) : 1) les avatars, 2) la tranche de ressources,
+    3) la tranche de pièces jointes. Aucune écriture, aucun commit, **aucune
+    suppression** — jamais.
     """
     if max_checks <= 0:
         return JobOutcome(count=0, detail={"checked": 0, "missing": 0, "cursor": cursor})
@@ -183,47 +221,53 @@ async def missing_s3_objects(
         .all()
     )[:max_checks]
 
+    cursors = _cursors(cursor)
     budget = max_checks - len(avatars)
-    resources: list[str] = []
-    wrapped = False
-    if budget > 0:
-        condition = (Resource.status == STATUS_AVAILABLE) & (Resource.created_at < cutoff)
-        if cursor:
-            condition &= Resource.s3_key > cursor
-        resources = list(
-            (
-                await db.execute(
-                    select(Resource.s3_key)
-                    .where(condition)
-                    .order_by(Resource.s3_key)
-                    .limit(budget)
-                )
-            )
-            .scalars()
-            .all()
+    # Part de départ par table ; le reliquat de la première profite à la
+    # seconde (l'ordre du tuple fixe qui en bénéficie, contrat des tests).
+    share = max(1, budget // len(_CURSORED_TABLES)) if budget > 0 else 0
+    keys = list(avatars)
+    next_cursors: dict[str, str] = {}
+    wrapped: list[str] = []
+    for name, statement in _CURSORED_TABLES:
+        remaining = max_checks - len(keys)
+        if remaining <= 0:
+            # Budget épuisé : la table garde son curseur pour la prochaine passe.
+            if cursors.get(name):
+                next_cursors[name] = cursors[name]
+            continue
+        # La dernière table reçoit tout le reliquat ; les autres, leur part.
+        is_last = name == _CURSORED_TABLES[-1][0]
+        limit = remaining if is_last else min(share, remaining)
+        slice_keys = list(
+            (await db.execute(statement(cursors.get(name), limit, cutoff))).scalars().all()
         )
+        keys.extend(slice_keys)
         # Tranche incomplète : on a touché le bout de la table, la prochaine
         # passe repart du début. Sinon on mémorise la dernière clé vue.
-        wrapped = len(resources) < budget
+        if len(slice_keys) < limit:
+            wrapped.append(name)
+        else:
+            next_cursors[name] = slice_keys[-1]
 
-    keys = avatars + resources
     missing = await _absent_keys(storage, keys, concurrency)
     for key in missing:
         logger.warning("objet S3 absent pour une ligne `available` : %s", key)
 
-    next_cursor = None if wrapped or not resources else resources[-1]
     detail = {
         "checked": len(keys),
         "missing": len(missing),
         "missing_keys": missing,
-        "cursor": next_cursor,
-        "wrapped": wrapped,
+        "cursor": next_cursors or None,
+        "wrapped": sorted(wrapped),
     }
     logger.info(
         "objets S3 manquants — %d clé(s) vérifiée(s), %d absente(s)%s",
         len(keys),
         len(missing),
-        " (table balayée en entier, le curseur repart du début)" if wrapped else "",
+        f" ({', '.join(sorted(wrapped))} balayée(s) en entier, curseur au début)"
+        if wrapped
+        else "",
     )
     return JobOutcome(count=len(missing), detail=detail)
 

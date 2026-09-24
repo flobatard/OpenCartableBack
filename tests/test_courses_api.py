@@ -930,13 +930,32 @@ def test_delete_block():
     user = _user_row()
     course = _course_row()
     block = _block_row()  # type text : delete direct du bloc
-    session = FakeSession([[user], [course], [block]])
+    # 4 execute : user, cours, bloc, clés S3 des pièces jointes de ses chats.
+    session = FakeSession([[user], [course], [block], []])
     response = make_client(session).delete(f"/api/v1/courses/{course.id}/blocks/{block.id}")
 
     assert response.status_code == 204
     [(stmt, _)] = deletes(session)
     assert stmt.table.name == "blocks"
     assert course.updated_at != _NOW
+
+
+def test_delete_block_purges_the_attachments_of_its_edit_chats():
+    """La cascade emporte les conversations d'édition du bloc, donc leurs
+    pièces jointes — mais PAS leurs objets S3, qu'il faut collecter avant le
+    delete et purger après le commit."""
+    user = _user_row()
+    course = _course_row()
+    block = _block_row()
+    key = "courses/c/assistant/a1/photo.png"
+    session = FakeSession([[user], [course], [block], [key]])
+    storage = FakeStorage()
+    response = make_client(session, storage).delete(
+        f"/api/v1/courses/{course.id}/blocks/{block.id}"
+    )
+
+    assert response.status_code == 204
+    assert storage.deleted == [key]
 
 
 def test_delete_document_block_touches_neither_resources_nor_s3():
@@ -949,7 +968,7 @@ def test_delete_document_block_touches_neither_resources_nor_s3():
         content={"caption": None, "display": "inline"},
         resource_id=uuid.uuid4(),
     )
-    session = FakeSession([[user], [course], [block]])
+    session = FakeSession([[user], [course], [block], []])
     storage = FakeStorage()
     response = make_client(session, storage).delete(
         f"/api/v1/courses/{course.id}/blocks/{block.id}"

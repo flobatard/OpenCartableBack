@@ -126,20 +126,30 @@ async def run_missing(db, storage, **overrides):
 async def test_missing_objects_checks_available_rows_only():
     """Une ressource ``pending`` n'a légitimement pas encore d'objet : la
     signaler serait un faux positif systématique."""
-    db = FakeSession([FakeResult(rows=[]), FakeResult(rows=["courses/a.pdf"])])
+    db = FakeSession(
+        [FakeResult(rows=[]), FakeResult(rows=["courses/a.pdf"]), FakeResult(rows=[])]
+    )
 
     await run_missing(db, FakeStorage())
 
-    avatars, resources = (compiled_sql(stmt) for stmt in db.statements)
+    avatars, resources, attachments = (compiled_sql(stmt) for stmt in db.statements)
     assert "users.avatar_status = " in avatars
     assert "resources.status = " in resources
     assert "resources.created_at < " in resources  # la grâce
+    # Toute table qui sert des URL présignées doit être balayée, sinon ses
+    # lignes cassées ne sont jamais signalées.
+    assert "ai_attachments.status = " in attachments
+    assert "ai_attachments.created_at < " in attachments
 
 
 @pytest.mark.anyio
 async def test_missing_objects_reports_only_absent_keys():
     db = FakeSession(
-        [FakeResult(rows=["users/avatar.png"]), FakeResult(rows=["courses/a.pdf", "courses/b.pdf"])]
+        [
+            FakeResult(rows=["users/avatar.png"]),
+            FakeResult(rows=["courses/a.pdf", "courses/b.pdf"]),
+            FakeResult(rows=[]),
+        ]
     )
     storage = FakeStorage(missing={"courses/b.pdf", "users/avatar.png"})
 
@@ -178,13 +188,17 @@ async def test_avatars_are_counted_against_the_budget():
 
 @pytest.mark.anyio
 async def test_missing_objects_resumes_from_the_stored_cursor():
-    db = FakeSession([FakeResult(rows=[]), FakeResult(rows=["courses/z.pdf"])])
+    db = FakeSession(
+        [FakeResult(rows=[]), FakeResult(rows=["courses/z.pdf"]), FakeResult(rows=[])]
+    )
 
-    outcome = await run_missing(db, FakeStorage(), cursor="courses/m.pdf", max_checks=5)
+    # Compat : une CHAÎNE est un curseur d'avant le balayage des pièces
+    # jointes — elle vaut pour `resources`.
+    outcome = await run_missing(db, FakeStorage(), cursor="courses/m.pdf", max_checks=6)
 
     assert "resources.s3_key > " in compiled_sql(db.statements[1])
-    # Tranche plus courte que le budget : la table est épuisée, on enroule.
-    assert outcome.detail["wrapped"] is True
+    # Les deux tranches sont plus courtes que leur budget : tables épuisées.
+    assert outcome.detail["wrapped"] == ["ai_attachments", "resources"]
     assert outcome.detail["cursor"] is None
 
 
@@ -192,18 +206,29 @@ async def test_missing_objects_resumes_from_the_stored_cursor():
 async def test_a_full_slice_advances_the_cursor():
     """Tranche pleine : la passe suivante doit reprendre après la dernière clé,
     sinon le contrôle revérifierait éternellement les mêmes objets."""
-    keys = [f"courses/{i}.pdf" for i in range(3)]
-    db = FakeSession([FakeResult(rows=[]), FakeResult(rows=keys)])
+    keys = [f"courses/{i}.pdf" for i in range(2)]
+    attachments = [f"courses/x/assistant/{i}.png" for i in range(2)]
+    db = FakeSession([FakeResult(rows=[]), FakeResult(rows=keys), FakeResult(rows=attachments)])
 
-    outcome = await run_missing(db, FakeStorage(), max_checks=3)
+    outcome = await run_missing(db, FakeStorage(), max_checks=4)
 
-    assert outcome.detail["wrapped"] is False
-    assert outcome.detail["cursor"] == "courses/2.pdf"
+    # Chaque table garde SA position : un curseur par table.
+    assert outcome.detail["wrapped"] == []
+    assert outcome.detail["cursor"] == {
+        "resources": "courses/1.pdf",
+        "ai_attachments": "courses/x/assistant/1.png",
+    }
 
 
 @pytest.mark.anyio
 async def test_missing_objects_limits_concurrency():
-    db = FakeSession([FakeResult(rows=[]), FakeResult(rows=[f"courses/{i}" for i in range(50)])])
+    db = FakeSession(
+        [
+            FakeResult(rows=[]),
+            FakeResult(rows=[f"courses/{i}" for i in range(50)]),
+            FakeResult(rows=[]),
+        ]
+    )
     storage = FakeStorage()
 
     await run_missing(db, storage, concurrency=4)

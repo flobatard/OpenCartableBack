@@ -17,7 +17,7 @@ from sqlalchemy.sql.dml import Update
 
 from app.main import create_app
 from app.modules.schemas import MAX_CODE_LENGTH
-from tests.fakes import FakeSession, deletes, inserts, make_client
+from tests.fakes import FakeSession, FakeStorage, deletes, inserts, make_client
 
 _NOW = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 # Sérialisation JSON de _NOW par FastAPI (suffixe « Z », pas « +00:00 »).
@@ -318,8 +318,9 @@ def test_delete_module():
     user = _user_row()
     course = _course_row()
     module = _module_row(course_id=course.id)
-    # FIFO : cours, module (scopé cours), puis delete (non consommant).
-    session = FakeSession([[user], [course], [module]])
+    # FIFO : cours, module (scopé cours), clés S3 des pièces jointes de ses
+    # chats d'édition, puis delete (non consommant).
+    session = FakeSession([[user], [course], [module], []])
     response = make_client(session).delete(
         f"/api/v1/courses/{course.id}/modules/{module.id}"
     )
@@ -327,8 +328,24 @@ def test_delete_module():
     assert response.status_code == 204
     assert len(deletes(session)) == 1
     # Les blocs module pointeurs partent par FK CASCADE : aucun execute
-    # supplémentaire, et rien à purger côté storage (code en base).
+    # supplémentaire. Le CODE du module vit en base — mais les pièces jointes
+    # de ses conversations d'édition, elles, ont bien des objets S3.
     assert course.updated_at != _NOW
+
+
+def test_delete_module_purges_the_attachments_of_its_edit_chats():
+    user = _user_row()
+    course = _course_row()
+    module = _module_row(course_id=course.id)
+    key = "courses/c/assistant/a1/schema.png"
+    session = FakeSession([[user], [course], [module], [key]])
+    storage = FakeStorage()
+    response = make_client(session, storage).delete(
+        f"/api/v1/courses/{course.id}/modules/{module.id}"
+    )
+
+    assert response.status_code == 204
+    assert storage.deleted == [key]
     assert session.commits >= 2  # upsert auth + delete
 
 

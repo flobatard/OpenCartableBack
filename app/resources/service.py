@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.database import touch
 from app.core.http import conflict, not_found
 from app.core.storage import Storage
+from app.course_assistant.queries import attachment_keys_for_resource
 from app.courses.queries import get_owned_course
 from app.models.course import Course
 from app.models.resource import STATUS_AVAILABLE, STATUS_PENDING, Resource
@@ -225,20 +226,26 @@ async def delete_resource(
     """Supprime une ressource de la bibliothèque et son objet S3.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) ressource
-    (scopée cours — on relit sa ``s3_key``), 3) delete. Les blocs
-    ``document`` qui la pointaient partent avec elle par la FK ``CASCADE``
-    (aucun execute supplémentaire). L'objet S3 (hors cascade
-    DB) est supprimé APRÈS le commit — motif ``delete_course`` : un échec S3
-    laisse un orphelin dans le bucket (ramassé par la réconciliation de
-    :mod:`app.maintenance`), jamais une réf DB pointant un objet absent.
+    (scopée cours — on relit sa ``s3_key``), 3) clés S3 des pièces jointes des
+    conversations d'édition de ses blocs pointeurs, 4) delete. Les objets S3
+    (hors cascade DB) sont supprimés APRÈS le commit — motif ``delete_course``
+    : un échec S3 laisse un orphelin dans le bucket (ramassé par la
+    réconciliation de :mod:`app.maintenance`), jamais une réf DB pointant un
+    objet absent.
+
+    La cascade va **deux niveaux plus loin** qu'il n'y paraît : les blocs
+    ``document`` qui pointaient la ressource partent avec elle (FK
+    ``CASCADE``), donc leurs conversations d'édition, donc les pièces jointes
+    de ces conversations. Sans la collecte de l'étape 3, leurs objets seraient
+    des orphelins garantis.
     """
     course = await get_owned_course(db, user, course_id)
     resource = await _get_resource(db, course, resource_id)
-    s3_key = resource.s3_key
+    s3_keys = [resource.s3_key, *await attachment_keys_for_resource(db, resource.id)]
     await db.execute(delete(Resource).where(Resource.id == resource.id))
     touch(course)
     await db.commit()
-    await storage.delete_many([s3_key])
+    await storage.delete_many(s3_keys)
 
 
 def download_url_for(resource: Resource, storage: Storage, *, inline: bool) -> tuple[str, int]:

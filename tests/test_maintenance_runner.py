@@ -158,16 +158,18 @@ async def test_run_job_execute_order_is_a_contract(
             FakeResult(rows=[{"cursor": "courses/a"}]),  # last_detail
             FakeResult(rows=[]),  # avatars
             FakeResult(rows=["courses/b/x.pdf"]),  # ressources
+            FakeResult(rows=[]),  # pièces jointes
         ]
     )
 
     await runner.run_job(job, db=db, storage=FakeStorage())
 
-    assert len(db.statements) == 4
+    assert len(db.statements) == 5
     assert "maintenance_job_state.last_detail" in compiled_sql(db.statements[1])
     assert "users.avatar_s3_key" in compiled_sql(db.statements[2])
     # Le curseur de la passe précédente a bien atteint la requête.
     assert "resources.s3_key > " in compiled_sql(db.statements[3])
+    assert "ai_attachments.s3_key" in compiled_sql(db.statements[4])
 
 
 @pytest.mark.anyio

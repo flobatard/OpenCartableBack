@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_db
+from app.core.storage import Storage, get_storage
 from app.modules import service
 from app.modules.schemas import ModuleCreate, ModuleRead, ModuleSummary, ModuleUpdate
 from app.users import service as users_service
@@ -76,7 +77,9 @@ async def delete_module(
     module_id: uuid.UUID,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ) -> None:
-    """Supprime un module et les blocs module qui le pointaient (CASCADE)."""
+    """Supprime un module et les blocs module qui le pointaient (CASCADE) ;
+    les pièces jointes de ses chats d'édition partent avec leurs objets S3."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    await service.delete_module(db, user, course_id, module_id)
+    await service.delete_module(db, user, course_id, module_id, storage)

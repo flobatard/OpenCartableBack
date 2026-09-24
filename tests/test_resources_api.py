@@ -381,7 +381,9 @@ def test_delete_resource_purges_s3_after_commit():
     user = _user_row()
     course = _course_row()
     resource = _resource_row(course_id=course.id, status="available")
-    session = FakeSession([[user], [course], [resource]])
+    # 4 execute : user, cours, ressource, clés S3 des pièces jointes des chats
+    # d'édition de ses blocs pointeurs (deux cascades de profondeur).
+    session = FakeSession([[user], [course], [resource], []])
 
     class _StorageAfterCommit(FakeStorage):
         # La purge S3 doit intervenir APRÈS le commit (motif delete_course) :

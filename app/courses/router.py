@@ -158,7 +158,9 @@ async def delete_block(
     block_id: uuid.UUID,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
 ) -> None:
-    """Supprime un bloc du cours (les ressources de la bibliothèque restent)."""
+    """Supprime un bloc du cours (les ressources de la bibliothèque restent ;
+    les pièces jointes de ses chats d'édition partent avec leurs objets S3)."""
     user = await users_service.get_or_create_by_sub(db, auth)
-    await blocks.delete_block(db, user, course_id, block_id)
+    await blocks.delete_block(db, user, course_id, block_id, storage)

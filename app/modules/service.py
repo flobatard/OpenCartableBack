@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import touch
 from app.core.http import not_found
+from app.core.storage import Storage
+from app.course_assistant.queries import attachment_keys_for_module
 from app.courses.queries import get_owned_course
 from app.models.course import Course
 from app.models.module import Module
@@ -173,15 +175,28 @@ async def update_module(
 
 
 async def delete_module(
-    db: AsyncSession, user: User, course_id: uuid.UUID, module_id: uuid.UUID
+    db: AsyncSession,
+    user: User,
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    storage: Storage,
 ) -> None:
     """Supprime un module ; ses blocs pointeurs partent par FK ``CASCADE``.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) module (scopé
-    cours), 3) delete. Rien à purger côté storage : le code vit en base.
+    cours), 3) clés S3 des pièces jointes de ses conversations d'édition,
+    4) delete.
+
+    Le CODE du module vit en base — mais ses conversations d'édition
+    (``ai_conversations.module_id``, FK ``CASCADE``) peuvent porter des
+    **pièces jointes**, dont les objets S3 sont hors cascade : collectés avant
+    le delete, purgés APRÈS le commit (motif ``delete_course``).
     """
     course = await get_owned_course(db, user, course_id)
     module = await _get_module(db, course, module_id)
+    s3_keys = await attachment_keys_for_module(db, module.id)
     await db.execute(delete(Module).where(Module.id == module.id))
     touch(course)
     await db.commit()
+    if s3_keys:
+        await storage.delete_many(s3_keys)

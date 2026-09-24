@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import touch
 from app.core.http import invalid, not_found
+from app.core.storage import Storage
+from app.course_assistant.queries import attachment_keys_for_block
 from app.courses.queries import get_owned_course
 from app.courses.schemas import (
     BlockCreate,
@@ -146,15 +148,26 @@ async def add_block(
 
 
 async def delete_block(
-    db: AsyncSession, user: User, course_id: uuid.UUID, block_id: uuid.UUID
+    db: AsyncSession,
+    user: User,
+    course_id: uuid.UUID,
+    block_id: uuid.UUID,
+    storage: Storage,
 ) -> None:
     """Supprime un bloc du cours ; les positions restantes gardent leurs trous.
 
     Ordre des execute : 1) cours (contrôle de propriété), 2) bloc dans ce cours
     (select puis delete : la fausse session des tests ne simule pas rowcount),
-    3) delete du bloc. Supprimer un bloc ne touche jamais ni ``resources`` ni
-    S3 : la ressource éventuellement pointée par un bloc ``document`` reste
+    3) clés S3 des pièces jointes de ses conversations d'édition, 4) delete du
+    bloc. La ressource éventuellement pointée par un bloc ``document`` reste
     dans la bibliothèque du cours (suppression via ``app/resources/``).
+
+    Ce que la cascade emporte, et qu'il faut donc collecter AVANT : les
+    conversations d'édition visant ce bloc (``ai_conversations.block_id``, FK
+    ``CASCADE``), leurs messages et leurs **pièces jointes**. Les objets S3 de
+    ces pièces sont hors cascade : ils sont purgés APRÈS le commit (motif
+    ``delete_course``) — sans quoi chaque suppression de bloc laisserait des
+    orphelins garantis dans le bucket.
     """
     course = await get_owned_course(db, user, course_id)
     block = (
@@ -168,9 +181,12 @@ async def delete_block(
     )
     if block is None:
         raise not_found("Bloc introuvable")
+    s3_keys = await attachment_keys_for_block(db, block_id)
     await db.execute(delete(Block).where(Block.id == block_id, Block.course_id == course.id))
     touch(course)
     await db.commit()
+    if s3_keys:
+        await storage.delete_many(s3_keys)
 
 
 async def update_block(
