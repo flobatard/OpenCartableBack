@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.storage import Storage
 from app.maintenance.results import JobOutcome
 from app.maintenance.service import S3_PREFIXES
+from app.models.ai_attachment import AIAttachment
 from app.models.ai_conversation import AIConversation
 from app.models.ai_daily_usage import AIDailyUsage
 from app.models.ai_message import AIMessage
@@ -38,6 +39,7 @@ INVENTORIED_TABLES: tuple[tuple[str, type], ...] = (
     ("ai_daily_usage", AIDailyUsage),
     ("ai_conversations", AIConversation),
     ("ai_messages", AIMessage),
+    ("ai_attachments", AIAttachment),
     ("exercise_submissions", ExerciseSubmission),
     ("share_links", ShareLink),
     ("resources", Resource),

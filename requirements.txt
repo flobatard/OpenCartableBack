@@ -66,6 +66,15 @@ langfuse==4.15.2
 # pur Python, ARM64 OK
 pypdf==6.18.0
 
+# Extraction de texte des pièces jointes bureautiques de l'assistant
+# (tool read_attachment). Transitives notables : lxml et Pillow — wheels
+# manylinux aarch64 publiés, donc rien à compiler sur le Pi (à revérifier au
+# build de l'image si l'une d'elles change de politique de wheels) ; defusedxml
+# (parseur XML durci) vient avec odfpy.
+python-docx==1.2.0
+python-pptx==1.0.2
+odfpy==1.4.1
+
 # Crypto / JWT (validation des tokens Zitadel via JWKS)
 pyjwt[crypto]==2.13.0
 cryptography==50.0.1

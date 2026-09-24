@@ -50,7 +50,6 @@ from tests.maintenance_fakes import (
     [
         maintenance.purge_ai_daily_usage,
         maintenance.purge_tool_message_content,
-        maintenance.purge_ai_conversations,
         maintenance.purge_exercise_submissions,
         maintenance.purge_share_links,
     ],
@@ -67,6 +66,8 @@ async def test_retention_zero_disables_task(task):
 async def test_retention_zero_disables_s3_tasks():
     db, storage = FakeSession(), FakeStorage()
     assert await maintenance.purge_pending_resources(db, storage, 0) == 0
+    assert await maintenance.purge_unsent_attachments(db, storage, 0) == 0
+    assert await maintenance.purge_ai_conversations(db, storage, 0) == 0
     assert await maintenance.reconcile_s3_orphans(db, storage, 0, dry_run=False) == 0
     assert db.statements == []
     assert storage.listed == []
@@ -152,12 +153,43 @@ async def test_tool_content_trim_is_idempotent():
 
 @pytest.mark.anyio
 async def test_conversations_purged_on_last_activity():
-    db = FakeSession([FakeResult(rowcount=2)])
-    assert await maintenance.purge_ai_conversations(db, 365) == 2
+    # 1) clés S3 des pièces jointes des conversations visées, 2) delete.
+    db = FakeSession([FakeResult(rows=["courses/c/assistant/a/x.png"]), FakeResult(rowcount=2)])
+    storage = FakeStorage()
+    assert await maintenance.purge_ai_conversations(db, storage, 365) == 2
 
-    sql = compiled_sql(db.statements[0])
+    assert "FROM ai_attachments" in compiled_sql(db.statements[0])
+    sql = compiled_sql(db.statements[1])
     assert "DELETE FROM ai_conversations" in sql
     assert "updated_at <" in sql  # dernière activité, pas la création
+    # Purge du bucket APRÈS le commit (motif delete_course).
+    assert storage.deleted == ["courses/c/assistant/a/x.png"]
+
+
+@pytest.mark.anyio
+async def test_unsent_attachments_purged_with_their_objects():
+    """Un seul prédicat couvre les deux abandons : upload jamais confirmé et
+    pièce confirmée puis jamais envoyée."""
+    db = FakeSession([FakeResult(rows=["courses/c/assistant/a/x.pdf"]), FakeResult(rowcount=1)])
+    storage = FakeStorage()
+    assert await maintenance.purge_unsent_attachments(db, storage, 7) == 1
+
+    assert "FROM ai_attachments" in compiled_sql(db.statements[0])
+    sql = compiled_sql(db.statements[1])
+    assert "DELETE FROM ai_attachments" in sql
+    assert "message_id IS NULL" in sql
+    assert "created_at <" in sql
+    assert storage.deleted == ["courses/c/assistant/a/x.pdf"]
+    assert db.commits == 1
+
+
+@pytest.mark.anyio
+async def test_unsent_attachments_without_candidates_skips_delete():
+    db = FakeSession([FakeResult(rows=[])])
+    storage = FakeStorage()
+    assert await maintenance.purge_unsent_attachments(db, storage, 7) == 0
+    assert len(db.statements) == 1  # aucun DELETE inutile
+    assert storage.deleted == []
 
 
 @pytest.mark.anyio
@@ -277,10 +309,12 @@ async def test_orphans_process_pages_independently():
     """Deux pages ⇒ deux anti-jointures : le bucket n'est jamais tenu en RAM."""
     page_one, page_two = "courses/a/1", "courses/a/2"
     storage = FakeStorage({"courses/": [[s3_object(page_one, 200)], [s3_object(page_two, 200)]]})
-    db = FakeSession([FakeResult(rows=[]) for _ in range(4)])
+    db = FakeSession([FakeResult(rows=[]) for _ in range(6)])
 
     assert await maintenance.reconcile_s3_orphans(db, storage, 90, dry_run=False) == 2
-    assert len(db.statements) == 4  # 2 pages × (resources + users)
+    # 2 pages × (resources + users + ai_attachments) : toute table qui écrit
+    # une clé S3 doit être dans l'anti-jointure, sinon ses objets sont purgés.
+    assert len(db.statements) == 6
     assert storage.deleted == [page_one, page_two]
     assert db.commits == 0  # la réconciliation ne touche jamais la base
 

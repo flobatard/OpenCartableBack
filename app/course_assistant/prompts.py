@@ -87,6 +87,18 @@ ou son refus de répondre, et il faut alors poursuivre avec des hypothèses \
 raisonnables, signalées dans la réponse, sans reposer ces questions.\
 """
 
+ATTACHMENTS_RULE = """\
+Pièces jointes : le professeur peut joindre des fichiers à son message \
+(images, PDF, texte, documents bureautiques). Le contexte du tour les annonce \
+par leur référence (A1, A2…) avec leur nom et leur taille — leur CONTENU n'y \
+figure pas. Toute pièce annoncée « jointe à CE message » doit être lue avec \
+`read_attachment` AVANT de répondre : ne jamais dire qu'aucun fichier n'est \
+visible, ni demander au professeur d'en recopier le contenu. Celles des \
+messages précédents restent lisibles de la même façon si elles redeviennent \
+utiles. Une image n'est montrée que pour le tour en cours : la relire si \
+besoin.\
+"""
+
 COMMON_RULES = "\n\n".join(
     (
         STYLE_RULE,
@@ -96,6 +108,7 @@ COMMON_RULES = "\n\n".join(
         READ_POLICY,
         TURN_LAYOUT_RULE,
         QUESTIONS_RULE,
+        ATTACHMENTS_RULE,
     )
 )
 

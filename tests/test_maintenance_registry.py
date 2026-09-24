@@ -90,6 +90,8 @@ def test_jobs_needing_storage_are_declared():
     client S3 — et tomberait à sa première passe, la nuit."""
     assert {job.name for job in JOBS if job.needs_storage} == {
         "pending_resources",
+        "ai_attachments",
+        "ai_conversations",
         "s3_orphans",
         "storage_inventory",
         "missing_s3_objects",

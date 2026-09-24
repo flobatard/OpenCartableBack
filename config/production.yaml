@@ -57,6 +57,7 @@ SHARE_LINK_TTL_DAYS: 270
 # PURGE_EXERCISE_SUBMISSIONS_DAYS: 0    # désactivé — données d'élèves
 # PURGE_SHARE_LINKS_DAYS: 365           # liens expirés depuis N jours
 # PURGE_PENDING_RESOURCES_DAYS: 30      # uploads jamais confirmés (+ objet S3)
+# PURGE_AI_ATTACHMENTS_DAYS: 7          # pièces jointes jamais envoyées (+ objet S3)
 # PURGE_S3_ORPHANS_DAYS: 90             # grâce sur LastModified (sécurité)
 # PURGE_S3_ORPHANS_DRY_RUN: true        # à passer à false après relecture des logs
 
@@ -87,6 +88,7 @@ SHARE_LINK_TTL_DAYS: 270
 # MAINTENANCE_CRON_PENDING_RESOURCES:    "30 3 * * *"
 # MAINTENANCE_CRON_AI_CONVERSATIONS:     "40 3 * * *"    # rétention 0 par défaut
 # MAINTENANCE_CRON_EXERCISE_SUBMISSIONS: "50 3 * * *"    # rétention 0 par défaut
+# MAINTENANCE_CRON_AI_ATTACHMENTS:       "00 4 * * *"
 #    Contrôles en LECTURE SEULE — ils observent, ne corrigent rien :
 # MAINTENANCE_CRON_MISSING_S3_OBJECTS:   "10 4 * * *"    # borné, curseur tournant
 # MAINTENANCE_CRON_STORAGE_INVENTORY:    "40 4 * * mon"  # LIST complet + comptes

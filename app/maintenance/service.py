@@ -31,6 +31,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.storage import Storage
+from app.models.ai_attachment import AIAttachment
 from app.models.ai_conversation import AIConversation
 from app.models.ai_daily_usage import AIDailyUsage
 from app.models.ai_message import ROLE_TOOL, AIMessage
@@ -120,22 +121,41 @@ async def purge_tool_message_content(db: AsyncSession, days: int) -> int:
     return result.rowcount
 
 
-async def purge_ai_conversations(db: AsyncSession, days: int) -> int:
+async def purge_ai_conversations(db: AsyncSession, storage: Storage, days: int) -> int:
     """Supprime les conversations sans activité depuis la rétention.
 
     ``updated_at`` est bumpé **côté Python** à chaque message persisté : c'est
     une vraie date de dernière activité, pas un artefact de flush. Les
-    ``ai_messages`` partent par la FK ``CASCADE``.
+    ``ai_messages`` et les ``ai_attachments`` partent par la FK ``CASCADE`` ;
+    les objets S3 des pièces jointes, hors cascade DB, sont purgés **après** le
+    commit (motif ``delete_course``).
+
+    Ordre des execute : 1) clés S3 des pièces jointes des conversations
+    concernées, 2) delete.
 
     Désactivée par défaut (``PURGE_AI_CONVERSATIONS_DAYS = 0``) : c'est du
     travail de prof, et l'effacement manuel existe déjà.
     """
     if days <= 0:
         return 0
-    result = await db.execute(
-        delete(AIConversation).where(AIConversation.updated_at < _cutoff(days))
+    condition = AIConversation.updated_at < _cutoff(days)
+    s3_keys = list(
+        (
+            await db.execute(
+                select(AIAttachment.s3_key).where(
+                    AIAttachment.conversation_id.in_(
+                        select(AIConversation.id).where(condition)
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
+    result = await db.execute(delete(AIConversation).where(condition))
     await db.commit()
+    if s3_keys:
+        await storage.delete_many(s3_keys)
     return result.rowcount
 
 
@@ -204,6 +224,38 @@ async def purge_pending_resources(db: AsyncSession, storage: Storage, days: int)
     return result.rowcount
 
 
+async def purge_unsent_attachments(db: AsyncSession, storage: Storage, days: int) -> int:
+    """Supprime les pièces jointes jamais envoyées et leurs objets S3.
+
+    Un seul prédicat, ``message_id IS NULL``, couvre les deux abandons : le
+    presign dont le PUT ou la confirmation ne sont jamais venus (la ligne reste
+    ``pending``), et la pièce confirmée puis jamais jointe à un message (le prof
+    a changé d'avis, ou fermé l'onglet avant d'envoyer). Une pièce rattachée à
+    un message, elle, vit et meurt avec sa conversation (FK ``CASCADE``).
+
+    Rétention **courte** par défaut (``PURGE_AI_ATTACHMENTS_DAYS = 7``) : c'est
+    du déchet qui occupe le bucket, pas du travail de prof.
+
+    Pas d'index sur ``created_at`` : seq scan assumé sur une petite table
+    (même doctrine que ``purge_exercise_submissions``).
+
+    Ordre des execute : 1) clés S3 des pièces concernées, 2) delete ; purge du
+    bucket **après** le commit (motif ``delete_course``).
+    """
+    if days <= 0:
+        return 0
+    condition = AIAttachment.message_id.is_(None) & (AIAttachment.created_at < _cutoff(days))
+    s3_keys = list(
+        (await db.execute(select(AIAttachment.s3_key).where(condition))).scalars().all()
+    )
+    if not s3_keys:
+        return 0
+    result = await db.execute(delete(AIAttachment).where(condition))
+    await db.commit()
+    await storage.delete_many(s3_keys)
+    return result.rowcount
+
+
 async def reconcile_s3_orphans(
     db: AsyncSession, storage: Storage, days: int, dry_run: bool
 ) -> int:
@@ -214,15 +266,20 @@ async def reconcile_s3_orphans(
     orphelin — sans jamais l'inverse.
 
     Marche **page par page** (1 000 clés) : pour chacune, on écarte les objets
-    plus récents que la grâce, puis une anti-jointure contre ``resources.s3_key``
-    et ``users.avatar_s3_key`` désigne les orphelins. Le bucket n'est jamais
-    tenu en mémoire.
+    plus récents que la grâce, puis une anti-jointure contre ``resources.s3_key``,
+    ``users.avatar_s3_key`` et ``ai_attachments.s3_key`` désigne les orphelins.
+    Le bucket n'est jamais tenu en mémoire.
+
+    ⚠ **Toute table qui écrit une clé S3 doit figurer dans cette anti-jointure**,
+    sans quoi ses objets sont déclarés orphelins et supprimés. Les trois qui
+    existent sont ci-dessous, dans cet ordre (contrat FIFO des tests : trois
+    execute par page).
 
     La **grâce est une sécurité, pas un confort** : l'import de cours pousse ses
     objets AVANT son commit (:mod:`app.course_transfer.importer`), et un upload
-    de ressource/avatar vit entre son presign et sa confirmation — pendant ces
-    fenêtres un objet légitime n'a pas (encore) de ligne. Une grâce de plusieurs
-    jours les couvre toutes largement.
+    de ressource/avatar/pièce jointe vit entre son presign et sa confirmation —
+    pendant ces fenêtres un objet légitime n'a pas (encore) de ligne. Une grâce
+    de plusieurs jours les couvre toutes largement.
 
     Seuls les préfixes de :data:`S3_PREFIXES` sont balayés : le bucket peut
     contenir autre chose, qui ne nous appartient pas.
@@ -253,6 +310,17 @@ async def reconcile_s3_orphans(
                 (
                     await db.execute(
                         select(User.avatar_s3_key).where(User.avatar_s3_key.in_(candidates))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            known.update(
+                (
+                    await db.execute(
+                        select(AIAttachment.s3_key).where(
+                            AIAttachment.s3_key.in_(candidates)
+                        )
                     )
                 )
                 .scalars()

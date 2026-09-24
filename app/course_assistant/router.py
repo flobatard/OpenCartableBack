@@ -20,6 +20,10 @@ from app.core.sse import sse_response
 from app.core.storage import Storage, get_storage
 from app.course_assistant import service, streaming
 from app.course_assistant.schemas import (
+    AttachmentCreate,
+    AttachmentDownload,
+    AttachmentPresign,
+    AttachmentRead,
     ConversationCreate,
     ConversationDetailRead,
     ConversationRead,
@@ -32,6 +36,68 @@ from app.models.ai_conversation import CONTEXT_COURSE
 from app.users import service as users_service
 
 router = APIRouter(prefix="/courses/{course_id}/assistant", tags=["course-assistant"])
+
+
+@router.post(
+    "/attachments", response_model=AttachmentPresign, status_code=status.HTTP_201_CREATED
+)
+async def presign_attachment(
+    course_id: uuid.UUID,
+    payload: AttachmentCreate,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+) -> AttachmentPresign:
+    """Déclare une pièce jointe et renvoie l'URL présignée d'upload direct
+    navigateur → S3. Aucun id de conversation dans le chemin : le front peut
+    joindre un fichier alors que la conversation est encore un brouillon."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.presign_attachment(db, user, course_id, payload, storage)
+
+
+@router.post("/attachments/{attachment_id}/confirm", response_model=AttachmentRead)
+async def confirm_attachment(
+    course_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+) -> AttachmentRead:
+    """Vérifie l'objet uploadé (HEAD S3 : taille ET type) et rend la pièce
+    jointe utilisable. 409 si l'objet est absent ou hors gabarit."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.confirm_attachment(db, user, course_id, attachment_id, storage)
+
+
+@router.get("/attachments/{attachment_id}/download", response_model=AttachmentDownload)
+async def download_attachment(
+    course_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+) -> AttachmentDownload:
+    """URL présignée de lecture (disposition ``inline``) d'une pièce jointe."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    return await service.presign_attachment_download(
+        db, user, course_id, attachment_id, storage
+    )
+
+
+@router.delete("/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_attachment(
+    course_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    auth: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Retire une pièce jointe **pas encore envoyée**. 409 sinon : une pièce
+    rattachée à un message fait partie de la conversation."""
+    user = await users_service.get_or_create_by_sub(db, auth)
+    await service.delete_attachment(db, user, course_id, attachment_id, storage)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 
 @router.get("/conversations", response_model=list[ConversationRead])
 async def list_conversations(
@@ -88,10 +154,11 @@ async def delete_conversation(
     conversation_id: uuid.UUID,
     auth: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    storage: Storage = Depends(get_storage),
     client: AIClient = Depends(get_ai_client),
 ) -> Response:
     user = await users_service.get_or_create_by_sub(db, auth)
-    await service.delete_conversation(db, user, course_id, conversation_id)
+    await service.delete_conversation(db, user, course_id, conversation_id, storage)
     # Une reprise en attente meurt avec sa conversation (registre + thread).
     streaming.drop_pending_resume(client, conversation_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

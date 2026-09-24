@@ -1,6 +1,7 @@
 """Tools d'exploration du cours pour l'assistant IA.
 
-Quatre tools (specs neutres :class:`AIToolSpec`, exécuteur async passé à
+Quatre tools de lecture du cours, plus ``read_attachment`` quand le tour porte
+des pièces jointes (specs neutres :class:`AIToolSpec`, exécuteur async passé à
 ``AIClient.stream_agent``) :
 
 - ``read_block`` : relit un bloc en entier (mode sommaire du contexte, ou
@@ -17,7 +18,14 @@ Quatre tools (specs neutres :class:`AIToolSpec`, exécuteur async passé à
   utilisateur, cf. ``app/core/ai/agent.py``) ; le ``content`` persisté reste
   une note texte — l'image n'est jamais rejouée aux tours suivants ;
 - ``read_module`` : lit le code HTML/CSS/JS d'un module interactif (en base,
-  aucun accès S3 ; :func:`format_module`, plafonné).
+  aucun accès S3 ; :func:`format_module`, plafonné) ;
+- ``read_attachment`` : sert une **pièce jointe du professeur**
+  (:mod:`app.course_assistant.attachments`) selon sa FAMILLE — une image lui
+  est montrée comme ``read_resource_image``, tout le reste rend du texte
+  (:data:`_TEXT_READERS`). Sa spec n'est ajoutée que si la conversation en
+  porte : sinon son ``enum`` serait vide. Contrairement aux ressources, les
+  pièces jointes ne sont **jamais** exposées aux élèves (table dédiée, cf.
+  :mod:`app.models.ai_attachment`).
 
 S'y ajoutent des tools **HITL**, déclarés ``blocking`` (une réponse du modèle
 n'en exécute qu'un, garde de :mod:`app.core.ai.agent`) : dans un **contexte
@@ -75,6 +83,13 @@ from app.course_assistant.questions import ASK_QUESTIONS, ASK_QUESTIONS_SPEC, ha
 from app.course_assistant.refs import CourseRefs
 from app.course_assistant.render import format_block, format_module
 from app.course_assistant.structure import STRUCTURE_TOOLS
+from app.models.ai_attachment import (
+    ATTACHMENT_AVAILABLE,
+    KIND_IMAGE,
+    KIND_OFFICE,
+    KIND_PDF,
+    KIND_TEXT,
+)
 from app.models.resource import STATUS_AVAILABLE
 
 # Tools de l'édition globale (flag ``delegation``) : délégation + structure.
@@ -84,6 +99,10 @@ PDF_MIME = "application/pdf"
 PDF_MAX_BYTES = 20 * 1024 * 1024
 PDF_MAX_PAGES = 50
 PDF_MAX_CHARS = 40_000
+
+# Texte brut d'une pièce jointe (txt, md, csv) : même plafond que le PDF — ce
+# qui compte n'est pas l'octet mais ce que ça pèse en tokens.
+TEXT_MAX_CHARS = 40_000
 
 # Images : intersection des formats acceptés par les providers à vision ;
 # plafond sur le binaire brut (≈ 4,7 Mo en base64, sous les 5 Mo d'Anthropic,
@@ -98,6 +117,7 @@ READ_BLOCK = "read_block"
 READ_RESOURCE_PDF = "read_resource_pdf"
 READ_RESOURCE_IMAGE = "read_resource_image"
 READ_MODULE = "read_module"
+READ_ATTACHMENT = "read_attachment"
 
 
 def _is_readable_pdf(resource) -> bool:
@@ -170,6 +190,23 @@ def build_tool_specs(
             refs.refs("module"),
         ),
     ]
+    # Ajoutée seulement s'il y a des pièces jointes : sans elles la spec aurait
+    # un ``enum`` vide (schéma invalide chez certains providers) et décrirait au
+    # modèle un outil sans objet.
+    if refs.entries["attachment"]:
+        specs.append(
+            _ref_spec(
+                READ_ATTACHMENT,
+                "Lit une pièce jointe du professeur par sa référence (A1, A2…) : "
+                "une image est montrée au modèle (modèle à vision requis, visible "
+                "pour le tour en cours seulement), un PDF, un fichier texte ou un "
+                "document bureautique rendent leur texte.",
+                "attachment_ref",
+                "Référence de la pièce jointe, telle qu'annoncée dans le contexte "
+                "du tour (ex. A1)",
+                refs.refs("attachment"),
+            )
+        )
     if edit is not None:
         specs.extend(tool.spec(refs).model_copy(update={"blocking": True}) for tool in edit.tools)
     if delegation:
@@ -216,6 +253,42 @@ def read_pdf_sync(storage: Storage, s3_key: str) -> str:
         return content
 
 
+def read_text_sync(storage: Storage, s3_key: str) -> str:
+    """Télécharge un fichier texte et rend son contenu — RÉSEAU SYNCHRONE, à
+    appeler uniquement sous ``run_in_threadpool`` (motif :func:`read_pdf_sync`).
+
+    Décodage UTF-8 **tolérant** (``errors="replace"``) : un fichier mal encodé
+    donne un texte imparfait, jamais une exception — le modèle lira ce qu'il
+    peut. Plafonné à :data:`TEXT_MAX_CHARS` avec la même mention de troncature
+    que la lecture de PDF.
+    """
+    buffer = io.BytesIO()
+    storage.read_object_into(s3_key, buffer)
+    content = buffer.getvalue().decode("utf-8", errors="replace").strip()
+    if len(content) > TEXT_MAX_CHARS:
+        content = content[:TEXT_MAX_CHARS] + "\n\n[Document tronqué : plafond de lecture atteint]"
+    return content
+
+
+def read_office_sync(storage: Storage, s3_key: str, mime: str) -> str:
+    """Télécharge un document bureautique et en extrait le texte — RÉSEAU
+    SYNCHRONE, à appeler uniquement sous ``run_in_threadpool`` (motif
+    :func:`read_pdf_sync`).
+
+    Spoolé comme le PDF : les libs de lecture veulent un objet seekable, et une
+    archive de 15 Mo n'a pas à tenir en RAM sur un Pi. L'extraction et ses
+    gardes (zip bomb, entités XML, plafonds) vivent dans
+    :mod:`app.course_assistant.office`, dont les dépendances lourdes ne sont
+    importées qu'ici, à l'usage.
+    """
+    from app.course_assistant.office import extract_office_text
+
+    with SpooledTemporaryFile(max_size=_SPOOL_MAX_BYTES) as tmp:
+        storage.read_object_into(s3_key, tmp)
+        tmp.seek(0)
+        return extract_office_text(tmp, mime)
+
+
 def read_image_sync(storage: Storage, s3_key: str) -> str:
     """Télécharge une image et la retourne en base64 — RÉSEAU SYNCHRONE, à
     appeler uniquement sous ``run_in_threadpool`` (motif :func:`read_pdf_sync`).
@@ -230,6 +303,18 @@ def read_image_sync(storage: Storage, s3_key: str) -> str:
     if len(data) > IMAGE_MAX_BYTES:
         raise ValueError("image trop volumineuse")
     return base64.b64encode(data).decode("ascii")
+
+
+# Lecteurs texte par famille de pièce jointe (l'image a son propre chemin :
+# elle est MONTRÉE au modèle, pas convertie). Tous sont des lectures S3
+# SYNCHRONES, appelées sous ``run_in_threadpool``, et partagent la signature
+# ``(storage, s3_key, mime)`` — seul le bureautique se sert du mime, qui
+# désigne le format exact dans sa famille.
+_TEXT_READERS = {
+    KIND_PDF: lambda storage, s3_key, mime: read_pdf_sync(storage, s3_key),
+    KIND_TEXT: lambda storage, s3_key, mime: read_text_sync(storage, s3_key),
+    KIND_OFFICE: read_office_sync,
+}
 
 
 def build_tool_executor(
@@ -359,11 +444,80 @@ def build_tool_executor(
             return AIToolResult(content=resolution.error, is_error=True)
         return AIToolResult(content=format_module(resolution.entry.entity, refs))
 
+    async def _read_attachment(arguments: dict) -> AIToolResult:
+        """Sert une pièce jointe au modèle selon sa FAMILLE : une image lui est
+        montrée (bloc multimodal, cf. ``_read_resource_image``), tout le reste
+        rend du texte. Le dispatch est sur ``kind``, jamais sur l'extension."""
+        resolution = refs.resolve("attachment", arguments.get("attachment_ref"))
+        if resolution.entry is None:
+            return AIToolResult(content=resolution.error, is_error=True)
+        attachment = resolution.entry.entity
+        if attachment.status != ATTACHMENT_AVAILABLE:
+            return AIToolResult(
+                content="Pièce jointe pas encore disponible (upload non confirmé).",
+                is_error=True,
+            )
+        if attachment.kind == KIND_IMAGE:
+            try:
+                data = await run_in_threadpool(read_image_sync, storage, attachment.s3_key)
+            except Exception:
+                return AIToolResult(
+                    content=(
+                        "Lecture de l'image impossible (fichier absent, trop volumineux "
+                        "ou illisible)."
+                    ),
+                    is_error=True,
+                )
+            return AIToolResult(
+                content=(
+                    f"Image « {attachment.original_name} » ({attachment.mime}, "
+                    f"{attachment.size} octets) transmise au modèle pour ce tour — "
+                    "non conservée dans l'historique, relisez la pièce jointe si vous "
+                    "en avez encore besoin."
+                ),
+                image=AIToolImage(
+                    mime_type=attachment.mime,
+                    data=data,
+                    caption=(
+                        f"Pièce jointe « {attachment.original_name} » du professeur "
+                        f"(ref: {resolution.entry.ref}), demandée via read_attachment."
+                    ),
+                ),
+            )
+        reader = _TEXT_READERS.get(attachment.kind)
+        if reader is None:  # pragma: no cover — toute famille a son lecteur
+            return AIToolResult(
+                content=f"Type de pièce jointe non lisible : {attachment.kind}.",
+                is_error=True,
+            )
+        try:
+            content = await run_in_threadpool(
+                reader, storage, attachment.s3_key, attachment.mime
+            )
+        except Exception:
+            return AIToolResult(
+                content=(
+                    f"Lecture de « {attachment.original_name} » impossible "
+                    "(fichier corrompu ou illisible)."
+                ),
+                is_error=True,
+            )
+        if not content.strip():
+            return AIToolResult(
+                content=(
+                    f"« {attachment.original_name} » ne contient pas de texte "
+                    "extractible (document vide, ou scan d'images ?)."
+                ),
+                is_error=True,
+            )
+        return AIToolResult(content=content)
+
     handlers = {
         READ_BLOCK: _read_block,
         READ_RESOURCE_PDF: _read_resource_pdf,
         READ_RESOURCE_IMAGE: _read_resource_image,
         READ_MODULE: _read_module,
+        READ_ATTACHMENT: _read_attachment,
     }
     # Tools HITL (appel complet) : propositions du contexte d'édition,
     # délégations de l'assistant global — construites une fois par tour — et

@@ -35,6 +35,7 @@ Les fragments de prompt vivent dans :mod:`app.course_assistant.prompts`
 import re
 import uuid
 
+from app.course_assistant.attachments import attachments_section
 from app.course_assistant.editing.base import EditContext
 from app.course_assistant.prompts import COURSE_EDITING_SYSTEM_PROMPT, COURSE_SYSTEM_PROMPT
 from app.course_assistant.refs import CourseRefs
@@ -66,7 +67,14 @@ _RESOURCE_REF_RE = re.compile(rf"oc-resource:({_UUID_RE})")
 
 
 def build_refs(
-    blocks, resources, modules, *, focus_block=None, question_refs=None, block_refs=None
+    blocks,
+    resources,
+    modules,
+    *,
+    focus_block=None,
+    question_refs=None,
+    block_refs=None,
+    attachments=(),
 ) -> CourseRefs:
     """Références courtes du tour — blocs déjà triés (``position, id``), le
     titre affiché d'un bloc sans titre étant son libellé de type.
@@ -77,6 +85,10 @@ def build_refs(
     (docstring de :mod:`app.course_assistant.refs`). ``block_refs`` (même
     capture, pour les blocs) ne rejoue rien : il désigne les blocs apparus ou
     disparus depuis, à la reprise d'une proposition structurelle.
+
+    ``attachments`` (pièces jointes de la conversation, triées
+    ``created_at, id``) reçoit les références ``A1…``, stables à vie — rien à
+    rejouer à une reprise, la liste ne fait que croître.
     """
     questions: list = []
     if focus_block is not None and focus_block.type == TYPE_EXERCISE:
@@ -89,6 +101,7 @@ def build_refs(
         questions=questions,
         question_refs=question_refs,
         block_refs=block_refs,
+        attachments=attachments,
     )
 
 
@@ -148,8 +161,10 @@ def build_turn_context(
     focus_block=None,
     focus_module=None,
     edit: EditContext | None = None,
+    new_attachment_ids=None,
 ) -> str:
-    """Contexte du tour d'assistant : cible d'édition (en entier) puis sommaire.
+    """Contexte du tour d'assistant : cible d'édition (en entier), sommaire,
+    puis pièces jointes.
 
     Contexte d'édition (``edit`` et **exactement une** cible — ``focus_block``
     ou ``focus_module`` — toujours ensemble) : la cible est rendue **en
@@ -157,6 +172,13 @@ def build_turn_context(
     le professeur édite CETTE cible et l'assistant doit toujours en voir
     l'état exact ; un bloc édité est remplacé par un pointeur dans le
     sommaire. Hors contexte d'édition : le sommaire seul.
+
+    La section des **pièces jointes** vient en dernier, donc au plus près de la
+    demande du professeur que :func:`turn_message` colle après le séparateur —
+    c'est ce qui rend l'appel à ``read_attachment`` difficile à manquer.
+    ``new_attachment_ids`` désigne celles de CE message (les autres sont
+    annoncées comme venant d'un message précédent). Elle n'existe que pour
+    l'assistant : le tuteur d'exercice passe par :func:`render_outline`.
     """
     focus = focus_block if focus_block is not None else focus_module
     if focus_block is not None and focus_module is not None:
@@ -174,6 +196,9 @@ def build_turn_context(
     sections.append(
         render_outline(course, refs, focus_block=focus_block, focus_note="bloc en cours d'édition")
     )
+    attachments = attachments_section(refs, new_attachment_ids)
+    if attachments:
+        sections.append(attachments)
     return "\n\n".join(sections)
 
 

@@ -839,7 +839,7 @@ def test_new_message_abandons_a_delegation_and_purges_both_threads() -> None:
 def test_delete_conversation_purges_both_threads_of_a_delegation() -> None:
     hitl.register(CONVERSATION_ID, _pending_child())
     try:
-        session = FakeSession([[user_row()], [course_row()], [_course_conversation()]])
+        session = FakeSession([[user_row()], [course_row()], [_course_conversation()], []])
         client, fake = make_client(session)
         response = client.delete(f"{BASE}/conversations/{CONVERSATION_ID}")
         assert response.status_code == 204

@@ -112,7 +112,7 @@ def test_get_conversation_detail_with_tool_turns() -> None:
         ),
     ]
     session = FakeSession(
-        [[user_row()], [course_row()], [conversation_row(title="T")], messages]
+        [[user_row()], [course_row()], [conversation_row(title="T")], messages, []]
     )
     client, _ = make_client(session)
     response = client.get(f"{BASE}/conversations/{CONVERSATION_ID}")
@@ -121,6 +121,7 @@ def test_get_conversation_detail_with_tool_turns() -> None:
     assert [m["role"] for m in payload["messages"]] == ["user", "assistant", "tool", "assistant"]
     assert payload["messages"][1]["tool_calls"][0]["id"] == "call_1"
     assert payload["messages"][3]["sources"] == {"blocks": [str(BLOCK_ID)]}
+    assert all(m["attachments"] == [] for m in payload["messages"])
 
 
 def test_rename_conversation() -> None:
@@ -136,7 +137,8 @@ def test_rename_conversation() -> None:
 
 
 def test_delete_conversation() -> None:
-    session = FakeSession([[user_row()], [course_row()], [conversation_row()]])
+    # 4 execute : user, cours, conversation, clés S3 des pièces jointes.
+    session = FakeSession([[user_row()], [course_row()], [conversation_row()], []])
     client, _ = make_client(session)
     response = client.delete(f"{BASE}/conversations/{CONVERSATION_ID}")
     assert response.status_code == 204
@@ -353,6 +355,7 @@ def test_stream_eager_error_refunds_quota(monkeypatch) -> None:
             [block_row()],
             [resource_row()],
             [],
+            [],  # pièces jointes
         ]
     )
     client, _ = make_client(

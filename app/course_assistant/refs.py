@@ -58,7 +58,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-Kind = Literal["block", "resource", "module", "question"]
+Kind = Literal["block", "resource", "module", "question", "attachment"]
 
 # Préfixe commun minimal (hex, tirets retirés) pour rattraper un UUID déformé :
 # 8 hex = 32 bits, collision entre deux ids d'un même cours ≈ impossible.
@@ -70,18 +70,26 @@ CANDIDATES_LISTED = 40
 # Longueur de l'extrait d'énoncé servant de « titre » à une question.
 QUESTION_TITLE_CHARS = 80
 
-_KIND_PREFIX: dict[Kind, str] = {"block": "B", "resource": "R", "module": "M", "question": "Q"}
+_KIND_PREFIX: dict[Kind, str] = {
+    "block": "B",
+    "resource": "R",
+    "module": "M",
+    "question": "Q",
+    "attachment": "A",
+}
 _KIND_WORDS: dict[Kind, frozenset[str]] = {
     "block": frozenset({"b", "bloc", "block"}),
     "resource": frozenset({"r", "ressource", "resource"}),
     "module": frozenset({"m", "module"}),
     "question": frozenset({"q", "question"}),
+    "attachment": frozenset({"a", "piece", "pièce", "jointe", "attachment"}),
 }
 _KIND_LABELS: dict[Kind, tuple[str, str]] = {
     "block": ("Bloc", "Blocs du cours"),
     "resource": ("Ressource", "Ressources du cours"),
     "module": ("Module", "Modules du cours"),
     "question": ("Question", "Questions de l'exercice"),
+    "attachment": ("Pièce jointe", "Pièces jointes de la conversation"),
 }
 _REF_RE = re.compile(r"^(?:([a-z]+)\s*)?#?(\d+)$")
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
@@ -211,7 +219,13 @@ class CourseRefs:
     supprimé."""
 
     entries: dict[Kind, list[RefEntry]] = field(
-        default_factory=lambda: {"block": [], "resource": [], "module": [], "question": []}
+        default_factory=lambda: {
+            "block": [],
+            "resource": [],
+            "module": [],
+            "question": [],
+            "attachment": [],
+        }
     )
     new_question_refs: tuple[str, ...] = ()
     stale_questions: dict[str, str] = field(default_factory=dict)
@@ -229,6 +243,7 @@ class CourseRefs:
         questions: Sequence = (),
         question_refs: Mapping[str, str] | None = None,
         block_refs: Mapping[str, str] | None = None,
+        attachments: Sequence = (),
     ) -> "CourseRefs":
         """Numérote blocs (ordre reçu = ordre d'affichage), ressources et
         modules. ``block_titles`` (optionnel) donne le titre affiché d'un bloc
@@ -237,13 +252,20 @@ class CourseRefs:
         et ``question_refs`` (numérotation d'origine à rejouer) alimentent le
         genre ``question`` (:func:`_question_entries`). ``block_refs``
         (numérotation d'origine des blocs) n'alimente que ``new_block_refs``
-        et ``stale_blocks`` — jamais la numérotation elle-même."""
+        et ``stale_blocks`` — jamais la numérotation elle-même.
+
+        ``attachments`` (pièces jointes de la conversation, triées
+        ``created_at, id``) alimente le genre ``attachment``. Ses références
+        ``A…`` sont **stables à vie** : la liste ne fait que croître et une
+        pièce rattachée est indélébile — d'où l'absence d'``attachment_refs``
+        à rejouer, contrairement aux questions."""
         refs = cls()
         titles = block_titles or {}
         for kind, items, title_of in (
             ("block", blocks, lambda b: b.title or titles.get(b.id) or b.type),
             ("resource", resources, lambda r: r.original_name),
             ("module", modules, lambda m: m.title),
+            ("attachment", attachments, lambda a: a.original_name),
         ):
             prefix = _KIND_PREFIX[kind]
             refs.entries[kind] = [

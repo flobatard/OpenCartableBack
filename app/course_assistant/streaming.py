@@ -115,6 +115,7 @@ from app.core.http import invalid, not_found
 from app.core.sse import sse_event
 from app.core.storage import Storage
 from app.course_assistant import hitl
+from app.course_assistant.attachments import MAX_ATTACHMENTS_PER_CONVERSATION
 from app.course_assistant.context import (
     build_refs,
     build_turn_context,
@@ -144,7 +145,14 @@ from app.course_assistant.schemas import (
     ProposalDecisionCreate,
     QuestionAnswerCreate,
 )
-from app.course_assistant.service import load_conversation, load_messages, load_snapshot
+from app.course_assistant.service import (
+    bind_attachments,
+    load_conversation,
+    load_conversation_attachments,
+    load_messages,
+    load_snapshot,
+    load_turn_attachments,
+)
 from app.course_assistant.tools import GLOBAL_EDIT_TOOLS, build_tool_executor, build_tool_specs
 from app.course_assistant.turn_encoder import TOOL_RESULT_EXCERPT_CHARS as TOOL_RESULT_EXCERPT_CHARS
 from app.course_assistant.turn_encoder import encode_turn
@@ -163,7 +171,11 @@ MAX_TOOL_ROUNDS = 5
 
 _TARGET_GONE_TEXT = "La cible de la délégation n'existe plus dans le cours."
 
-Snapshot = tuple[list, list, list]
+# Instantané du tour, figé au départ du flux : blocs, ressources, modules et
+# pièces jointes de la conversation. Un sous-assistant travaille dessus sans
+# jamais recharger — c'est ce qui lui fait voir la pièce que le professeur
+# vient de joindre à l'assistant global.
+Snapshot = tuple[list, list, list, list]
 ToolExecutor = Callable[[AIToolCall], Awaitable[AIToolResult]]
 
 
@@ -192,6 +204,18 @@ def _resolve_focus(
         return None, None
     target_id = conversation.module_id if edit.target == TARGET_MODULE else conversation.block_id
     return _find_target(edit, target_id, blocks, modules)
+
+
+def _attachments_complete(attachments: list, requested: list[uuid.UUID]) -> bool:
+    """Toutes les pièces jointes demandées ont-elles été retrouvées ?
+
+    ``load_turn_attachments`` filtre serré (propriétaire, cours, pas encore
+    rattachée, confirmée) : un id absent du résultat est donc soit inconnu,
+    soit déjà envoyé, soit celui d'un autre. On ne distingue pas les cas —
+    même message pour tous, aucun oracle.
+    """
+    found = {a.id for a in attachments}
+    return all(attachment_id in found for attachment_id in requested)
 
 
 def _turn_tools(
@@ -303,12 +327,18 @@ def _build_child(
     l'instantané ou si le contexte est inconnu (défensif : le handler a validé
     sur ce même instantané). Validation eager de ``stream_agent`` :
     l'appelant traduit une ``HTTPException``."""
-    blocks, resources, modules = snapshot
+    blocks, resources, modules, attachments = snapshot
     edit = edit_context_for(request.context)
     focus_block, focus_module = _find_target(edit, request.target_id, blocks, modules)
     if edit is None or (focus_block is None and focus_module is None):
         return None
-    refs = build_refs(blocks, resources, modules, focus_block=focus_block)
+    # Les pièces jointes du flux suivent le sous-assistant : sans elles, « corrige
+    # ce bloc d'après cette photo » serait délégué à un agent qui ne la voit pas.
+    # Aucune n'est « de ce message » pour lui : il reçoit des consignes, pas le
+    # message du professeur.
+    refs = build_refs(
+        blocks, resources, modules, focus_block=focus_block, attachments=attachments
+    )
     context = build_turn_context(
         course, refs, focus_block=focus_block, focus_module=focus_module, edit=edit
     )
@@ -459,9 +489,13 @@ async def sse_stream(
     Ordre des execute : 1) cours (contrôle de propriété), 2) conversation
     (scopée), 3) messages existants (historique + plafond), [cascade
     ``effective_config`` : ses propres execute], 4) blocs, 5) ressources,
-    6) modules, 7) insert du message user (position suivante ; titre posé au
-    premier message ; ``updated_at`` bumpé) puis commit. Le generator retourné
-    insère ensuite les messages du tour (un execute + commit à la clôture).
+    6) modules, 7) pièces jointes (celles de la conversation + les candidates
+    de ce message, **inconditionnel**), 8) insert du message user (position
+    suivante ; titre posé au premier message ; ``updated_at`` bumpé),
+    [9) rattachement des pièces jointes — **seulement** si le message en
+    porte : la seule irrégularité de ce contrat], puis commit. Le generator
+    retourné insère ensuite les messages du tour (un execute + commit à la
+    clôture).
 
     Messages du modèle : ``[system, *historique, user]`` — le system prompt
     est **statique** par contexte (:func:`system_prompt_for`), l'historique
@@ -496,6 +530,9 @@ async def sse_stream(
     provider = config.provider.value if config is not None else settings.AI_PROVIDER
 
     blocks, resources, modules = await load_snapshot(db, course)
+    attachments = await load_turn_attachments(
+        db, course, user, conversation, payload.attachment_ids
+    )
 
     edit = edit_context_for(conversation.context)
     allow_edit = edit is None and payload.allow_edit
@@ -507,13 +544,31 @@ async def sse_stream(
         raise not_found(
             "Module introuvable" if edit.target == TARGET_MODULE else "Bloc introuvable"
         )
-    # Instantané en références courtes (B1/R1/M1 — et Q1… pour les questions
+    # Une pièce jointe demandée mais absente des candidates (inconnue, d'un
+    # autre cours, déjà envoyée, upload non confirmé) fait échouer le tour
+    # AVANT le flux — jamais un tour silencieusement amputé de son fichier.
+    if len(attachments) > MAX_ATTACHMENTS_PER_CONVERSATION or not _attachments_complete(
+        attachments, payload.attachment_ids
+    ):
+        if ticket is not None:
+            await refund_default_quota(db, ticket)
+        if len(attachments) > MAX_ATTACHMENTS_PER_CONVERSATION:
+            raise invalid("Trop de pièces jointes dans cette conversation")
+        raise invalid("Pièce jointe introuvable ou déjà envoyée")
+    # Instantané en références courtes (B1/R1/M1/A1 — et Q1… pour les questions
     # du bloc exercice édité) : le modèle ne manipule jamais d'UUID.
-    refs = build_refs(blocks, resources, modules, focus_block=focus_block)
+    refs = build_refs(
+        blocks, resources, modules, focus_block=focus_block, attachments=attachments
+    )
     thread_id = str(uuid.uuid4())
     drop_pending_resume(client, conversation.id)
     context = build_turn_context(
-        course, refs, focus_block=focus_block, focus_module=focus_module, edit=edit
+        course,
+        refs,
+        focus_block=focus_block,
+        focus_module=focus_module,
+        edit=edit,
+        new_attachment_ids=payload.attachment_ids,
     )
     history, truncated = replay_messages(existing, provider)
     system_prompt = system_prompt_for(edit, allow_edit=allow_edit)
@@ -544,6 +599,7 @@ async def sse_stream(
             content=payload.content,
         )
     )
+    await bind_attachments(db, conversation, user_message_id, payload.attachment_ids)
     title_set: str | None = None
     if conversation.title is None:
         title_set = payload.content.strip()[:TITLE_TRUNCATE_CHARS]
@@ -592,7 +648,7 @@ async def sse_stream(
             storage,
             auth,
             course,
-            (blocks, resources, modules),
+            (blocks, resources, modules, attachments),
             sink,
             events=events,
             refs=refs,
@@ -646,10 +702,11 @@ async def _sse_resume(
     Ordre des execute : 1) cours (contrôle de propriété), 2) conversation
     (scopée) — puis, sans execute : balayage des reprises expirées, entrée en
     attente (404), valeur de reprise (422), consommation — 3) messages
-    existants (position suivante), 4) blocs, 5) ressources, 6) modules
-    (l'instantané des tools est rechargé — le modèle peut encore lire le cours
-    après la réponse). Aucune écriture ici : le generator persiste la suite du
-    tour à la clôture.
+    existants (position suivante), 4) blocs, 5) ressources, 6) modules,
+    7) pièces jointes de la conversation (l'instantané des tools est rechargé —
+    le modèle peut encore lire le cours après la réponse, et le graphe repris
+    DOIT exposer les mêmes tools qu'à l'aller). Aucune écriture ici : le
+    generator persiste la suite du tour à la clôture.
     """
     course = await get_owned_course(db, user, course_id)
     conversation = await load_conversation(db, course, user, conversation_id)
@@ -675,6 +732,12 @@ async def _sse_resume(
     existing = await load_messages(db, conversation)
 
     blocks, resources, modules = await load_snapshot(db, course)
+    # Contrainte DURE, pas un confort : ``stream_agent`` exige que le graphe
+    # d'une reprise soit bâti avec les MÊMES tools. Sans ce rechargement,
+    # ``read_attachment`` disparaîtrait du ToolNode alors que l'état
+    # checkpointé le référence. Une reprise n'apporte aucune pièce nouvelle —
+    # et une pièce envoyée est indélébile, donc l'``enum`` est identique.
+    attachments = await load_conversation_attachments(db, conversation)
     delegation = pending.delegation
     agent: _AgentRun | None = None
     if delegation is None:
@@ -692,6 +755,7 @@ async def _sse_resume(
             focus_block=focus_block,
             question_refs=pending.question_refs,
             block_refs=pending.block_refs,
+            attachments=attachments,
         )
         tools, executor = _turn_tools(storage, refs, edit, delegation=allow_edit)
         system_prompt = system_prompt_for(edit, allow_edit=allow_edit)
@@ -708,13 +772,14 @@ async def _sse_resume(
             raise not_found(missing_detail)
         target_id = uuid.UUID(delegation.target_id)
         focus_block, _ = _find_target(run_edit, target_id, blocks, modules)
-        refs = build_refs(blocks, resources, modules)
+        refs = build_refs(blocks, resources, modules, attachments=attachments)
         child_refs = build_refs(
             blocks,
             resources,
             modules,
             focus_block=focus_block,
             question_refs=pending.question_refs,
+            attachments=attachments,
         )
         tools, executor = _turn_tools(storage, refs, None, delegation=True)
         system_prompt = system_prompt_for(None, allow_edit=True)
@@ -791,7 +856,7 @@ async def _sse_resume(
             storage,
             auth,
             course,
-            (blocks, resources, modules),
+            (blocks, resources, modules, attachments),
             sink,
             events=events,
             refs=refs,

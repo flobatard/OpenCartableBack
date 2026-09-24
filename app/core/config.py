@@ -255,6 +255,11 @@ class Settings(BaseSettings):
     PURGE_SHARE_LINKS_DAYS: int = 365
     # Ressources restées `pending` (upload déclaré, jamais confirmé).
     PURGE_PENDING_RESOURCES_DAYS: int = 30
+    # Pièces jointes de l'assistant jamais envoyées : upload abandonné, ou
+    # confirmé puis jamais joint à un message. Rétention COURTE — c'est du
+    # déchet qui occupe le bucket, pas du travail de prof (une pièce rattachée
+    # à un message vit avec sa conversation, hors de cette purge).
+    PURGE_AI_ATTACHMENTS_DAYS: int = 7
     # Réconciliation des orphelins S3 : grâce sur LastModified. Elle n'est pas
     # un confort mais une SÉCURITÉ — l'import de cours pousse les objets AVANT
     # son commit, un objet légitime passe donc un instant sans ligne en base.
@@ -309,6 +314,7 @@ class Settings(BaseSettings):
     MAINTENANCE_CRON_PENDING_RESOURCES: str = "30 3 * * *"
     MAINTENANCE_CRON_AI_CONVERSATIONS: str = "40 3 * * *"
     MAINTENANCE_CRON_EXERCISE_SUBMISSIONS: str = "50 3 * * *"
+    MAINTENANCE_CRON_AI_ATTACHMENTS: str = "00 4 * * *"
     MAINTENANCE_CRON_MISSING_S3_OBJECTS: str = "10 4 * * *"
     MAINTENANCE_CRON_STORAGE_INVENTORY: str = "40 4 * * mon"
 

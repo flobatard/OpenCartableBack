@@ -24,6 +24,7 @@ from app.maintenance.service import (
     purge_pending_resources,
     purge_share_links,
     purge_tool_message_content,
+    purge_unsent_attachments,
     reconcile_s3_orphans,
 )
 
@@ -72,10 +73,14 @@ JOBS: tuple[MaintenanceJob, ...] = (
         name="ai_conversations",
         label="conversations de l'assistant",
         bind=lambda ctx: partial(
-            purge_ai_conversations, ctx.db, settings.PURGE_AI_CONVERSATIONS_DAYS
+            purge_ai_conversations,
+            ctx.db,
+            ctx.storage,
+            settings.PURGE_AI_CONVERSATIONS_DAYS,
         ),
         cron_setting="MAINTENANCE_CRON_AI_CONVERSATIONS",
         retention_setting="PURGE_AI_CONVERSATIONS_DAYS",
+        needs_storage=True,
     ),
     MaintenanceJob(
         name="exercise_submissions",
@@ -106,6 +111,19 @@ JOBS: tuple[MaintenanceJob, ...] = (
         ),
         cron_setting="MAINTENANCE_CRON_PENDING_RESOURCES",
         retention_setting="PURGE_PENDING_RESOURCES_DAYS",
+        needs_storage=True,
+    ),
+    MaintenanceJob(
+        name="ai_attachments",
+        label="pièces jointes jamais envoyées",
+        bind=lambda ctx: partial(
+            purge_unsent_attachments,
+            ctx.db,
+            ctx.storage,
+            settings.PURGE_AI_ATTACHMENTS_DAYS,
+        ),
+        cron_setting="MAINTENANCE_CRON_AI_ATTACHMENTS",
+        retention_setting="PURGE_AI_ATTACHMENTS_DAYS",
         needs_storage=True,
     ),
     MaintenanceJob(

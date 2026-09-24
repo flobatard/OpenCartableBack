@@ -6,16 +6,17 @@ génériques de :mod:`tests.fakes`.
 
 Ordre FIFO du flux de stream (docstring de ``sse_stream``) : [user] (router),
 [course], [conversation], [messages], [user] puis [config active] (cascade
-``effective_config``), [blocks], [resources], [modules] — puis le generator
-insère le tour. Celui d'une reprise HITL (``_sse_resume`` : décision sur une
-proposition, réponse à des questions) : idem SANS la cascade IA.
+``effective_config``), [blocks], [resources], [modules], [attachments] — puis
+le generator insère le tour. Celui d'une reprise HITL (``_sse_resume`` :
+décision sur une proposition, réponse à des questions) : idem SANS la cascade
+IA.
 """
 
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from sqlalchemy.sql.dml import Insert
+from sqlalchemy.sql.dml import Insert, Update
 
 from tests.fakes import FakeSession
 from tests.fakes import make_client as _make_client
@@ -28,6 +29,7 @@ CONVERSATION_ID = uuid.uuid4()
 BLOCK_ID = uuid.uuid4()
 RESOURCE_ID = uuid.uuid4()
 MODULE_ID = uuid.uuid4()
+ATTACHMENT_ID = uuid.uuid4()
 
 BASE = f"/api/v1/courses/{COURSE_ID}/assistant"
 STREAM_PATH = f"{BASE}/conversations/{CONVERSATION_ID}/messages/stream"
@@ -150,6 +152,30 @@ def resource_row():
     )
 
 
+def attachment_row(**overrides):
+    """Une pièce jointe confirmée et déjà envoyée (rattachée à un message).
+
+    ``message_id=None`` en fait une pièce préparée mais pas encore envoyée —
+    le seul état que la route de suppression accepte.
+    """
+    defaults = dict(
+        id=ATTACHMENT_ID,
+        course_id=COURSE_ID,
+        owner_id=USER_ID,
+        conversation_id=CONVERSATION_ID,
+        message_id=uuid.uuid4(),
+        s3_key=f"courses/{COURSE_ID}/assistant/{ATTACHMENT_ID}/photo.png",
+        original_name="photo.png",
+        mime="image/png",
+        kind="image",
+        size=2048,
+        status="available",
+        created_at=NOW,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 class FakeAssistantAI:
     """Faux AIClient pour stream_agent : validation eager scriptable.
 
@@ -218,6 +244,15 @@ def make_client(session, ai_client=None):
     return _make_client(session, ai_client=fake_ai), fake_ai
 
 
+def updates_on(session, table_name):
+    """Les ``(stmt, params)`` des UPDATE tracés sur une table."""
+    return [
+        (stmt, params)
+        for stmt, params in session.executed
+        if isinstance(stmt, Update) and stmt.table.name == table_name
+    ]
+
+
 def inserted_message_rows(session):
     """Les params de l'insert executemany du tour (liste de dicts), ou None."""
     for stmt, params in session.executed:
@@ -227,10 +262,22 @@ def inserted_message_rows(session):
 
 
 def stream_session(
-    messages=(), conversation=None, user=None, config="default", blocks=None, modules=()
+    messages=(),
+    conversation=None,
+    user=None,
+    config="default",
+    blocks=None,
+    modules=(),
+    attachments=(),
 ):
     """FIFO de ``sse_stream`` (docstring du module). ``config`` = la ligne
-    active servie à la cascade (``None`` = aucune : IA par défaut)."""
+    active servie à la cascade (``None`` = aucune : IA par défaut).
+
+    ``attachments`` est servi au 7ᵉ execute, **inconditionnel** — les pièces
+    jointes de la conversation plus les candidates du message. L'execute de
+    RATTACHEMENT qui suit l'insert, lui, n'a lieu que si le message porte des
+    ``attachment_ids`` ; il ne consomme aucun résultat (UPDATE).
+    """
     if config == "default":
         config = config_row()
     return FakeSession(
@@ -244,14 +291,17 @@ def stream_session(
             list(blocks) if blocks is not None else [block_row()],
             [resource_row()],
             list(modules),
+            list(attachments),
         ]
     )
 
 
-def resume_session(messages=(), conversation=None, blocks=None, modules=()):
+def resume_session(
+    messages=(), conversation=None, blocks=None, modules=(), attachments=()
+):
     """FIFO d'une reprise HITL (``_sse_resume``) : [user] (router), [course],
-    [conversation], [messages], [blocks], [resources], [modules] — pas de
-    cascade IA."""
+    [conversation], [messages], [blocks], [resources], [modules],
+    [attachments] — pas de cascade IA."""
     return FakeSession(
         [
             [user_row()],
@@ -261,6 +311,7 @@ def resume_session(messages=(), conversation=None, blocks=None, modules=()):
             list(blocks) if blocks is not None else [block_row()],
             [resource_row()],
             list(modules),
+            list(attachments),
         ]
     )
 

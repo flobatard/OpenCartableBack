@@ -31,6 +31,7 @@ from app.courses.schemas import (
     PreviewSettings,
     VisibilityUpdate,
 )
+from app.models.ai_attachment import AIAttachment
 from app.models.block import Block
 from app.models.course import (
     VISIBILITY_DRAFT,
@@ -291,15 +292,29 @@ async def delete_course(
 ) -> None:
     """Supprime un cours du prof ; 404 s'il n'existe pas ou appartient à autrui.
 
-    Ordre des execute : 1) cours (contrôle de propriété), 2) clés S3 des
-    ressources du cours, 3) delete. Les blocs, ressources et lignes de classement
-    (course_subjects/course_education_levels) partent en cascade via les FK
-    ``ondelete=CASCADE`` ; les objets S3 (hors cascade DB) sont supprimés après
-    le commit, pour ne pas laisser d'orphelins dans le bucket.
+    Ordre des execute : 1) cours (contrôle de propriété), 2) clés S3 du cours,
+    3) delete. Les blocs, ressources, conversations de l'assistant et lignes de
+    classement (course_subjects/course_education_levels) partent en cascade via
+    les FK ``ondelete=CASCADE`` ; les objets S3 (hors cascade DB) sont supprimés
+    après le commit, pour ne pas laisser d'orphelins dans le bucket.
+
+    Les deux familles de clés — ressources de la bibliothèque et pièces jointes
+    des chats de l'assistant — sont collectées par un ``UNION ALL``, donc en
+    **un seul execute** : le contrat FIFO des tests est préservé.
     """
     course = await get_owned_course(db, user, course_id)
     s3_keys = list(
-        (await db.execute(select(Resource.s3_key).where(Resource.course_id == course.id)))
+        (
+            await db.execute(
+                select(Resource.s3_key)
+                .where(Resource.course_id == course.id)
+                .union_all(
+                    select(AIAttachment.s3_key).where(
+                        AIAttachment.course_id == course.id
+                    )
+                )
+            )
+        )
         .scalars()
         .all()
     )

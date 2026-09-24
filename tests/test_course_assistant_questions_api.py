@@ -150,7 +150,7 @@ def test_delete_conversation_drops_pending_resume() -> None:
     """Supprimer une conversation abandonne sa reprise (registre + thread)."""
     hitl.register(CONVERSATION_ID, _pending_questions(thread_id="t-deleted"))
     try:
-        session = FakeSession([[user_row()], [course_row()], [_course_conversation()]])
+        session = FakeSession([[user_row()], [course_row()], [_course_conversation()], []])
         client, fake = make_client(session)
         response = client.delete(f"{BASE}/conversations/{CONVERSATION_ID}")
         assert response.status_code == 204
